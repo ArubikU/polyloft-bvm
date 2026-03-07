@@ -591,7 +591,39 @@ func (p *Parser) block(stop ...token.Type) (*ast.BlockStmt, error) {
 }
 
 func (p *Parser) expression() (ast.Expr, error) {
-	return p.equality()
+	return p.or()
+}
+
+func (p *Parser) or() (ast.Expr, error) {
+	expr, err := p.and()
+	if err != nil {
+		return nil, err
+	}
+	for p.match(token.OrOr) {
+		op := p.previous()
+		right, err := p.and()
+		if err != nil {
+			return nil, err
+		}
+		expr = &ast.BinaryExpr{Left: expr, Operator: op, Right: right}
+	}
+	return expr, nil
+}
+
+func (p *Parser) and() (ast.Expr, error) {
+	expr, err := p.equality()
+	if err != nil {
+		return nil, err
+	}
+	for p.match(token.AndAnd) {
+		op := p.previous()
+		right, err := p.equality()
+		if err != nil {
+			return nil, err
+		}
+		expr = &ast.BinaryExpr{Left: expr, Operator: op, Right: right}
+	}
+	return expr, nil
 }
 
 func (p *Parser) equality() (ast.Expr, error) {
@@ -647,7 +679,7 @@ func (p *Parser) factor() (ast.Expr, error) {
 	if err != nil {
 		return nil, err
 	}
-	for p.match(token.Star, token.Slash) {
+	for p.match(token.Star, token.Slash, token.Percent) {
 		op := p.previous()
 		right, err := p.unary()
 		if err != nil {

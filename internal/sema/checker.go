@@ -403,6 +403,11 @@ func (c *Checker) checkBinary(node *ast.BinaryExpr) (Type, error) {
 		return Unknown(), err
 	}
 	switch node.Operator.Type {
+	case token.AndAnd, token.OrOr:
+		if (left.Name != runtime.TypeBool && left.Name != runtime.TypeAny) || (right.Name != runtime.TypeBool && right.Name != runtime.TypeAny) {
+			return Unknown(), fmt.Errorf("line %d:%d: logical operator expects Bool, got %s and %s", node.Operator.Line, node.Operator.Column, left.Name, right.Name)
+		}
+		return Primitive(runtime.TypeBool), nil
 	case token.Plus:
 		if left.Name == runtime.TypeString || right.Name == runtime.TypeString {
 			return Primitive(runtime.TypeString), nil
@@ -411,7 +416,7 @@ func (c *Checker) checkBinary(node *ast.BinaryExpr) (Type, error) {
 			return Primitive(runtime.TypeNumber), nil
 		}
 		return Unknown(), fmt.Errorf("line %d:%d: '+' expects Number/Number or String concatenation, got %s and %s", node.Operator.Line, node.Operator.Column, left.Name, right.Name)
-	case token.Minus, token.Star, token.Slash:
+	case token.Minus, token.Star, token.Slash, token.Percent:
 		if (left.Name != runtime.TypeNumber && left.Name != runtime.TypeAny) || (right.Name != runtime.TypeNumber && right.Name != runtime.TypeAny) {
 			return Unknown(), fmt.Errorf("line %d:%d: arithmetic expects Number, got %s and %s", node.Operator.Line, node.Operator.Column, left.Name, right.Name)
 		}

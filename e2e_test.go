@@ -279,3 +279,46 @@ println(MathHelper.tick())
 		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", want, got)
 	}
 }
+
+func TestLogicalOperatorsAndModuloShortCircuit(t *testing.T) {
+	source := `let count = 0
+
+def mark() -> Bool:
+    count = count + 1
+    return true
+end
+
+println(10 % 3)
+println(false && mark())
+println(true || mark())
+println(count)
+println(true && mark())
+println(count)
+`
+
+	tokens, err := lexer.Scan(source)
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	program, err := parser.Parse(tokens)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	var out bytes.Buffer
+	registry := bvmruntime.NewRegistry()
+	bvmruntime.InstallCoreGlobals(registry, &out)
+	if err := sema.Check(program, registry); err != nil {
+		t.Fatalf("type check failed: %v", err)
+	}
+	fn, err := compiler.Compile(program)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	machine := vm.NewWithRegistry(&out, registry)
+	if _, err := machine.Run(fn); err != nil {
+		t.Fatalf("vm run failed: %v", err)
+	}
+	if got, want := out.String(), "1\nfalse\ntrue\n0\ntrue\n1\n"; got != want {
+		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", want, got)
+	}
+}

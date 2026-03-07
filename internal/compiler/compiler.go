@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/ArubikU/polyloft-bvm/internal/ast"
 	"github.com/ArubikU/polyloft-bvm/internal/bytecode"
@@ -543,6 +544,32 @@ func (c *Compiler) compileExpr(expr ast.Expr) error {
 }
 
 func (c *Compiler) compileBinary(node *ast.BinaryExpr) error {
+	if node.Operator.Type == token.AndAnd {
+		if err := c.compileExpr(node.Left); err != nil {
+			return err
+		}
+		endJump := c.emitJump(bytecode.OpJumpIfFalse, node.Operator.Line)
+		c.emit(bytecode.OpPop, node.Operator.Line)
+		if err := c.compileExpr(node.Right); err != nil {
+			return err
+		}
+		c.patchJump(endJump)
+		return nil
+	}
+	if node.Operator.Type == token.OrOr {
+		if err := c.compileExpr(node.Left); err != nil {
+			return err
+		}
+		elseJump := c.emitJump(bytecode.OpJumpIfFalse, node.Operator.Line)
+		endJump := c.emitJump(bytecode.OpJump, node.Operator.Line)
+		c.patchJump(elseJump)
+		c.emit(bytecode.OpPop, node.Operator.Line)
+		if err := c.compileExpr(node.Right); err != nil {
+			return err
+		}
+		c.patchJump(endJump)
+		return nil
+	}
 	if err := c.compileExpr(node.Left); err != nil {
 		return err
 	}
@@ -574,6 +601,8 @@ func (c *Compiler) compileBinary(node *ast.BinaryExpr) error {
 		} else {
 			c.emit(bytecode.OpDiv, node.Operator.Line)
 		}
+	case token.Percent:
+		c.emit(bytecode.OpMod, node.Operator.Line)
 	case token.EqualEqual:
 		c.emit(bytecode.OpEqual, node.Operator.Line)
 	case token.BangEqual:
@@ -828,6 +857,14 @@ func (c *Compiler) evalConstExpr(expr ast.Expr) (value.Value, bool) {
 			if left.Kind == value.Number && right.Kind == value.Number {
 				return value.NumberValue(left.Num / right.Num), true
 			}
+		case token.Percent:
+			if left.Kind == value.Number && right.Kind == value.Number {
+				return value.NumberValue(math.Mod(left.Num, right.Num)), true
+			}
+		case token.AndAnd:
+			return value.BoolValue(left.IsTruthy() && right.IsTruthy()), true
+		case token.OrOr:
+			return value.BoolValue(left.IsTruthy() || right.IsTruthy()), true
 		case token.EqualEqual:
 			return value.BoolValue(value.Equal(left, right)), true
 		case token.BangEqual:
@@ -996,6 +1033,8 @@ func (c *Compiler) inferExprType(expr ast.Expr) string {
 		left := c.inferExprType(node.Left)
 		right := c.inferExprType(node.Right)
 		switch node.Operator.Type {
+		case token.AndAnd, token.OrOr:
+			return "Bool"
 		case token.Plus:
 			if left == "Number" && right == "Number" {
 				return "Number"
@@ -1003,7 +1042,7 @@ func (c *Compiler) inferExprType(expr ast.Expr) string {
 			if left == "String" || right == "String" {
 				return "String"
 			}
-		case token.Minus, token.Star, token.Slash:
+		case token.Minus, token.Star, token.Slash, token.Percent:
 			if left == "Number" && right == "Number" {
 				return "Number"
 			}

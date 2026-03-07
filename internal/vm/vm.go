@@ -3,6 +3,7 @@ package vm
 import (
 	"fmt"
 	"io"
+	"math"
 	"os"
 
 	"github.com/ArubikU/polyloft-bvm/internal/bytecode"
@@ -162,6 +163,10 @@ func (vm *VM) execute() (value.Value, error) {
 			}
 		case bytecode.OpDiv:
 			if err := vm.binaryNumber(func(a, b float64) float64 { return a / b }); err != nil {
+				return value.NilValue(), err
+			}
+		case bytecode.OpMod:
+			if err := vm.binaryNumber(func(a, b float64) float64 { return math.Mod(a, b) }); err != nil {
 				return value.NilValue(), err
 			}
 		case bytecode.OpNot:

@@ -23,6 +23,7 @@ const (
 	OpSub
 	OpMul
 	OpDiv
+	OpMod
 	OpNot
 	OpNegate
 	OpJump
@@ -95,6 +96,8 @@ func (op Op) String() string {
 		return "MUL"
 	case OpDiv:
 		return "DIV"
+	case OpMod:
+		return "MOD"
 	case OpNot:
 		return "NOT"
 	case OpNegate:

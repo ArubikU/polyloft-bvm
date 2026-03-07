@@ -62,6 +62,8 @@ func (lx *Lexer) scanTokens() error {
 			}
 		case '*':
 			lx.addToken(token.Star, startLine, startCol)
+		case '%':
+			lx.addToken(token.Percent, startLine, startCol)
 		case '/':
 			if lx.match('/') {
 				for !lx.isAtEnd() && lx.peek() != '\n' {
@@ -75,6 +77,18 @@ func (lx *Lexer) scanTokens() error {
 				lx.addToken(token.BangEqual, startLine, startCol)
 			} else {
 				lx.addToken(token.Bang, startLine, startCol)
+			}
+		case '&':
+			if lx.match('&') {
+				lx.addToken(token.AndAnd, startLine, startCol)
+			} else {
+				return fmt.Errorf("line %d:%d: unexpected character %q", startLine, startCol, r)
+			}
+		case '|':
+			if lx.match('|') {
+				lx.addToken(token.OrOr, startLine, startCol)
+			} else {
+				return fmt.Errorf("line %d:%d: unexpected character %q", startLine, startCol, r)
 			}
 		case '=':
 			if lx.match('=') {
