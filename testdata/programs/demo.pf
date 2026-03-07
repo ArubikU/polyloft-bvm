@@ -1,0 +1,37 @@
+class Worker:
+    factor: Number
+
+    Worker(f: Number):
+        this.factor = f
+    end
+
+    def run(limit: Number) -> Number:
+        let acc = 0
+        for i in range(0, limit):
+            acc = acc + (i * this.factor)
+        end
+        return acc
+    end
+end
+
+let started = Sys.time()
+
+let total = 0
+let worker = new Worker(3)
+
+for outer in range(0, 250):
+    total = total + worker.run(400)
+end
+
+let allocTotal = 0
+for i in range(1, 600):
+    let temp = new Worker(i)
+    allocTotal = allocTotal + temp.factor
+end
+
+let ended = Sys.time()
+
+println("polyloft-bvm benchmark")
+println("checksum=" + total)
+println("alloc_checksum=" + allocTotal)
+println("elapsed_ms=" + (ended - started))
