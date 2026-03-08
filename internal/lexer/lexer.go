@@ -44,24 +44,50 @@ func (lx *Lexer) scanTokens() error {
 			lx.addToken(token.LeftParen, startLine, startCol)
 		case ')':
 			lx.addToken(token.RightParen, startLine, startCol)
+		case '[':
+			lx.addToken(token.LeftBracket, startLine, startCol)
+		case ']':
+			lx.addToken(token.RightBracket, startLine, startCol)
+		case '{':
+			lx.addToken(token.LeftBrace, startLine, startCol)
+		case '}':
+			lx.addToken(token.RightBrace, startLine, startCol)
 		case ',':
 			lx.addToken(token.Comma, startLine, startCol)
 		case ':':
 			lx.addToken(token.Colon, startLine, startCol)
 		case '.':
-			lx.addToken(token.Dot, startLine, startCol)
+			if lx.peek() == '.' && lx.peekNext() == '.' {
+				lx.advance()
+				lx.advance()
+				lx.addToken(token.Ellipsis, startLine, startCol)
+			} else {
+				lx.addToken(token.Dot, startLine, startCol)
+			}
+		case '?':
+			lx.addToken(token.Question, startLine, startCol)
 		case '@':
 			lx.addToken(token.At, startLine, startCol)
 		case '+':
-			lx.addToken(token.Plus, startLine, startCol)
+			if lx.match('=') {
+				lx.addToken(token.PlusEqual, startLine, startCol)
+			} else {
+				lx.addToken(token.Plus, startLine, startCol)
+			}
 		case '-':
 			if lx.match('>') {
 				lx.addToken(token.Arrow, startLine, startCol)
+			} else if lx.match('=') {
+				lx.addToken(token.MinusEqual, startLine, startCol)
 			} else {
 				lx.addToken(token.Minus, startLine, startCol)
 			}
 		case '*':
-			lx.addToken(token.Star, startLine, startCol)
+			if lx.match('=') {
+				lx.addToken(token.StarEqual, startLine, startCol)
+			} else {
+				lx.addToken(token.Star, startLine, startCol)
+			}
 		case '%':
 			lx.addToken(token.Percent, startLine, startCol)
 		case '/':
@@ -71,7 +97,11 @@ func (lx *Lexer) scanTokens() error {
 				}
 				continue
 			}
-			lx.addToken(token.Slash, startLine, startCol)
+			if lx.match('=') {
+				lx.addToken(token.SlashEqual, startLine, startCol)
+			} else {
+				lx.addToken(token.Slash, startLine, startCol)
+			}
 		case '!':
 			if lx.match('=') {
 				lx.addToken(token.BangEqual, startLine, startCol)
@@ -82,16 +112,18 @@ func (lx *Lexer) scanTokens() error {
 			if lx.match('&') {
 				lx.addToken(token.AndAnd, startLine, startCol)
 			} else {
-				return fmt.Errorf("line %d:%d: unexpected character %q", startLine, startCol, r)
+				lx.addToken(token.Ampersand, startLine, startCol)
 			}
 		case '|':
 			if lx.match('|') {
 				lx.addToken(token.OrOr, startLine, startCol)
 			} else {
-				return fmt.Errorf("line %d:%d: unexpected character %q", startLine, startCol, r)
+				lx.addToken(token.Pipe, startLine, startCol)
 			}
 		case '=':
-			if lx.match('=') {
+			if lx.match('>') {
+				lx.addToken(token.FatArrow, startLine, startCol)
+			} else if lx.match('=') {
 				lx.addToken(token.EqualEqual, startLine, startCol)
 			} else {
 				lx.addToken(token.Equal, startLine, startCol)
@@ -110,6 +142,10 @@ func (lx *Lexer) scanTokens() error {
 			}
 		case '"':
 			if err := lx.scanString(startLine, startCol); err != nil {
+				return err
+			}
+		case '\'':
+			if err := lx.scanChar(startLine, startCol); err != nil {
 				return err
 			}
 		default:
@@ -147,11 +183,57 @@ func (lx *Lexer) scanString(line, col int) error {
 	return nil
 }
 
+func (lx *Lexer) scanChar(line, col int) error {
+	if lx.isAtEnd() || lx.peek() == '\n' {
+		return fmt.Errorf("line %d:%d: unterminated char", line, col)
+	}
+	var value rune
+	if lx.peek() == '\\' {
+		lx.advance()
+		if lx.isAtEnd() {
+			return fmt.Errorf("line %d:%d: unterminated char", line, col)
+		}
+		escaped := lx.advance()
+		switch escaped {
+		case 'n':
+			value = '\n'
+		case 'r':
+			value = '\r'
+		case 't':
+			value = '\t'
+		case 'b':
+			value = '\b'
+		case 'f':
+			value = '\f'
+		case '\\':
+			value = '\\'
+		case '\'':
+			value = '\''
+		case '"':
+			value = '"'
+		case '0':
+			value = '\x00'
+		default:
+			return fmt.Errorf("line %d:%d: unsupported char escape \\%c", line, col, escaped)
+		}
+	} else {
+		value = lx.advance()
+	}
+	if lx.isAtEnd() || lx.peek() != '\'' {
+		return fmt.Errorf("line %d:%d: char literal must contain exactly one character", line, col)
+	}
+	lx.advance()
+	lx.items = append(lx.items, token.Token{Type: token.Char, Lexeme: string(value), Line: line, Column: col})
+	return nil
+}
+
 func (lx *Lexer) scanNumber(line, col int) error {
+	isFloat := false
 	for unicode.IsDigit(lx.peek()) {
 		lx.advance()
 	}
 	if lx.peek() == '.' && unicode.IsDigit(lx.peekNext()) {
+		isFloat = true
 		lx.advance()
 		for unicode.IsDigit(lx.peek()) {
 			lx.advance()
@@ -161,7 +243,11 @@ func (lx *Lexer) scanNumber(line, col int) error {
 	if _, err := strconv.ParseFloat(literal, 64); err != nil {
 		return fmt.Errorf("line %d:%d: invalid number %q", line, col, literal)
 	}
-	lx.items = append(lx.items, token.Token{Type: token.Number, Lexeme: literal, Line: line, Column: col})
+	tokenType := token.IntNumber
+	if isFloat {
+		tokenType = token.FloatNumber
+	}
+	lx.items = append(lx.items, token.Token{Type: tokenType, Lexeme: literal, Line: line, Column: col})
 	return nil
 }
 

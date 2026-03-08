@@ -1,0 +1,228 @@
+public class Map:
+	var entries: map
+
+	Map():
+		this.entries = {}
+	end
+
+	static def from(entries: map) -> Map:
+		let view = Map()
+		view.entries = entries
+		return view
+	end
+
+	def unwrap() -> map:
+		return this.entries
+	end
+
+	def size() -> int:
+		return len(this.entries)
+	end
+
+	def isEmpty() -> bool:
+		return this.size() == 0
+	end
+
+	def containsKey(key: string) -> bool:
+		for candidate in this.entries:
+			if candidate == key:
+				return true
+			end
+		end
+		return false
+	end
+
+	def containsValue(expected: any) -> bool:
+		for key, value in this.entries:
+			if value == expected:
+				return true
+			end
+		end
+		return false
+	end
+
+	def get(key: string) -> any:
+		return this.entries[key]
+	end
+
+	def getOrDefault(key: string, fallback: any) -> any:
+		if this.containsKey(key):
+			return this.entries[key]
+		end
+		return fallback
+	end
+
+	def delete(key: string) -> bool:
+		return delete(this.entries, key)
+	end
+
+	def keys() -> array:
+		return keys(this.entries)
+	end
+
+	def values() -> array:
+		return values(this.entries)
+	end
+end
+
+public class HashMap:
+	var entries: map
+	var keyEntries: map
+
+	HashMap():
+		this.entries = {}
+		this.keyEntries = {}
+	end
+
+	static def from(entries: map) -> HashMap:
+		let store = HashMap()
+		for key, value in entries:
+			store.put(key, value)
+		end
+		return store
+	end
+
+	def unwrap() -> map:
+		return this.entries
+	end
+
+	def size() -> int:
+		return len(this.entries)
+	end
+
+	def isEmpty() -> bool:
+		return this.size() == 0
+	end
+
+	def containsHash(hashed: string) -> bool:
+		for candidate in this.entries:
+			if candidate == hashed:
+				return true
+			end
+		end
+		return false
+	end
+
+	def containsKey(key: any) -> bool:
+		return this.containsHash(hash(key))
+	end
+
+	def containsValue(expected: any) -> bool:
+		for key, value in this.entries:
+			if value == expected:
+				return true
+			end
+		end
+		return false
+	end
+
+	def get(key: any) -> any:
+		return this.entries[hash(key)]
+	end
+
+	def getOrDefault(key: any, fallback: any) -> any:
+		let hashed = hash(key)
+		if this.containsHash(hashed):
+			return this.entries[hashed]
+		end
+		return fallback
+	end
+
+	def put(key: any, value: any) -> HashMap:
+		let hashed = hash(key)
+		this.keyEntries[hashed] = key
+		this.entries[hashed] = value
+		return this
+	end
+
+	def putAll(entries: map) -> HashMap:
+		for key, value in entries:
+			this.entries[key] = value
+		end
+		return this
+	end
+
+	def clear() -> HashMap:
+		this.entries = {}
+		this.keyEntries = {}
+		return this
+	end
+
+	def delete(key: any) -> bool:
+		let hashed = hash(key)
+		let removed = delete(this.entries, hashed)
+		delete(this.keyEntries, hashed)
+		return removed
+	end
+
+	def keys() -> array:
+		return values(this.keyEntries)
+	end
+
+	def values() -> array:
+		return values(this.entries)
+	end
+end
+
+public class SetMap:
+	var entries: map
+
+	SetMap():
+		this.entries = {}
+	end
+
+	static def from(items: array) -> SetMap:
+		let values = SetMap()
+		for item in items:
+			values.add(item)
+		end
+		return values
+	end
+
+	def unwrap() -> map:
+		return this.entries
+	end
+
+	def size() -> int:
+		return len(this.entries)
+	end
+
+	def isEmpty() -> bool:
+		return this.size() == 0
+	end
+
+	def contains(key: any) -> bool:
+		let hashed = hash(key)
+		for candidate in this.entries:
+			if candidate == hashed:
+				return true
+			end
+		end
+		return false
+	end
+
+	def add(key: any) -> SetMap:
+		this.entries[hash(key)] = key
+		return this
+	end
+
+	def addAll(entries: map) -> SetMap:
+		for key in entries:
+			this.entries[hash(key)] = key
+		end
+		return this
+	end
+
+	def clear() -> SetMap:
+		this.entries = {}
+		return this
+	end
+
+	def delete(key: any) -> bool:
+		return delete(this.entries, hash(key))
+	end
+
+	def values() -> array:
+		return values(this.entries)
+	end
+end

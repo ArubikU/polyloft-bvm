@@ -1,0 +1,25 @@
+public interface Predicate<T>:
+	test(value: T) -> bool
+end
+
+public interface Consumer<T>:
+	accept(value: T) -> void
+end
+
+public interface Supplier<T>:
+	get() -> T
+end
+
+public interface Function<T, R>:
+	apply(value: T) -> R
+end
+
+public interface BiFunction<T, U, R>:
+	apply(left: T, right: U) -> R
+end
+
+public interface UnaryOperator<T> extends Function<T, T>:
+end
+
+public interface BinaryOperator<T> extends BiFunction<T, T, T>:
+end

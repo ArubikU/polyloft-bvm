@@ -3,14 +3,19 @@ package runtime
 import "github.com/ArubikU/polyloft-bvm/internal/value"
 
 const (
-	TypeAny      = "Any"
-	TypeNumber   = "Number"
-	TypeBool     = "Bool"
+	TypeAny      = "any"
+	TypeInt      = "int"
+	TypeFloat    = "float"
+	TypeNumber   = "number"
+	TypeBool     = "bool"
+	TypeChar     = "char"
 	TypeString   = "String"
-	TypeNil      = "Nil"
-	TypeVoid     = "Void"
+	TypeNil      = "nil"
+	TypeVoid     = "void"
 	TypeRange    = "Range"
-	TypeTuple    = "Tuple"
+	TypeTuple    = "tuple"
+	TypeArray    = "array"
+	TypeMap      = "map"
 	TypeFunction = "Function"
 	TypeModule   = "Module"
 )
@@ -22,10 +27,19 @@ type CallableSpec struct {
 }
 
 type Spec struct {
-	Name     string
-	TypeName string
-	Callable *CallableSpec
-	Module   *ModuleSpec
+	Name                  string
+	TypeName              string
+	TypeParams            []string
+	Callable              *CallableSpec
+	ConstructorVisibility string
+	Module                *ModuleSpec
+	Members               map[string]Spec
+	InstanceMembers       map[string]Spec
+	IsAbstract            bool
+	IsSealed              bool
+	IsInterface           bool
+	IsRecord              bool
+	Permits               []string
 }
 
 type ModuleSpec struct {
@@ -57,6 +71,11 @@ func (r *Registry) Specs() map[string]Spec {
 
 func (r *Registry) Define(name string, val value.Value) {
 	r.globals[name] = val
+}
+
+func (r *Registry) DefineWithSpec(name string, val value.Value, spec Spec) {
+	r.globals[name] = val
+	r.specs[name] = spec
 }
 
 func (r *Registry) DefineBuiltin(name string, arity int, fn value.BuiltinFunc) {

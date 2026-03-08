@@ -2,8 +2,17 @@ package value
 
 import (
 	"fmt"
+	"math"
+	"strconv"
 
 	"github.com/ArubikU/polyloft-bvm/internal/bytecode"
+)
+
+type NumberKind uint8
+
+const (
+	NumberFloat NumberKind = iota
+	NumberInt
 )
 
 type Kind uint8
@@ -12,6 +21,7 @@ const (
 	Nil Kind = iota
 	Number
 	Bool
+	Char
 	String
 	Object
 )
@@ -33,34 +43,93 @@ type Tuple struct {
 	Elements []Value
 }
 
+type Array struct {
+	Elements []Value
+}
+
+type Map struct {
+	Entries map[string]Value
+}
+
 type FieldDef struct {
-	Default  Value
-	Mutable  bool
-	TypeName string
+	Default    Value
+	Mutable    bool
+	TypeName   string
+	Visibility string
+}
+
+type Cell struct {
+	Value Value
 }
 
 type Class struct {
-	Name              string
-	Superclass        *Class
-	Implements        map[string]bool
-	Fields            map[string]FieldDef
-	FieldOrder        []string
-	FieldIndex        map[string]int
-	MethodOrder       []string
-	MethodIndex       map[string]int
-	MethodTable       []*bytecode.Function
-	Methods           map[string]*bytecode.Function
-	Constructor       *bytecode.Function
-	StaticFields      map[string]FieldDef
-	StaticValues      map[string]Value
-	StaticMethods     map[string]*bytecode.Function
-	MethodAnnotations map[string][]string
-	IterableLength    *bytecode.Function
-	IterableGet       *bytecode.Function
-	PiecesMethod      *bytecode.Function
-	GetPieceMethod    *bytecode.Function
-	EqualMethod       *bytecode.Function
-	HashMethod        *bytecode.Function
+	Name                  string
+	Superclass            *Class
+	Implements            map[string]bool
+	Permits               map[string]bool
+	IsAbstract            bool
+	IsEnum                bool
+	IsSealed              bool
+	IsRecord              bool
+	EnumOrder             []string
+	FastConstructor       *FastConstructorPlan
+	FastMethods           []*FastMethodPlan
+	Fields                map[string]FieldDef
+	FieldOrder            []string
+	FieldIndex            map[string]int
+	MethodOrder           []string
+	MethodIndex           map[string]int
+	MethodTable           []*bytecode.Function
+	Methods               map[string]*bytecode.Function
+	Constructor           *bytecode.Function
+	StaticFields          map[string]FieldDef
+	StaticValues          map[string]Value
+	StaticMethods         map[string]*bytecode.Function
+	MethodVisibility      map[string]string
+	StaticVisibility      map[string]string
+	ConstructorVisibility string
+	MethodAnnotations     map[string][]string
+	IterableLength        *bytecode.Function
+	IterableGet           *bytecode.Function
+	PiecesMethod          *bytecode.Function
+	GetPieceMethod        *bytecode.Function
+	IndexGetMethod        *bytecode.Function
+	IndexSetMethod        *bytecode.Function
+	ContainsMethod        *bytecode.Function
+	SliceMethod           *bytecode.Function
+	EqualMethod           *bytecode.Function
+	HashMethod            *bytecode.Function
+}
+
+type FastConstructorPlan struct {
+	Arity      int
+	FieldSlots []int
+	ArgIndexes []int
+}
+
+type FastMethodExprKind uint8
+
+const (
+	FastMethodExprNumber FastMethodExprKind = iota
+	FastMethodExprField
+	FastMethodExprAdd
+	FastMethodExprSub
+	FastMethodExprMul
+	FastMethodExprDiv
+	FastMethodExprNegate
+)
+
+type FastMethodExpr struct {
+	Kind      FastMethodExprKind
+	Number    float64
+	FieldSlot int
+	Left      *FastMethodExpr
+	Right     *FastMethodExpr
+}
+
+type FastMethodPlan struct {
+	Arity int
+	Expr  *FastMethodExpr
 }
 
 type Instance struct {
@@ -73,6 +142,21 @@ type BoundMethod struct {
 	Receiver *Instance
 	Method   *bytecode.Function
 	Owner    *Class
+}
+
+type Closure struct {
+	Function *bytecode.Function
+	Captures []*Cell
+}
+
+type SAMWrapper struct {
+	InterfaceName string
+	MethodName    string
+	Callable      Value
+}
+
+type SAMBoundMethod struct {
+	Wrapper *SAMWrapper
 }
 
 type Range struct {
@@ -93,11 +177,12 @@ type Iterator struct {
 }
 
 type Value struct {
-	Kind   Kind
-	Num    float64
-	Bool   bool
-	Str    string
-	Object any
+	Kind       Kind
+	Num        float64
+	NumberKind NumberKind
+	Bool       bool
+	Str        string
+	Object     any
 }
 
 func NilValue() Value {
@@ -105,11 +190,23 @@ func NilValue() Value {
 }
 
 func NumberValue(v float64) Value {
-	return Value{Kind: Number, Num: v}
+	return FloatValue(v)
+}
+
+func IntValue(v int64) Value {
+	return Value{Kind: Number, Num: float64(v), NumberKind: NumberInt}
+}
+
+func FloatValue(v float64) Value {
+	return Value{Kind: Number, Num: v, NumberKind: NumberFloat}
 }
 
 func BoolValue(v bool) Value {
 	return Value{Kind: Bool, Bool: v}
+}
+
+func CharValue(v rune) Value {
+	return Value{Kind: Char, Str: string(v)}
 }
 
 func StringValue(v string) Value {
@@ -136,6 +233,11 @@ func (v Value) AsFunction() (*bytecode.Function, bool) {
 	return fn, ok
 }
 
+func (v Value) AsClosure() (*Closure, bool) {
+	closure, ok := v.Object.(*Closure)
+	return closure, ok
+}
+
 func (v Value) AsBuiltin() (*Builtin, bool) {
 	builtin, ok := v.Object.(*Builtin)
 	return builtin, ok
@@ -149,6 +251,16 @@ func (v Value) AsModule() (*Module, bool) {
 func (v Value) AsTuple() (*Tuple, bool) {
 	tuple, ok := v.Object.(*Tuple)
 	return tuple, ok
+}
+
+func (v Value) AsArray() (*Array, bool) {
+	array, ok := v.Object.(*Array)
+	return array, ok
+}
+
+func (v Value) AsMap() (*Map, bool) {
+	m, ok := v.Object.(*Map)
+	return m, ok
 }
 
 func (v Value) AsClass() (*Class, bool) {
@@ -166,6 +278,16 @@ func (v Value) AsBoundMethod() (*BoundMethod, bool) {
 	return method, ok
 }
 
+func (v Value) AsSAMWrapper() (*SAMWrapper, bool) {
+	wrapper, ok := v.Object.(*SAMWrapper)
+	return wrapper, ok
+}
+
+func (v Value) AsSAMBoundMethod() (*SAMBoundMethod, bool) {
+	method, ok := v.Object.(*SAMBoundMethod)
+	return method, ok
+}
+
 func (c *Class) LookupField(name string) (FieldDef, bool) {
 	if field, ok := c.Fields[name]; ok {
 		return field, true
@@ -174,6 +296,20 @@ func (c *Class) LookupField(name string) (FieldDef, bool) {
 		return c.Superclass.LookupField(name)
 	}
 	return FieldDef{}, false
+}
+
+func (c *Class) LookupFieldOwner(name string) (*Class, int, FieldDef, bool) {
+	idx, ok := c.FieldIndex[name]
+	if ok {
+		field, ok := c.Fields[name]
+		if ok {
+			return c, idx, field, true
+		}
+	}
+	if c.Superclass != nil {
+		return c.Superclass.LookupFieldOwner(name)
+	}
+	return nil, 0, FieldDef{}, false
 }
 
 func (c *Class) LookupFieldSlot(name string) (int, FieldDef, bool) {
@@ -218,6 +354,14 @@ func (c *Class) LookupMethodBySlot(slot int) (*bytecode.Function, bool) {
 	return fn, fn != nil
 }
 
+func (c *Class) LookupFastMethodBySlot(slot int) (*FastMethodPlan, bool) {
+	if slot < 0 || slot >= len(c.FastMethods) {
+		return nil, false
+	}
+	plan := c.FastMethods[slot]
+	return plan, plan != nil
+}
+
 func (c *Class) LookupStatic(name string) (Value, bool) {
 	if field, ok := c.StaticValues[name]; ok {
 		return field, true
@@ -229,6 +373,19 @@ func (c *Class) LookupStatic(name string) (Value, bool) {
 		return c.Superclass.LookupStatic(name)
 	}
 	return NilValue(), false
+}
+
+func (c *Class) LookupStaticOwner(name string) (*Class, Value, bool) {
+	if field, ok := c.StaticValues[name]; ok {
+		return c, field, true
+	}
+	if method, ok := c.StaticMethods[name]; ok {
+		return c, ObjectValue(method), true
+	}
+	if c.Superclass != nil {
+		return c.Superclass.LookupStaticOwner(name)
+	}
+	return nil, NilValue(), false
 }
 
 func (c *Class) SetStatic(name string, v Value) error {
@@ -263,8 +420,14 @@ func (i *Instance) GetField(name string) (Value, bool) {
 }
 
 func (i *Instance) SetField(name string, v Value) bool {
-	idx, _, ok := i.Class.LookupFieldSlot(name)
+	idx, field, ok := i.Class.LookupFieldSlot(name)
 	if !ok {
+		return false
+	}
+	if i.Frozen {
+		return false
+	}
+	if !field.Mutable {
 		return false
 	}
 	i.Fields[idx] = v
@@ -292,6 +455,8 @@ func Equal(left, right Value) bool {
 		return left.Num == right.Num
 	case Bool:
 		return left.Bool == right.Bool
+	case Char:
+		return left.Str == right.Str
 	case String:
 		return left.Str == right.Str
 	default:
@@ -307,6 +472,18 @@ func Equal(left, right Value) bool {
 			}
 			return true
 		}
+		if leftArray, ok := left.AsArray(); ok {
+			rightArray, ok := right.AsArray()
+			if !ok || len(leftArray.Elements) != len(rightArray.Elements) {
+				return false
+			}
+			for i := range leftArray.Elements {
+				if !Equal(leftArray.Elements[i], rightArray.Elements[i]) {
+					return false
+				}
+			}
+			return true
+		}
 		return left.Object == right.Object
 	}
 }
@@ -316,24 +493,45 @@ func (v Value) String() string {
 	case Nil:
 		return "nil"
 	case Number:
+		if v.NumberKind == NumberInt && math.Trunc(v.Num) == v.Num {
+			return strconv.FormatInt(int64(v.Num), 10)
+		}
 		return fmt.Sprintf("%g", v.Num)
 	case Bool:
 		if v.Bool {
 			return "true"
 		}
 		return "false"
+	case Char:
+		return v.Str
 	case String:
 		return v.Str
 	default:
 		switch obj := v.Object.(type) {
 		case *bytecode.Function:
 			return fmt.Sprintf("<fn %s>", obj.Name)
+		case *Closure:
+			return fmt.Sprintf("<closure %s>", obj.Function.Name)
+		case *SAMWrapper:
+			return fmt.Sprintf("<%s wrapper>", obj.InterfaceName)
 		case *Builtin:
 			return fmt.Sprintf("<builtin %s>", obj.Name)
 		case *Module:
 			return fmt.Sprintf("<module %s>", obj.Name)
 		case *Tuple:
 			return fmt.Sprintf("<tuple %d>", len(obj.Elements))
+		case *Array:
+			parts := make([]string, len(obj.Elements))
+			for i, element := range obj.Elements {
+				parts[i] = element.String()
+			}
+			return "[" + join(parts, ", ") + "]"
+		case *Map:
+			parts := make([]string, 0, len(obj.Entries))
+			for key, val := range obj.Entries {
+				parts = append(parts, fmt.Sprintf("%s: %s", key, val.String()))
+			}
+			return "{" + join(parts, ", ") + "}"
 		case *Class:
 			return fmt.Sprintf("<class %s>", obj.Name)
 		case *Instance:
@@ -348,4 +546,15 @@ func (v Value) String() string {
 			return fmt.Sprintf("<object %T>", obj)
 		}
 	}
+}
+
+func join(parts []string, sep string) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	out := parts[0]
+	for _, part := range parts[1:] {
+		out += sep + part
+	}
+	return out
 }

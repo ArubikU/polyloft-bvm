@@ -5,8 +5,7 @@ import (
 	"os"
 
 	"github.com/ArubikU/polyloft-bvm/internal/compiler"
-	"github.com/ArubikU/polyloft-bvm/internal/lexer"
-	"github.com/ArubikU/polyloft-bvm/internal/parser"
+	"github.com/ArubikU/polyloft-bvm/internal/modules"
 	bvmruntime "github.com/ArubikU/polyloft-bvm/internal/runtime"
 	"github.com/ArubikU/polyloft-bvm/internal/sema"
 	"github.com/ArubikU/polyloft-bvm/internal/vm"
@@ -20,25 +19,18 @@ func main() {
 
 	command := os.Args[1]
 	path := os.Args[2]
-	source, err := os.ReadFile(path)
+	program, registry, err := modules.Prepare(path, os.Stdout)
 	if err != nil {
 		fatal(err)
 	}
-
-	tokens, err := lexer.Scan(string(source))
-	if err != nil {
-		fatal(err)
+	if registry == nil {
+		registry = bvmruntime.NewRegistry()
+		bvmruntime.InstallCoreGlobals(registry, os.Stdout)
 	}
-	program, err := parser.Parse(tokens)
-	if err != nil {
-		fatal(err)
-	}
-	registry := bvmruntime.NewRegistry()
-	bvmruntime.InstallCoreGlobals(registry, os.Stdout)
 	if err := sema.Check(program, registry); err != nil {
 		fatal(err)
 	}
-	fn, err := compiler.Compile(program)
+	fn, err := compiler.CompileWithRegistry(program, registry)
 	if err != nil {
 		fatal(err)
 	}

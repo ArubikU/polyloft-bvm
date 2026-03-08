@@ -9,10 +9,10 @@ import (
 
 func BuildSysModule() *RuntimeModule {
 	return NewModuleBuilder("Sys").
-		AddTypedFunction("time", nil, TypeNumber, false, func(args []value.Value) (value.Value, error) {
-			return value.NumberValue(float64(time.Now().UnixMilli())), nil
+		AddTypedFunction("time", nil, TypeInt, false, func(args []value.Value) (value.Value, error) {
+			return value.IntValue(time.Now().UnixMilli()), nil
 		}).
-		AddTypedFunction("sleep", []string{TypeNumber}, TypeVoid, false, func(args []value.Value) (value.Value, error) {
+		AddTypedFunction("sleep", []string{TypeInt}, TypeVoid, false, func(args []value.Value) (value.Value, error) {
 			if args[0].Kind != value.Number {
 				return value.NilValue(), fmt.Errorf("Sys.sleep expects number of milliseconds")
 			}

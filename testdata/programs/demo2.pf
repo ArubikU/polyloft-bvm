@@ -1,0 +1,135 @@
+class Worker:
+    factor: number
+    bias: number
+
+    Worker(factor: number, bias: number):
+        this.factor = factor
+        this.bias = bias
+    end
+
+    def run(limit: number) -> number:
+        let acc = 0
+        for i in range(0, limit):
+            acc += (i * this.factor) + this.bias
+        end
+        return acc
+    end
+
+    def runWithList(items: array) -> number:
+        let total = 0
+        for item in items:
+            total += item * this.factor
+        end
+        return total
+    end
+end
+
+class PairBox:
+    left: number
+    right: number
+
+    PairBox(left: number, right: number):
+        this.left = left
+        this.right = right
+    end
+
+    def mix() -> number:
+        return (this.left * 3) + (this.right * 5)
+    end
+end
+
+def makeScaler(factor: number):
+    return (value: number) => value * factor
+end
+
+def updateTable(values: array) -> number:
+    let table = {}
+    let total = 0
+    let count = 0
+    for value in values:
+        let key = "k" + (value % 11)
+        if table[key] == nil:
+            table[key] = 0
+            count += 1
+        end
+        table[key] += value
+        total += table[key]
+    end
+    return total + count
+end
+
+def sliceAndSum(values: array) -> number:
+    let middle = values[10...29]
+    let total = 0
+    for i in range(0, 7):
+        total += middle[i * 3]
+    end
+    return total
+end
+
+def indexedUpdate(values: array) -> number:
+    let total = 0
+    for i in range(0, 30):
+        values[i] += i
+        total += values[i]
+    end
+    return total
+end
+
+let started = Sys.time()
+
+let worker = new Worker(7, 3)
+let box = new PairBox(2, 3)
+let values = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+let scaler = makeScaler(9)
+
+let methodStarted = Sys.time()
+let methodTotal = 0
+for i in range(0, 180):
+    methodTotal += worker.run(220)
+end
+let methodEnded = Sys.time()
+
+let listStarted = Sys.time()
+let listTotal = 0
+for i in range(0, 220):
+    listTotal += worker.runWithList(values)
+end
+let listEnded = Sys.time()
+
+let objectStarted = Sys.time()
+let objectTotal = 0
+for i in range(0, 200):
+    objectTotal += box.mix()
+end
+let objectEnded = Sys.time()
+
+let closureStarted = Sys.time()
+let closureTotal = 0
+for i in range(0, 5000):
+    closureTotal += scaler(i)
+end
+let closureEnded = Sys.time()
+
+let containerStarted = Sys.time()
+let tableTotal = updateTable(values)
+let sliceTotal = sliceAndSum(values)
+let indexTotal = indexedUpdate(values[0...29])
+let containerEnded = Sys.time()
+
+let ended = Sys.time()
+
+println("polyloft-bvm benchmark demo2")
+println("method_total=" + methodTotal)
+println("method_ms=" + (methodEnded - methodStarted))
+println("list_total=" + listTotal)
+println("list_ms=" + (listEnded - listStarted))
+println("object_total=" + objectTotal)
+println("object_ms=" + (objectEnded - objectStarted))
+println("closure_total=" + closureTotal)
+println("closure_ms=" + (closureEnded - closureStarted))
+println("table_total=" + tableTotal)
+println("slice_total=" + sliceTotal)
+println("index_total=" + indexTotal)
+println("container_ms=" + (containerEnded - containerStarted))
+println("elapsed_ms=" + (ended - started))

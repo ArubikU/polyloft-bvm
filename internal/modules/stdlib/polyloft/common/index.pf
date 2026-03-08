@@ -1,0 +1,487 @@
+public class Integer:
+	let value: int
+
+	Integer(value: int):
+		this.value = value
+	end
+
+	def intValue() -> int:
+		return (int) this.value
+	end
+
+	def floatValue() -> float:
+		return this.value
+	end
+
+	def doubleValue() -> float:
+		return this.value
+	end
+
+	def abs() -> Integer:
+		if this.value < 0:
+			return Integer(-this.value)
+		end
+		return Integer(this.value)
+	end
+
+	def negate() -> Integer:
+		return Integer(-this.value)
+	end
+
+	def isZero() -> bool:
+		return this.value == 0
+	end
+
+	def isPositive() -> bool:
+		return this.value > 0
+	end
+
+	def isNegative() -> bool:
+		return this.value < 0
+	end
+
+	def signum() -> int:
+		if this.value < 0:
+			return -1
+		end
+		if this.value > 0:
+			return 1
+		end
+		return 0
+	end
+
+	def max(other: int) -> Integer:
+		if this.value >= other:
+			return Integer(this.value)
+		end
+		return Integer(other)
+	end
+
+	def min(other: int) -> Integer:
+		if this.value <= other:
+			return Integer(this.value)
+		end
+		return Integer(other)
+	end
+
+	def compareTo(other: int) -> int:
+		if this.value < other:
+			return -1
+		end
+		if this.value > other:
+			return 1
+		end
+		return 0
+	end
+
+	def equals(other: any) -> bool:
+		return this.value == other
+	end
+
+	def toString() -> string:
+		return "" + this.value
+	end
+
+	def unwrap() -> int:
+		return this.value
+	end
+end
+
+public class Float:
+	let value: float
+
+	Float(value: float):
+		this.value = value
+	end
+
+	def floatValue() -> float:
+		return this.value
+	end
+
+	def intValue() -> int:
+		return (int) this.value
+	end
+
+	def doubleValue() -> float:
+		return this.value
+	end
+
+	def abs() -> Float:
+		if this.value < 0:
+			return Float(-this.value)
+		end
+		return Float(this.value)
+	end
+
+	def negate() -> Float:
+		return Float(-this.value)
+	end
+
+	def isZero() -> bool:
+		return this.value == 0
+	end
+
+	def isPositive() -> bool:
+		return this.value > 0
+	end
+
+	def isNegative() -> bool:
+		return this.value < 0
+	end
+
+	def signum() -> int:
+		if this.value < 0:
+			return -1
+		end
+		if this.value > 0:
+			return 1
+		end
+		return 0
+	end
+
+	def compareTo(other: float) -> int:
+		if this.value < other:
+			return -1
+		end
+		if this.value > other:
+			return 1
+		end
+		return 0
+	end
+
+	def equals(other: any) -> bool:
+		return this.value == other
+	end
+
+	def toString() -> string:
+		return "" + this.value
+	end
+
+	def unwrap() -> float:
+		return this.value
+	end
+end
+
+public class Double:
+	let value: float
+
+	Double(value: float):
+		this.value = value
+	end
+
+	def doubleValue() -> float:
+		return this.value
+	end
+
+	def floatValue() -> float:
+		return this.value
+	end
+
+	def intValue() -> int:
+		return (int) this.value
+	end
+
+	def abs() -> Double:
+		if this.value < 0:
+			return Double(-this.value)
+		end
+		return Double(this.value)
+	end
+
+	def negate() -> Double:
+		return Double(-this.value)
+	end
+
+	def isZero() -> bool:
+		return this.value == 0
+	end
+
+	def isPositive() -> bool:
+		return this.value > 0
+	end
+
+	def isNegative() -> bool:
+		return this.value < 0
+	end
+
+	def signum() -> int:
+		if this.value < 0:
+			return -1
+		end
+		if this.value > 0:
+			return 1
+		end
+		return 0
+	end
+
+	def compareTo(other: float) -> int:
+		if this.value < other:
+			return -1
+		end
+		if this.value > other:
+			return 1
+		end
+		return 0
+	end
+
+	def equals(other: any) -> bool:
+		return this.value == other
+	end
+
+	def toString() -> string:
+		return "" + this.value
+	end
+
+	def unwrap() -> float:
+		return this.value
+	end
+end
+
+public class String:
+	let value: string
+
+	String(value: string):
+		this.value = value
+	end
+
+	def length() -> int:
+		return (int) len(this.value)
+	end
+
+	def isEmpty() -> bool:
+		return len(this.value) == 0
+	end
+
+	def charAt(index: int) -> char:
+		return this.value[index]
+	end
+
+	def substring(start: int, finish: int) -> String:
+		return String(this.value[start...finish])
+	end
+
+	def concat(other: any) -> String:
+		return String(this.value + other)
+	end
+
+	def startsWith(prefix: string) -> bool:
+		if len(prefix) == 0:
+			return true
+		end
+		if len(prefix) > len(this.value):
+			return false
+		end
+		return this.value[0...len(prefix) - 1] == prefix
+	end
+
+	def endsWith(suffix: string) -> bool:
+		if len(suffix) == 0:
+			return true
+		end
+		if len(suffix) > len(this.value):
+			return false
+		end
+		let start = len(this.value) - len(suffix)
+		return this.value[start...len(this.value) - 1] == suffix
+	end
+
+	def contains(fragment: string) -> bool:
+		return this.indexOf(fragment) >= 0
+	end
+
+	def indexOf(fragment: string) -> int:
+		if len(fragment) == 0:
+			return 0
+		end
+		if len(fragment) > len(this.value):
+			return -1
+		end
+		for i in range(0, len(this.value) - len(fragment) + 1):
+			if this.value[i...i + len(fragment) - 1] == fragment:
+				return (int) i
+			end
+		end
+		return -1
+	end
+
+	def repeat(times: int) -> String:
+		let result = ""
+		for i in range(0, times):
+			result = result + this.value
+		end
+		return String(result)
+	end
+
+	def equals(other: string) -> bool:
+		return this.value == other
+	end
+
+	def toString() -> string:
+		return this.value
+	end
+
+	def unwrap() -> string:
+		return this.value
+	end
+end
+
+public class Boolean:
+	let value: bool
+
+	Boolean(value: bool):
+		this.value = value
+	end
+
+	def booleanValue() -> bool:
+		return this.value
+	end
+
+	def negate() -> Boolean:
+		return Boolean(!this.value)
+	end
+
+	def and(other: bool) -> Boolean:
+		return Boolean(this.value && other)
+	end
+
+	def or(other: bool) -> Boolean:
+		return Boolean(this.value || other)
+	end
+
+	def isTrue() -> bool:
+		return this.value
+	end
+
+	def isFalse() -> bool:
+		return !this.value
+	end
+
+	def equals(other: any) -> bool:
+		return this.value == other
+	end
+
+	def toString() -> string:
+		if this.value:
+			return "true"
+		end
+		return "false"
+	end
+
+	def unwrap() -> bool:
+		return this.value
+	end
+end
+
+public class Char:
+	let value: char
+
+	Char(value: char):
+		this.value = value
+	end
+
+	def charValue() -> char:
+		return this.value
+	end
+
+	def equals(other: char) -> bool:
+		return this.value == other
+	end
+
+	def toString() -> string:
+		return "" + this.value
+	end
+
+	def unwrap() -> char:
+		return this.value
+	end
+end
+
+public class CharArray:
+	let data: array
+
+	CharArray(data: array):
+		this.data = data
+	end
+
+	def length() -> int:
+		return (int) len(this.data)
+	end
+
+	def isEmpty() -> bool:
+		return len(this.data) == 0
+	end
+
+	def get(index: int) -> char:
+		return this.data[index]
+	end
+
+	def contains(value: char) -> bool:
+		return this.indexOf(value) >= 0
+	end
+
+	def indexOf(value: char) -> int:
+		for i in range(0, len(this.data)):
+			if this.data[i] == value:
+				return (int) i
+			end
+		end
+		return -1
+	end
+
+	def toString() -> string:
+		let result = ""
+		for ch in this.data:
+			result = result + ch
+		end
+		return result
+	end
+
+	def unwrap() -> array:
+		return this.data
+	end
+end
+
+public class Bytes:
+	let data: array
+
+	Bytes(data: array):
+		this.data = data
+	end
+
+	def length() -> int:
+		return (int) len(this.data)
+	end
+
+	def size() -> int:
+		return (int) len(this.data)
+	end
+
+	def isEmpty() -> bool:
+		return len(this.data) == 0
+	end
+
+	def get(index: int) -> int:
+		return this.data[index]
+	end
+
+	def contains(value: int) -> bool:
+		return this.indexOf(value) >= 0
+	end
+
+	def indexOf(value: int) -> int:
+		for i in range(0, len(this.data)):
+			if this.data[i] == value:
+				return (int) i
+			end
+		end
+		return -1
+	end
+
+	def asArray() -> array:
+		return this.data
+	end
+
+	def unwrap() -> array:
+		return this.data
+	end
+end

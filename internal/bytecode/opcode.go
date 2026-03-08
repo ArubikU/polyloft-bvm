@@ -8,8 +8,12 @@ const (
 	OpTrue
 	OpFalse
 	OpPop
+	OpDup
+	OpDupTwo
 	OpGetLocal
 	OpSetLocal
+	OpGetCapture
+	OpSetCapture
 	OpDefineGlobal
 	OpGetGlobal
 	OpSetGlobal
@@ -35,6 +39,8 @@ const (
 	OpDivNum
 	OpLessNum
 	OpGreaterNum
+	OpAddLocalMulThisField
+	OpClosure
 	OpCall
 	OpInvoke
 	OpInvokeMethod
@@ -46,8 +52,28 @@ const (
 	OpIterNext
 	OpGetField
 	OpSetField
+	OpGetThisField
+	OpSetThisField
 	OpGetProperty
 	OpSetProperty
+	OpArray
+	OpMap
+	OpGetIndex
+	OpGetIndexArray
+	OpGetIndexMap
+	OpContains
+	OpContainsArray
+	OpContainsMap
+	OpContainsString
+	OpSetIndex
+	OpSetIndexArray
+	OpSetIndexMap
+	OpSlice
+	OpCastInt
+	OpCastFloat
+	OpCastRef
+	OpMatchType
+	OpWrapInterface
 	OpTuple
 	OpUnpack
 	OpFreeze
@@ -66,10 +92,18 @@ func (op Op) String() string {
 		return "FALSE"
 	case OpPop:
 		return "POP"
+	case OpDup:
+		return "DUP"
+	case OpDupTwo:
+		return "DUP_TWO"
 	case OpGetLocal:
 		return "GET_LOCAL"
 	case OpSetLocal:
 		return "SET_LOCAL"
+	case OpGetCapture:
+		return "GET_CAPTURE"
+	case OpSetCapture:
+		return "SET_CAPTURE"
 	case OpDefineGlobal:
 		return "DEFINE_GLOBAL"
 	case OpGetGlobal:
@@ -120,6 +154,10 @@ func (op Op) String() string {
 		return "LESS_NUM"
 	case OpGreaterNum:
 		return "GREATER_NUM"
+	case OpAddLocalMulThisField:
+		return "ADD_LOCAL_MUL_THIS_FIELD"
+	case OpClosure:
+		return "CLOSURE"
 	case OpCall:
 		return "CALL"
 	case OpInvoke:
@@ -142,10 +180,50 @@ func (op Op) String() string {
 		return "GET_FIELD"
 	case OpSetField:
 		return "SET_FIELD"
+	case OpGetThisField:
+		return "GET_THIS_FIELD"
+	case OpSetThisField:
+		return "SET_THIS_FIELD"
 	case OpGetProperty:
 		return "GET_PROPERTY"
 	case OpSetProperty:
 		return "SET_PROPERTY"
+	case OpArray:
+		return "ARRAY"
+	case OpMap:
+		return "MAP"
+	case OpGetIndex:
+		return "GET_INDEX"
+	case OpGetIndexArray:
+		return "GET_INDEX_ARRAY"
+	case OpGetIndexMap:
+		return "GET_INDEX_MAP"
+	case OpContains:
+		return "CONTAINS"
+	case OpContainsArray:
+		return "CONTAINS_ARRAY"
+	case OpContainsMap:
+		return "CONTAINS_MAP"
+	case OpContainsString:
+		return "CONTAINS_STRING"
+	case OpSetIndex:
+		return "SET_INDEX"
+	case OpSetIndexArray:
+		return "SET_INDEX_ARRAY"
+	case OpSetIndexMap:
+		return "SET_INDEX_MAP"
+	case OpSlice:
+		return "SLICE"
+	case OpCastInt:
+		return "CAST_INT"
+	case OpCastFloat:
+		return "CAST_FLOAT"
+	case OpCastRef:
+		return "CAST_REF"
+	case OpMatchType:
+		return "MATCH_TYPE"
+	case OpWrapInterface:
+		return "WRAP_INTERFACE"
 	case OpTuple:
 		return "TUPLE"
 	case OpUnpack:
