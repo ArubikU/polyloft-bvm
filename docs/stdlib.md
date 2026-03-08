@@ -16,6 +16,7 @@ Installed from `internal/runtime/core.go`:
 
 - `print(value)`
 - `println(value)`
+- `input([prompt])`
 - `range(start, end)`
 - `len(value)`
 - `delete(map, key)`
