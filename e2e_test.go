@@ -2,8 +2,10 @@ package main_test
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -37,6 +39,207 @@ func runPreparedFile(t *testing.T, filePath string) (string, error) {
 		return "", err
 	}
 	return out.String(), nil
+}
+
+func TestNewArraySizeAndInitializer(t *testing.T) {
+	// size specified must match initializer count, and nested empty works
+	source := `
+let ok: int[] = new int[3]{0,1,2}
+let empty: array<array<int>> = new int[][]{}
+`
+	tokens, err := lexer.Scan(source)
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	program, err := parser.Parse(tokens)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	registry := bvmruntime.NewRegistry()
+	bvmruntime.InstallCoreGlobals(registry, &bytes.Buffer{})
+	if err := sema.Check(program, registry); err != nil {
+		t.Fatalf("type check failed: %v", err)
+	}
+}
+
+func TestNumberAssignableToInt(t *testing.T) {
+	source := `
+let n: number = 3.4
+let i: int = n
+let f: float = n
+let acc: int = 0
+acc += n
+`
+	tokens, err := lexer.Scan(source)
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	program, err := parser.Parse(tokens)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	registry := bvmruntime.NewRegistry()
+	bvmruntime.InstallCoreGlobals(registry, &bytes.Buffer{})
+	if err := sema.Check(program, registry); err != nil {
+		t.Fatalf("type check failed: %v", err)
+	}
+}
+
+// helper that compiles a real file and inspects its constant pool for nils
+func TestDemo2ConstantPool(t *testing.T) {
+	path := "testdata/programs/demo2.pf"
+	program, registry, err := modules.Prepare(path, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("prepare failed: %v", err)
+	}
+	if err := sema.Check(program, registry); err != nil {
+		t.Fatalf("sema failed: %v", err)
+	}
+	fn, err := compiler.CompileWithRegistry(program, registry)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	for idx, c := range fn.Chunk.Constants {
+		var scan func(any, string)
+		scan = func(c any, path string) {
+			if c == nil {
+				t.Fatalf("nil at %s", path)
+			}
+			rv := reflect.ValueOf(c)
+			switch rv.Kind() {
+			case reflect.Slice, reflect.Array:
+				for i := 0; i < rv.Len(); i++ {
+					elem := rv.Index(i).Interface()
+					scan(elem, fmt.Sprintf("%s[%d]", path, i))
+				}
+			case reflect.Map:
+				for _, key := range rv.MapKeys() {
+					val := rv.MapIndex(key).Interface()
+					scan(val, fmt.Sprintf("%s[%v]", path, key))
+				}
+			}
+		}
+		scan(c, fmt.Sprintf("constant[%d]", idx))
+	}
+}
+
+func TestCompileProducesPfx(t *testing.T) {
+	tmp := t.TempDir()
+	src := filepath.Join("testdata", "programs", "demo2.pf")
+	tgt := filepath.Join(tmp, "out.pfx")
+	// run compile command programmatically
+	program, registry, err := modules.Prepare(src, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("prepare failed: %v", err)
+	}
+	if err := sema.Check(program, registry); err != nil {
+		t.Fatalf("sema failed: %v", err)
+	}
+	fn, err := compiler.CompileWithRegistry(program, registry)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	out, err := os.Create(tgt)
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	_, err = out.WriteString(fn.Chunk.Disassemble(fn.Name))
+	out.Close()
+	if err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	info, err := os.Stat(tgt)
+	if err != nil {
+		t.Fatalf("stat failed: %v", err)
+	}
+	if info.Size() == 0 {
+		t.Fatalf("empty pfx file")
+	}
+}
+
+func TestLinkedListBehavesLikeList(t *testing.T) {
+	source := `
+import polyloft.collections { List, LinkedList }
+let ll: List = LinkedList()
+ll.add("a")
+ll.add("b")
+println(ll.size())
+println(ll.contains("a"))
+println(ll.remove("a"))
+println(ll.contains("a"))
+println(ll.asArray()[0])
+`
+	// write to a temporary file so that modules.Prepare can resolve imports
+	tmp := filepath.Join(os.TempDir(), "linkedlist_test.pf")
+	if err := os.WriteFile(tmp, []byte(source), 0644); err != nil {
+		t.Fatalf("failed to write temp source: %v", err)
+	}
+	out, err := runPreparedFile(t, tmp)
+	if err != nil {
+		t.Fatalf("execution failed: %v", err)
+	}
+	if out != "2\ntrue\ntrue\nfalse\nb\n" {
+		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", "2\ntrue\ntrue\nfalse\nb\n", out)
+	}
+}
+
+func TestNewArrayTooManyValues(t *testing.T) {
+	source := `
+let bad: int[] = new int[2]{0,1,2}
+`
+	tokens, err := lexer.Scan(source)
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	program, err := parser.Parse(tokens)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	registry := bvmruntime.NewRegistry()
+	bvmruntime.InstallCoreGlobals(registry, &bytes.Buffer{})
+	if err := sema.Check(program, registry); err == nil {
+		t.Fatalf("expected type checker to reject initializer longer than size")
+	}
+}
+
+func TestArraySyntaxVariants(t *testing.T) {
+	// verify both generic and bracket syntax work and can be nested
+	source := `
+let a: array<int> = [1, 2]
+let b: int[] = [3, 4]
+let c: array<array<string>> = [["x"]]
+let d: string[][] = [["y"]]
+// make sure the compiler cares about the element types
+let sum: int = a[0] + a[1] + b[0] + b[1]
+println(sum)
+println(c[0][0])
+println(d[0][0])
+`
+	tokens, err := lexer.Scan(source)
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	program, err := parser.Parse(tokens)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	var out bytes.Buffer
+	registry := bvmruntime.NewRegistry()
+	bvmruntime.InstallCoreGlobals(registry, &out)
+	if err := sema.Check(program, registry); err != nil {
+		t.Fatalf("type check failed: %v", err)
+	}
+	fn, err := compiler.Compile(program)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	machine := vm.NewWithRegistry(&out, registry)
+	if _, err := machine.Run(fn); err != nil {
+		t.Fatalf("vm run failed: %v", err)
+	}
+	if got, want := out.String(), "10\nx\ny\n"; got != want {
+		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", want, got)
+	}
 }
 
 func TestEndToEndDemoSlice(t *testing.T) {
@@ -2471,6 +2674,54 @@ func TestEmbeddedStdlibImportLoadsPolyloftCollections(t *testing.T) {
 	}
 }
 
+func TestDumpProducesReadablePfbc(t *testing.T) {
+	src := `
+let x = 1 + 2
+println(x)
+`
+	tokens, err := lexer.Scan(src)
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	program, err := parser.Parse(tokens)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	registry := bvmruntime.NewRegistry()
+	bvmruntime.InstallCoreGlobals(registry, &bytes.Buffer{})
+	if err := sema.Check(program, registry); err != nil {
+		t.Fatalf("type check failed: %v", err)
+	}
+	fn, err := compiler.CompileWithRegistry(program, registry)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	// dump to temp file
+	fpath := filepath.Join(t.TempDir(), "out.pfbc")
+	f, err := os.Create(fpath)
+	if err != nil {
+		t.Fatalf("create pfbc: %v", err)
+	}
+	if err := fn.WriteTo(f); err != nil {
+		t.Fatalf("write pfbc: %v", err)
+	}
+	f.Close()
+	// read back
+	rf, err := os.Open(fpath)
+	if err != nil {
+		t.Fatalf("open pfbc: %v", err)
+	}
+	fn2, err := bytecode.ReadFunction(rf)
+	rf.Close()
+	if err != nil {
+		t.Fatalf("read pfbc: %v", err)
+	}
+	// simple sanity: disassembly should match
+	if fn2.Chunk.Disassemble(fn2.Name) != fn.Chunk.Disassemble(fn.Name) {
+		t.Fatalf("roundtrip mismatch")
+	}
+}
+
 func TestEmbeddedStdlibImportLoadsPolyloftFunction(t *testing.T) {
 	tempDir := t.TempDir()
 	mainPath := filepath.Join(tempDir, "main.pf")
@@ -2974,10 +3225,21 @@ end
 	}
 }
 
-func TestTypeCheckerRejectsWrongElementTypeInGenericArray(t *testing.T) {
-	// Debe rechazar agregar un string a un array<int>
-	source := `let xs: array<int> = []
-xs.append("hola")
+func TestTypeCheckerRejectsWrongGenericElementType(t *testing.T) {
+	// Creamos una clase genérica simple para demostrar la especialización.
+	source := `
+interface Container<T>:
+    add(item: T) -> void
+end
+
+class IntContainer implements Container<int>:
+    def add(item: int) -> void:
+        // no-op
+    end
+end
+
+let c: Container<int> = IntContainer()
+c.add("hola")
 `
 	tokens, err := lexer.Scan(source)
 	if err != nil {
@@ -2990,23 +3252,27 @@ xs.append("hola")
 	registry := bvmruntime.NewRegistry()
 	bvmruntime.InstallCoreGlobals(registry, &bytes.Buffer{})
 	if err := sema.Check(program, registry); err == nil {
-		t.Fatalf("expected type checker to reject appending string to array<int>")
+		t.Fatalf("expected type checker to reject wrong element type in generic list")
 	}
-	// También debe rechazar un char
-	source2 := `let xs: array<int> = []
-xs.append('a')
+}
+
+func TestFixedArrayHasNoAppend(t *testing.T) {
+	// Los arrays son de tamaño fijo; no existe append.
+	source := `let xs: array<int> = []
+	xs.append(1)
 `
-	tokens2, err := lexer.Scan(source2)
+	tokens, err := lexer.Scan(source)
 	if err != nil {
 		t.Fatalf("scan failed: %v", err)
 	}
-	program2, err := parser.Parse(tokens2)
+	program, err := parser.Parse(tokens)
 	if err != nil {
 		t.Fatalf("parse failed: %v", err)
 	}
-	registry2 := bvmruntime.NewRegistry()
-	bvmruntime.InstallCoreGlobals(registry2, &bytes.Buffer{})
-	if err := sema.Check(program2, registry2); err == nil {
-		t.Fatalf("expected type checker to reject appending char to array<int>")
+	registry := bvmruntime.NewRegistry()
+	bvmruntime.InstallCoreGlobals(registry, &bytes.Buffer{})
+	err = sema.Check(program, registry)
+	if err == nil || !strings.Contains(err.Error(), "append") {
+		t.Fatalf("expected error about missing append on fixed array, got: %v", err)
 	}
 }

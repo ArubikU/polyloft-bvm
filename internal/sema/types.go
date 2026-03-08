@@ -560,13 +560,22 @@ func (t Type) IsAssignableFrom(other Type) bool {
 	if t.Name == runtime.TypeAny || other.Name == runtime.TypeAny || other.Name == "Unknown" {
 		return true
 	}
+	// allow number to flow to narrower numeric types by inserting an implicit
+	// cast.  this models a runtime conversion/assertion; the VM itself stores
+	// whatever value is produced, but the type system no longer rejects
+	// `number` → `int`/`float` assignments.
 	if t.Name == runtime.TypeNumber {
 		switch other.Name {
 		case runtime.TypeInt, runtime.TypeFloat, runtime.TypeNumber:
 			return true
 		}
 	}
+	// previous rule: float accepts ints
 	if t.Name == runtime.TypeFloat && other.Name == runtime.TypeInt {
+		return true
+	}
+	// new: allow number narrowing (number treated as union of int|float)
+	if (t.Name == runtime.TypeInt || t.Name == runtime.TypeFloat) && other.Name == runtime.TypeNumber {
 		return true
 	}
 	return false

@@ -1,8 +1,13 @@
 package modules
 
 import (
+	"archive/zip"
+	"encoding/binary"
+	"encoding/gob"
+	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,23 +24,26 @@ import (
 	"github.com/ArubikU/polyloft-bvm/internal/vm"
 )
 
-type exportedSymbol struct {
+type ExportMetadata struct {
 	Value      value.Value
 	Spec       bvmruntime.Spec
 	Visibility ast.Visibility
 }
 
-type loadedModule struct {
-	Path    string
-	Dir     string
-	Exports map[string]exportedSymbol
+type LoadedModule struct {
+	Path     string
+	Dir      string
+	Function *bytecode.Function
+	Exports  map[string]ExportMetadata
 }
 
 type Loader struct {
-	stdout       io.Writer
-	workspaceDir string
-	cache        map[string]*loadedModule
-	loading      map[string]bool
+	Stdout       io.Writer
+	WorkspaceDir string
+	Cache        map[string]*LoadedModule
+	Loading      map[string]bool
+	Archive      []*zip.File
+	ProjectMeta  map[string]map[string]ExportMetadata
 }
 
 func Prepare(path string, stdout io.Writer) (*ast.Program, *bvmruntime.Registry, error) {
@@ -48,21 +56,216 @@ func Prepare(path string, stdout io.Writer) (*ast.Program, *bvmruntime.Registry,
 		return nil, nil, err
 	}
 	loader := &Loader{
-		stdout:       stdout,
-		workspaceDir: workspaceDir,
-		cache:        make(map[string]*loadedModule),
-		loading:      make(map[string]bool),
+		Stdout:       stdout,
+		WorkspaceDir: workspaceDir,
+		Cache:        make(map[string]*LoadedModule),
+		Loading:      make(map[string]bool),
 	}
-	program, err := loader.parseFile(absPath)
+	return loader.Prepare(absPath)
+}
+
+func (l *Loader) Prepare(absPath string) (*ast.Program, *bvmruntime.Registry, error) {
+	program, err := l.parseFile(absPath)
 	if err != nil {
 		return nil, nil, err
 	}
 	registry := bvmruntime.NewRegistry()
-	bvmruntime.InstallCoreGlobals(registry, stdout)
-	if err := loader.loadImportsIntoRegistry(program, absPath, registry); err != nil {
+	bvmruntime.InstallCoreGlobals(registry, l.Stdout)
+	if err := l.loadImportsIntoRegistry(program, absPath, registry); err != nil {
 		return nil, nil, err
 	}
 	return program, registry, nil
+}
+
+func (l *Loader) PrepareFromBundle(entryPoint string) (*bytecode.Function, *bvmruntime.Registry, error) {
+	registry := bvmruntime.NewRegistry()
+	bvmruntime.InstallCoreGlobals(registry, l.Stdout)
+
+	// Load centralized project metadata if it exists
+	for _, f := range l.Archive {
+		if f.Name == "project.metadata" {
+			rc, err := f.Open()
+			if err == nil {
+				dec := gob.NewDecoder(rc)
+				dec.Decode(&l.ProjectMeta)
+				rc.Close()
+			}
+			break
+		}
+	}
+
+	// We'll use a single VM for all module initializations
+	machine := vm.NewWithRegistry(l.Stdout, registry)
+
+	// Collect all modules from archive to initialize them
+	type modInfo struct {
+		mod     *LoadedModule
+		modPath string
+		parts   []string
+	}
+	var toInit []modInfo
+
+	// Normalize entryPoint for comparison
+	canonicalEntry := strings.TrimSuffix(strings.ReplaceAll(entryPoint, "\\", "/"), ".pf")
+
+	for _, f := range l.Archive {
+		if strings.HasSuffix(f.Name, ".pfbc") {
+			modPath := strings.TrimSuffix(f.Name, ".pfbc")
+
+			// Skip stdlib modules
+			if IsStdlibModulePath(modPath) {
+				continue
+			}
+
+			mod, err := l.loadModule(modPath)
+			if err != nil {
+				continue
+			}
+
+			// Normalize modPath for logical namespace
+			displayPath := strings.TrimPrefix(modPath, "/")
+			displayPath = strings.TrimPrefix(displayPath, "src/")
+			displayPath = strings.TrimPrefix(displayPath, "lib/")
+			displayPath = strings.TrimPrefix(displayPath, "libs/")
+			displayPath = strings.TrimPrefix(displayPath, "stdlib/")
+			displayPath = strings.TrimSuffix(displayPath, "/index")
+
+			rawParts := strings.Split(displayPath, "/")
+			parts := make([]string, 0, len(rawParts))
+			for _, p := range rawParts {
+				if p != "" {
+					parts = append(parts, p)
+				}
+			}
+			if len(parts) == 0 {
+				continue
+			}
+
+			toInit = append(toInit, modInfo{mod: mod, modPath: modPath, parts: parts})
+		}
+	}
+
+	// 1. Initial binding of namespaces
+	for _, info := range toInit {
+		rootModule, rootSpec := l.buildNamespaceModule(info.parts, info.mod.Exports)
+		rootName := info.parts[0]
+		if _, ok := registry.Globals()[rootName]; !ok {
+			registry.DefineWithSpec(rootName, value.ObjectValue(rootModule), *rootSpec)
+		} else {
+			mergeNamespace(registry, rootModule, rootSpec)
+		}
+	}
+
+	// 2. Run all module functions to initialize classes/globals
+	globals := registry.Globals()
+	for _, info := range toInit {
+		canonicalPath := strings.TrimSuffix(strings.ReplaceAll(info.modPath, "\\", "/"), ".pf")
+		if canonicalPath == canonicalEntry {
+			// Skip main module for now, it will be run by the caller
+			continue
+		}
+
+		if _, err := machine.Run(info.mod.Function); err != nil {
+			return nil, nil, fmt.Errorf("failed to initialize module %s: %v", info.modPath, err)
+		}
+
+		// 3. Persist initialized values.
+		// When loaded from source, GlobalSlotNames contains all global names.
+		// When loaded from binary, GlobalSlotNames may be empty, so we also
+		// fall back to iterating Exports keys directly against machine.globals.
+		persistedBySlot := make(map[string]bool)
+		for _, name := range info.mod.Function.GlobalSlotNames {
+			val, ok := machine.ResolveGlobal(info.mod.Function, name)
+			if !ok {
+				continue
+			}
+			if existing, exists := globals[name]; exists {
+				if _, isMod := existing.AsModule(); isMod {
+					continue
+				}
+			}
+			globals[name] = val
+			persistedBySlot[name] = true
+			if exp, exists := info.mod.Exports[name]; exists {
+				exp.Value = val
+				info.mod.Exports[name] = exp
+			} else {
+				info.mod.Exports[name] = ExportMetadata{Value: val}
+			}
+		}
+
+		// Fallback for binary-loaded modules where GlobalSlotNames is empty:
+		// look up each exported name in the VM's flat globals map.
+		vmGlobals := machine.Globals()
+		for name, exp := range info.mod.Exports {
+			if persistedBySlot[name] || exp.Value.Kind != value.Nil {
+				continue
+			}
+			if val, ok := vmGlobals[name]; ok && val.Kind != value.Nil {
+				exp.Value = val
+				info.mod.Exports[name] = exp
+				if _, exists := globals[name]; !exists {
+					globals[name] = val
+				}
+			}
+		}
+
+		// Overwrite the registry with the updated module structure.
+		rootModule, rootSpec := l.buildNamespaceModule(info.parts, info.mod.Exports)
+		mergeNamespace(registry, rootModule, rootSpec)
+	}
+
+	// 4. Also ensure any explicitly imported stdlib modules are initialized.
+	// When running from a bundle, stdlib might have been excluded (include=false).
+	// We dynamically load and persist embedded stdlib modules if 'polyloft' is absent.
+	if _, ok := registry.Globals()["polyloft"]; !ok {
+		fs.WalkDir(stdlibFS, ".", func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			if strings.HasSuffix(path, ".pf") {
+				modPath := stdlibModulePrefix + path
+				if mod, err := l.loadModule(modPath); err == nil {
+					if _, err := machine.Run(mod.Function); err == nil {
+						// Persist values
+						for name, exp := range mod.Exports {
+							if val, ok := machine.Globals()[name]; ok && val.Kind != value.Nil {
+								exp.Value = val
+								mod.Exports[name] = exp
+								if _, exists := globals[name]; !exists {
+									globals[name] = val
+								}
+							}
+						}
+
+						displayPath := strings.TrimPrefix(path, "stdlib/")
+						displayPath = strings.TrimSuffix(displayPath, ".pf")
+						displayPath = strings.TrimSuffix(displayPath, "/index")
+						rawParts := strings.Split(displayPath, "/")
+						parts := make([]string, 0, len(rawParts))
+						for _, p := range rawParts {
+							if p != "" {
+								parts = append(parts, p)
+							}
+						}
+
+						if len(parts) > 0 {
+							rootModule, rootSpec := l.buildNamespaceModule(parts, mod.Exports)
+							mergeNamespace(registry, rootModule, rootSpec)
+						}
+					}
+				}
+			}
+			return nil
+		})
+	}
+
+	loaded, err := l.loadModule(entryPoint)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return loaded.Function, registry, nil
 }
 
 func (l *Loader) parseFile(path string) (*ast.Program, error) {
@@ -70,8 +273,8 @@ func (l *Loader) parseFile(path string) (*ast.Program, error) {
 		source []byte
 		err    error
 	)
-	if isStdlibModulePath(path) {
-		source, err = stdlibFS.ReadFile(trimStdlibModulePath(path))
+	if IsStdlibModulePath(path) {
+		source, err = stdlibFS.ReadFile(TrimStdlibModulePath(path))
 	} else {
 		source, err = os.ReadFile(path)
 	}
@@ -116,6 +319,20 @@ func (l *Loader) resolveImport(currentPath string, importStmt *ast.ImportStmt) (
 			return modulePath, nil
 		}
 	}
+
+	if l.Archive != nil {
+		// Try to resolve within the archive
+		relPath := strings.Join(parts, "/")
+		for _, f := range l.Archive {
+			name := strings.TrimSuffix(f.Name, ".pfbc")
+			if name == relPath || strings.HasSuffix(name, "/"+relPath) {
+				return name, nil
+			}
+		}
+		// If it's a stdlib import but wasn't found in Archive (which only contains compiled project files)
+		// it should have been handled by isStdlibImport above.
+	}
+
 	for _, candidate := range l.packageCandidates(currentPath, parts) {
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			return filepath.Abs(candidate)
@@ -177,10 +394,10 @@ func (l *Loader) packageRoots(currentPath string) []string {
 			break
 		}
 	}
-	addRoot(filepath.Join(l.workspaceDir, "src"))
-	addRoot(filepath.Join(l.workspaceDir, "lib"))
-	addRoot(filepath.Join(l.workspaceDir, "libs"))
-	addRoot(l.workspaceDir)
+	addRoot(filepath.Join(l.WorkspaceDir, "src"))
+	addRoot(filepath.Join(l.WorkspaceDir, "lib"))
+	addRoot(filepath.Join(l.WorkspaceDir, "libs"))
+	addRoot(l.WorkspaceDir)
 	return roots
 }
 
@@ -198,22 +415,84 @@ func (l *Loader) findProjectRoot(startDir string) (string, bool) {
 	return "", false
 }
 
-func (l *Loader) loadModule(path string) (*loadedModule, error) {
-	if loaded, ok := l.cache[path]; ok {
+func (l *Loader) loadModule(path string) (*LoadedModule, error) {
+	if loaded, ok := l.Cache[path]; ok {
 		return loaded, nil
 	}
-	if l.loading[path] {
+	if l.Loading[path] {
 		return nil, fmt.Errorf("circular import detected: %s", path)
 	}
-	l.loading[path] = true
-	defer delete(l.loading, path)
+	l.Loading[path] = true
+
+	if l.Archive != nil {
+		cleanPath := strings.ReplaceAll(path, "\\", "/")
+		if IsStdlibModulePath(cleanPath) {
+			cleanPath = TrimStdlibModulePath(cleanPath)
+		}
+		cleanPath = strings.TrimSuffix(cleanPath, ".pf")
+
+		var bcFile *zip.File
+		for _, f := range l.Archive {
+			if f.Name == cleanPath+".pfbc" {
+				bcFile = f
+				break
+			}
+		}
+
+		if bcFile != nil {
+			rc, err := bcFile.Open()
+			if err != nil {
+				return nil, err
+			}
+			defer rc.Close()
+
+			codec := value.NewBinaryCodec()
+			fn, err := bytecode.ReadBinaryFunction(rc, codec)
+			if err != nil {
+				return nil, err
+			}
+
+			var exports map[string]ExportMetadata
+
+			// Try reading JSON exports from the end of the .pfbc file
+			var exportDataLen uint32
+			if err := binary.Read(rc, binary.LittleEndian, &exportDataLen); err == nil {
+				exportData := make([]byte, exportDataLen)
+				if _, err := io.ReadFull(rc, exportData); err == nil {
+					json.Unmarshal(exportData, &exports)
+				}
+			}
+
+			if exports == nil {
+				exports = make(map[string]ExportMetadata)
+			}
+
+			loaded := &LoadedModule{
+				Path:     path,
+				Dir:      filepath.Dir(path),
+				Function: fn,
+				Exports:  exports,
+			}
+			l.Cache[path] = loaded
+			return loaded, nil
+		}
+
+		// Fallback: If not found in archive, check if it's a stdlib module
+		if !IsStdlibModulePath(path) {
+			// If it's not stdlib and not in archive, we can't load it
+			return nil, fmt.Errorf("module %s not found in archive", path)
+		}
+		// If it IS stdlib, we fall through to the normal source loading logic below
+	}
+
+	defer delete(l.Loading, path)
 
 	program, err := l.parseFile(path)
 	if err != nil {
 		return nil, err
 	}
 	registry := bvmruntime.NewRegistry()
-	bvmruntime.InstallCoreGlobals(registry, l.stdout)
+	bvmruntime.InstallCoreGlobals(registry, l.Stdout)
 	if err := l.loadImportsIntoRegistry(program, path, registry); err != nil {
 		return nil, err
 	}
@@ -224,46 +503,64 @@ func (l *Loader) loadModule(path string) (*loadedModule, error) {
 	if err != nil {
 		return nil, err
 	}
-	machine := vm.NewWithRegistry(l.stdout, registry)
+	machine := vm.NewWithRegistry(l.Stdout, registry)
 	if _, err := machine.Run(fn); err != nil {
 		return nil, err
 	}
-	exports, err := collectExports(program, machine, fn, registry)
+	exports, err := l.CollectExports(program, machine, fn, registry)
 	if err != nil {
 		return nil, err
 	}
-	loaded := &loadedModule{Path: path, Dir: filepath.Dir(path), Exports: exports}
-	l.cache[path] = loaded
+	loaded := &LoadedModule{Path: path, Dir: filepath.Dir(path), Function: fn, Exports: exports}
+	l.Cache[path] = loaded
 	return loaded, nil
 }
 
-func collectExports(program *ast.Program, machine *vm.VM, fn *bytecode.Function, registry *bvmruntime.Registry) (map[string]exportedSymbol, error) {
-	exports := make(map[string]exportedSymbol)
+func (l *Loader) CollectExports(program *ast.Program, machine *vm.VM, fn *bytecode.Function, registry *bvmruntime.Registry) (map[string]ExportMetadata, error) {
+	exports := make(map[string]ExportMetadata)
 	builder := newSpecBuilder(program, machine, fn, registry)
 	for _, stmt := range program.Statements {
 		switch node := stmt.(type) {
 		case *ast.LetStmt:
-			resolved, ok := machine.ResolveGlobal(fn, node.Name.Lexeme)
-			if !ok {
-				return nil, fmt.Errorf("module export %s is undefined at runtime", node.Name.Lexeme)
+			var resolved value.Value
+			if machine != nil {
+				var ok bool
+				resolved, ok = machine.ResolveGlobal(fn, node.Name.Lexeme)
+				if !ok {
+					return nil, fmt.Errorf("module export %s is undefined at runtime", node.Name.Lexeme)
+				}
+			} else {
+				resolved = value.NilValue()
 			}
 			spec := bvmruntime.InferSpec(node.Name.Lexeme, resolved)
 			if node.Type != nil && spec.TypeName == bvmruntime.TypeAny {
 				spec.TypeName = builder.normalizeTypeRef(node.Type)
 			}
-			exports[node.Name.Lexeme] = exportedSymbol{Value: resolved, Spec: spec, Visibility: node.Visibility}
+			exports[node.Name.Lexeme] = ExportMetadata{Value: resolved, Spec: spec, Visibility: node.Visibility}
 		case *ast.DestructureLetStmt:
 			for _, target := range node.Targets {
-				resolved, ok := machine.ResolveGlobal(fn, target.Lexeme)
-				if !ok {
-					return nil, fmt.Errorf("module export %s is undefined at runtime", target.Lexeme)
+				var resolved value.Value
+				if machine != nil {
+					var ok bool
+					resolved, ok = machine.ResolveGlobal(fn, target.Lexeme)
+					if !ok {
+						return nil, fmt.Errorf("module export %s is undefined at runtime", target.Lexeme)
+					}
+				} else {
+					resolved = value.NilValue()
 				}
-				exports[target.Lexeme] = exportedSymbol{Value: resolved, Spec: bvmruntime.InferSpec(target.Lexeme, resolved), Visibility: node.Visibility}
+				exports[target.Lexeme] = ExportMetadata{Value: resolved, Spec: bvmruntime.InferSpec(target.Lexeme, resolved), Visibility: node.Visibility}
 			}
 		case *ast.FunctionStmt:
-			resolved, ok := machine.ResolveGlobal(fn, node.Name.Lexeme)
-			if !ok {
-				return nil, fmt.Errorf("module export %s is undefined at runtime", node.Name.Lexeme)
+			var resolved value.Value
+			if machine != nil {
+				var ok bool
+				resolved, ok = machine.ResolveGlobal(fn, node.Name.Lexeme)
+				if !ok {
+					return nil, fmt.Errorf("module export %s is undefined at runtime", node.Name.Lexeme)
+				}
+			} else {
+				resolved = value.NilValue()
 			}
 			spec := bvmruntime.InferSpec(node.Name.Lexeme, resolved)
 			if node.ReturnType != nil && spec.Callable != nil {
@@ -276,23 +573,29 @@ func collectExports(program *ast.Program, machine *vm.VM, fn *bytecode.Function,
 					}
 				}
 			}
-			exports[node.Name.Lexeme] = exportedSymbol{Value: resolved, Spec: spec, Visibility: node.Visibility}
+			exports[node.Name.Lexeme] = ExportMetadata{Value: resolved, Spec: spec, Visibility: node.Visibility}
 		case *ast.ClassStmt:
-			resolved, ok := machine.ResolveGlobal(fn, node.Name.Lexeme)
-			if !ok {
-				return nil, fmt.Errorf("module export %s is undefined at runtime", node.Name.Lexeme)
+			var resolved value.Value
+			if machine != nil {
+				var ok bool
+				resolved, ok = machine.ResolveGlobal(fn, node.Name.Lexeme)
+				if !ok {
+					return nil, fmt.Errorf("module export %s is undefined at runtime", node.Name.Lexeme)
+				}
+			} else {
+				resolved = value.NilValue()
 			}
 			spec, err := builder.classDeclSpec(node, resolved)
 			if err != nil {
 				return nil, err
 			}
-			exports[node.Name.Lexeme] = exportedSymbol{Value: resolved, Spec: spec, Visibility: node.Visibility}
+			exports[node.Name.Lexeme] = ExportMetadata{Value: resolved, Spec: spec, Visibility: node.Visibility}
 		case *ast.InterfaceStmt:
 			spec, err := builder.interfaceDeclSpec(node)
 			if err != nil {
 				return nil, err
 			}
-			exports[node.Name.Lexeme] = exportedSymbol{Value: value.NilValue(), Spec: spec, Visibility: node.Visibility}
+			exports[node.Name.Lexeme] = ExportMetadata{Value: value.NilValue(), Spec: spec, Visibility: node.Visibility}
 		case *ast.TypeAliasStmt:
 			continue
 		}
@@ -362,31 +665,39 @@ func (b *specBuilder) resolveDeclaredTypeSpec(typeRef *ast.TypeRef) (bvmruntime.
 	return spec, ok
 }
 
-func (l *Loader) bindImport(registry *bvmruntime.Registry, importStmt *ast.ImportStmt, loaded *loadedModule, importerPath string) error {
-	allowed := visibleExports(loaded, importerPath)
+func (l *Loader) bindImport(registry *bvmruntime.Registry, importStmt *ast.ImportStmt, loaded *LoadedModule, importerPath string) error {
+	allowed := l.visibleExports(loaded, importerPath)
+	parts := pathTokens(importStmt.Path)
 	if len(importStmt.Names) > 0 {
 		for _, name := range importStmt.Names {
 			exported, ok := allowed[name.Lexeme]
 			if !ok {
-				return fmt.Errorf("symbol %s is not accessible from %s", name.Lexeme, strings.Join(pathTokens(importStmt.Path), "."))
+				return fmt.Errorf("symbol %s is not accessible from %s", name.Lexeme, strings.Join(parts, "."))
 			}
 			registry.DefineWithSpec(name.Lexeme, exported.Value, exported.Spec)
 		}
 		return nil
 	}
-	moduleValue, moduleSpec := buildNamespaceModule(pathTokens(importStmt.Path), allowed)
+
+	// For stdlib imports like 'polyloft.common', we might need to build the namespace
+	if IsStdlibModulePath(loaded.Path) && parts[0] == "polyloft" {
+		moduleValue, moduleSpec := l.buildNamespaceModule(parts, allowed)
+		return mergeNamespace(registry, moduleValue, moduleSpec)
+	}
+
+	moduleValue, moduleSpec := l.buildNamespaceModule(parts, allowed)
 	return mergeNamespace(registry, moduleValue, moduleSpec)
 }
 
-func visibleExports(loaded *loadedModule, importerPath string) map[string]exportedSymbol {
-	allowed := make(map[string]exportedSymbol)
+func (l *Loader) visibleExports(loaded *LoadedModule, importerPath string) map[string]ExportMetadata {
+	allowed := make(map[string]ExportMetadata)
 	importerDir := filepath.Dir(importerPath)
 	for name, exported := range loaded.Exports {
 		switch exported.Visibility {
 		case ast.VisibilityPublic:
 			allowed[name] = exported
 		case ast.VisibilityProtected:
-			if sameModuleDir(importerDir, loaded.Dir) {
+			if l.sameModuleDir(importerDir, loaded.Dir) {
 				allowed[name] = exported
 			}
 		case ast.VisibilityPrivate:
@@ -398,10 +709,10 @@ func visibleExports(loaded *loadedModule, importerPath string) map[string]export
 	return allowed
 }
 
-func sameModuleDir(left string, right string) bool {
-	if isStdlibModulePath(left) || isStdlibModulePath(right) {
-		leftClean := strings.ReplaceAll(trimStdlibModulePath(left), "\\", "/")
-		rightClean := strings.ReplaceAll(trimStdlibModulePath(right), "\\", "/")
+func (l *Loader) sameModuleDir(left string, right string) bool {
+	if IsStdlibModulePath(left) || IsStdlibModulePath(right) {
+		leftClean := strings.ReplaceAll(TrimStdlibModulePath(left), "\\", "/")
+		rightClean := strings.ReplaceAll(TrimStdlibModulePath(right), "\\", "/")
 		return leftClean == rightClean
 	}
 	leftAbs, _ := filepath.Abs(left)
@@ -417,7 +728,7 @@ func pathTokens(tokens []token.Token) []string {
 	return parts
 }
 
-func buildNamespaceModule(parts []string, exports map[string]exportedSymbol) (*value.Module, *bvmruntime.Spec) {
+func (l *Loader) buildNamespaceModule(parts []string, exports map[string]ExportMetadata) (*value.Module, *bvmruntime.Spec) {
 	leaf := &value.Module{Name: parts[len(parts)-1], Members: make(map[string]value.Value)}
 	leafSpec := &bvmruntime.Spec{Name: parts[len(parts)-1], TypeName: bvmruntime.TypeModule, Module: &bvmruntime.ModuleSpec{Name: parts[len(parts)-1], Members: make(map[string]bvmruntime.Spec)}}
 	for name, exported := range exports {
@@ -547,9 +858,9 @@ func substituteSpecTypeParams(spec bvmruntime.Spec, mapping map[string]string) b
 			params[i] = substituteSpecTypeName(param, mapping)
 		}
 		copySpec.Callable = &bvmruntime.CallableSpec{
-			Params:    params,
-			Return:    substituteSpecTypeName(copySpec.Callable.Return, mapping),
-			Variadic:  copySpec.Callable.Variadic,
+			Params:   params,
+			Return:   substituteSpecTypeName(copySpec.Callable.Return, mapping),
+			Variadic: copySpec.Callable.Variadic,
 		}
 	}
 	if len(copySpec.Members) > 0 {

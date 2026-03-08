@@ -51,7 +51,9 @@ println(rawText[1...3])         // string
 ```pf
 type Scalar = number | string
 
-let values: array<Scalar> = ["a", 1]
+let values: array<Scalar> = ["a", 1]  # or Scalar[] (both equivalent)
+# new-array examples
+let arr: int[] = new int[3]{0,1,2}
 println(values[0])
 println(values[1])
 ```

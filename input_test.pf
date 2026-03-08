@@ -1,0 +1,2 @@
+var name = input("What is your name? ")
+println("Hello " + name + "!")

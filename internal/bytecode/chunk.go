@@ -1,7 +1,10 @@
 package bytecode
 
 import (
+	"encoding/gob"
 	"fmt"
+	"io"
+	"reflect"
 	"strings"
 )
 
@@ -30,6 +33,10 @@ type UpvalueSpec struct {
 	IsLocal bool
 }
 
+// NilConst is used during serialization to represent a nil constant value.
+// Gob cannot encode a nil element directly, so we substitute this sentinel.
+type NilConst struct{}
+
 type InterfaceMethodSpec struct {
 	Name   string
 	Params []string
@@ -44,6 +51,139 @@ type InterfaceSpec struct {
 
 func NewChunk() *Chunk {
 	return &Chunk{}
+}
+
+// WriteTo serializes the function (including its chunk and constants) to a writer
+// using gob encoding. This is used by the CLI "dump -o" command to produce
+// .pfbc files.
+func (f *Function) WriteTo(w io.Writer) error {
+	registerGobTypes()
+	// sanitize constants recursively so gob never sees a nil interface element
+	for i, c := range f.Chunk.Constants {
+		f.Chunk.Constants[i] = SanitizeConst(c)
+	}
+	return gob.NewEncoder(w).Encode(f)
+}
+
+// SanitizeConst walks through a constant value and replaces any nil entries
+// with NilConst{} so that gob encoding will succeed.  It handles slices,
+// maps and nested combinations.
+func SanitizeConst(c any) any {
+	if c == nil {
+		return NilConst{}
+	}
+
+	v := reflect.ValueOf(c)
+	switch v.Kind() {
+	case reflect.Ptr:
+		if v.IsNil() {
+			return NilConst{}
+		}
+		vstruct := v.Elem()
+		if vstruct.Kind() == reflect.Struct {
+			for i := 0; i < vstruct.NumField(); i++ {
+				field := vstruct.Field(i)
+				if field.CanSet() {
+					fk := field.Kind()
+					if fk == reflect.Interface || fk == reflect.Slice || fk == reflect.Map || fk == reflect.Ptr {
+						san := SanitizeConst(field.Interface())
+						sanV := reflect.ValueOf(san)
+						if sanV.IsValid() && sanV.Type().AssignableTo(field.Type()) {
+							field.Set(sanV)
+						}
+					} else if fk == reflect.Struct {
+						san := SanitizeConst(field.Interface())
+						sanV := reflect.ValueOf(san)
+						if sanV.IsValid() && sanV.Type().AssignableTo(field.Type()) {
+							field.Set(sanV)
+						}
+					}
+				}
+			}
+		}
+		return c
+
+	case reflect.Struct:
+		newStruct := reflect.New(v.Type()).Elem()
+		for i := 0; i < v.NumField(); i++ {
+			field := v.Field(i)
+			newField := newStruct.Field(i)
+			if newField.CanSet() {
+				san := SanitizeConst(field.Interface())
+				sanV := reflect.ValueOf(san)
+				if sanV.IsValid() && sanV.Type().AssignableTo(newField.Type()) {
+					newField.Set(sanV)
+				} else if !sanV.IsValid() || sanV.Type().Kind() == reflect.Ptr {
+					// keep zero element
+				} else {
+					newField.Set(field)
+				}
+			}
+		}
+		return newStruct.Interface()
+
+	case reflect.Slice, reflect.Array:
+		newSlice := reflect.MakeSlice(v.Type(), v.Len(), v.Len())
+		for i := 0; i < v.Len(); i++ {
+			elem := v.Index(i).Interface()
+			san := SanitizeConst(elem)
+			sanV := reflect.ValueOf(san)
+			if sanV.IsValid() && sanV.Type().AssignableTo(v.Type().Elem()) {
+				newSlice.Index(i).Set(sanV)
+			} else {
+				if !sanV.IsValid() || sanV.Type().Kind() == reflect.Ptr {
+					// already zeroed by MakeSlice
+				} else {
+					newSlice.Index(i).Set(v.Index(i))
+				}
+			}
+		}
+		return newSlice.Interface()
+
+	case reflect.Map:
+		newMap := reflect.MakeMap(v.Type())
+		for _, key := range v.MapKeys() {
+			val := v.MapIndex(key).Interface()
+			san := SanitizeConst(val)
+			sanV := reflect.ValueOf(san)
+			if sanV.IsValid() && sanV.Type().AssignableTo(v.Type().Elem()) {
+				newMap.SetMapIndex(key, sanV)
+			} else {
+				if san == nil || reflect.TypeOf(san) == reflect.TypeOf(NilConst{}) {
+					newMap.SetMapIndex(key, reflect.Zero(v.Type().Elem()))
+				} else {
+					newMap.SetMapIndex(key, v.MapIndex(key))
+				}
+			}
+		}
+		return newMap.Interface()
+
+	default:
+		return c
+	}
+}
+
+// ReadFunction deserializes a function from a reader produced by WriteTo.
+func ReadFunction(r io.Reader) (*Function, error) {
+	registerGobTypes()
+	var fn Function
+	if err := gob.NewDecoder(r).Decode(&fn); err != nil {
+		return nil, err
+	}
+	return &fn, nil
+}
+
+// registerGobTypes ensures all relevant concrete types that may appear in
+// bytecode constants or values are registered with gob.  This must be called
+// before encoding or decoding.
+func registerGobTypes() {
+	// bytecode structures
+	gob.Register(&Function{})
+	gob.Register(InterfaceSpec{})
+	gob.Register(InterfaceMethodSpec{})
+	// sentinel
+	gob.Register(NilConst{})
+	// value package handles its own types; register our own helpers
 }
 
 func (c *Chunk) WriteOp(op Op, line int) int {
@@ -73,15 +213,21 @@ func (c *Chunk) PatchUint16(offset int, v uint16) {
 
 func (c *Chunk) Disassemble(name string) string {
 	var out strings.Builder
+	var nested []*Function
+
 	fmt.Fprintf(&out, "== %s ==\n", name)
 	for offset := 0; offset < len(c.Code); {
 		op := Op(c.Code[offset])
 		line := c.Lines[offset]
-		fmt.Fprintf(&out, "%04d L%-3d %-14s", offset, line, op.String())
+		fmt.Fprintf(&out, "%04d L%-3d %-20s ", offset, line, op.String())
 		switch op {
 		case OpConstant, OpDefineGlobal, OpGetGlobal, OpSetGlobal, OpGetProperty, OpSetProperty, OpClosure:
 			idx := readUint16(c.Code[offset+1:])
-			fmt.Fprintf(&out, "%d (%v)", idx, c.Constants[idx])
+			constant := c.Constants[idx]
+			fmt.Fprintf(&out, "%d (%v)", idx, constant)
+			if fn, ok := constant.(*Function); ok {
+				nested = append(nested, fn)
+			}
 			offset += 3
 		case OpWrapInterface:
 			ifaceIdx := readUint16(c.Code[offset+1:])
@@ -128,6 +274,12 @@ func (c *Chunk) Disassemble(name string) string {
 		}
 		out.WriteByte('\n')
 	}
+
+	for _, fn := range nested {
+		out.WriteByte('\n')
+		out.WriteString(fn.Chunk.Disassemble(fn.Name))
+	}
+
 	return out.String()
 }
 

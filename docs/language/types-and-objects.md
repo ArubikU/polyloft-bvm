@@ -88,6 +88,7 @@ Current behavior:
 - aliases are compile-time only and do not produce runtime values
 - array and map literals preserve mixed element types as unions instead of collapsing straight to `any`
 - function and method annotations carry the structural type string into bytecode metadata so the VM can enforce common cases such as `array<number | string>`
+- arrays may also be written with Java‑style `T[]` syntax; both forms are equivalent and nest (e.g. `int[][]` ↔ `array<array<int>>`)
 
 Example:
 

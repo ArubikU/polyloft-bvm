@@ -325,6 +325,18 @@ func (p *Parser) parseTypeRef(message string) (*ast.TypeRef, error) {
 	if err != nil {
 		return nil, err
 	}
+	// support Java-style array syntax: T[]  (possibly nested) but only when
+	// the brackets are empty; leave `[<expr>]` for the caller to handle (e.g.
+	// new T[3] size expressions).
+	for p.check(token.LeftBracket) && p.checkNext(token.RightBracket) {
+		p.advance() // consume '['
+		p.advance() // consume ']'
+		// wrap existing type in an array<...>
+		first = &ast.TypeRef{
+			Name: token.Token{Type: token.Identifier, Lexeme: "array"},
+			Args: []*ast.TypeRef{first},
+		}
+	}
 	if !p.match(token.Pipe) {
 		return first, nil
 	}
@@ -1864,10 +1876,52 @@ func (p *Parser) primary() (ast.Expr, error) {
 		return &ast.ThisExpr{Keyword: p.previous()}, nil
 	}
 	if p.match(token.New) {
-		className, err := p.consume(token.Identifier, "expected class name after 'new'")
-		if err != nil {
+	// parse type reference (could be primitive/array/etc)
+	typeRef, err := p.parseTypeRef("expected type after 'new'")
+	if err != nil {
+		return nil, err
+	}
+	// optional size bracket: new T[expr] or new T[]
+	var sizeExpr ast.Expr
+	if p.match(token.LeftBracket) {
+		if !p.check(token.RightBracket) {
+			expr, err := p.expression()
+			if err != nil {
+				return nil, err
+			}
+			sizeExpr = expr
+		}
+		if _, err := p.consume(token.RightBracket, "expected ']' after array size"); err != nil {
 			return nil, err
 		}
+	}
+	// optional initializer
+	var initElems []ast.Expr
+	var braceTok token.Token
+	if p.match(token.LeftBrace) {
+		braceTok = p.previous()
+		if !p.check(token.RightBrace) {
+			for {
+				elem, err := p.expression()
+				if err != nil {
+					return nil, err
+				}
+				initElems = append(initElems, elem)
+				if !p.match(token.Comma) {
+					break
+				}
+			}
+		}
+		if _, err := p.consume(token.RightBrace, "expected '}' after array initializer"); err != nil {
+			return nil, err
+		}
+	}
+	// if there was any array-specific syntax, use ArrayNewExpr
+	if sizeExpr != nil || braceTok.Type == token.LeftBrace {
+		return &ast.ArrayNewExpr{Type: typeRef, Size: sizeExpr, Brace: braceTok, Initializer: initElems}, nil
+	}
+	// otherwise treat as normal class new
+	if classNameToken := typeRef.Name; classNameToken.Type == token.Identifier && len(typeRef.Args) == 0 && len(typeRef.Union) == 0 {
 		if _, err := p.consume(token.LeftParen, "expected '(' after class name"); err != nil {
 			return nil, err
 		}
@@ -1888,8 +1942,10 @@ func (p *Parser) primary() (ast.Expr, error) {
 		if _, err := p.consume(token.RightParen, "expected ')' after arguments"); err != nil {
 			return nil, err
 		}
-		return &ast.NewExpr{Class: className, Paren: paren, Arguments: args}, nil
+		return &ast.NewExpr{Class: classNameToken, Paren: paren, Arguments: args}, nil
 	}
+	return nil, fmt.Errorf("invalid 'new' expression")
+}
 	if p.match(token.Super) {
 		return &ast.SuperExpr{Keyword: p.previous()}, nil
 	}

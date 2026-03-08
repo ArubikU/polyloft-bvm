@@ -284,6 +284,24 @@ type NewExpr struct {
 
 func (NewExpr) exprNode() {}
 
+// ArrayNewExpr represents a `new` expression targeting an array type.
+// Examples:
+//   new int[3]{1,2,3}
+//   new string[][]{}    // nested type
+//   new T[]{a, b}
+// If Size is nil the bracket either was omitted or empty; initializer
+// length is not constrained. If Size is non-nil we may validate it in
+// semantic phase.
+// The Type field is the element type (possibly itself an array type).
+// Initializer holds the comma-separated values inside `{}` if present.
+type ArrayNewExpr struct {
+	Type        *TypeRef
+	Size        Expr   // nil if unspecified or `[]`
+	Brace       token.Token // location of '{', zero value if no initializer
+	Initializer []Expr
+}
+
+func (ArrayNewExpr) exprNode() {}
 type GetExpr struct {
 	Object Expr
 	Name   token.Token

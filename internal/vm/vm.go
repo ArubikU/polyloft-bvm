@@ -59,6 +59,12 @@ func NewWithRegistry(stdout io.Writer, registry *bvmruntime.Registry) *VM {
 	}
 }
 
+// Globals returns the flat global name->value map used by the VM.
+// This is used externally to resolve exported values after running a module.
+func (vm *VM) Globals() map[string]value.Value {
+	return vm.globals
+}
+
 func (vm *VM) Run(fn *bytecode.Function) (value.Value, error) {
 	if cap(vm.globalSlots) < fn.GlobalSlotCount {
 		vm.globalSlots = make([]value.Value, fn.GlobalSlotCount)
@@ -194,9 +200,20 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				vm.push(vm.numericResult(left, right, bytecode.OpAdd, left.Num+right.Num))
 				continue
 			}
+			// string/char concatenation
 			if left.Kind == value.String || right.Kind == value.String || left.Kind == value.Char || right.Kind == value.Char {
 				vm.push(value.StringValue(left.String() + right.String()))
 				continue
+			}
+			// array concatenation support
+			if la, ok := left.Object.(*value.Array); ok {
+				if ra, ok2 := right.Object.(*value.Array); ok2 {
+					elems := make([]value.Value, len(la.Elements)+len(ra.Elements))
+					copy(elems, la.Elements)
+					copy(elems[len(la.Elements):], ra.Elements)
+					vm.push(value.ObjectValue(&value.Array{Elements: elems}))
+					continue
+				}
 			}
 			return value.NilValue(), fmt.Errorf("ADD expects numbers or strings")
 		case bytecode.OpSub:

@@ -3,6 +3,7 @@ package lexer
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"unicode"
 
 	"github.com/ArubikU/polyloft-bvm/internal/token"
@@ -97,6 +98,17 @@ func (lx *Lexer) scanTokens() error {
 				}
 				continue
 			}
+			if lx.match('*') {
+				for !lx.isAtEnd() {
+					if lx.peek() == '*' && lx.peekNext() == '/' {
+						lx.advance() // Consume *
+						lx.advance() // Consume /
+						break
+					}
+					lx.advance()
+				}
+				continue
+			}
 			if lx.match('=') {
 				lx.addToken(token.SlashEqual, startLine, startCol)
 			} else {
@@ -169,6 +181,12 @@ func (lx *Lexer) scanTokens() error {
 
 func (lx *Lexer) scanString(line, col int) error {
 	for !lx.isAtEnd() && lx.peek() != '"' {
+		// allow escaped quotes to avoid terminating the string
+		if lx.peek() == '\\' && lx.peekNext() == '"' {
+			lx.advance()
+			lx.advance()
+			continue
+		}
 		if lx.peek() == '\n' {
 			return fmt.Errorf("line %d:%d: unterminated string", line, col)
 		}
@@ -177,9 +195,36 @@ func (lx *Lexer) scanString(line, col int) error {
 	if lx.isAtEnd() {
 		return fmt.Errorf("line %d:%d: unterminated string", line, col)
 	}
-	lx.advance()
-	literal := string(lx.source[lx.start+1 : lx.cur-1])
-	lx.items = append(lx.items, token.Token{Type: token.String, Lexeme: literal, Line: line, Column: col})
+	lx.advance() // closing quote
+
+	raw := string(lx.source[lx.start+1 : lx.cur-1])
+
+	// Unescape the string
+	var b strings.Builder
+	for i := 0; i < len(raw); i++ {
+		if raw[i] == '\\' && i+1 < len(raw) {
+			i++
+			switch raw[i] {
+			case 'n':
+				b.WriteByte('\n')
+			case 'r':
+				b.WriteByte('\r')
+			case 't':
+				b.WriteByte('\t')
+			case '\\':
+				b.WriteByte('\\')
+			case '"':
+				b.WriteByte('"')
+			default:
+				b.WriteByte('\\')
+				b.WriteByte(raw[i])
+			}
+		} else {
+			b.WriteByte(raw[i])
+		}
+	}
+
+	lx.items = append(lx.items, token.Token{Type: token.String, Lexeme: b.String(), Line: line, Column: col})
 	return nil
 }
 

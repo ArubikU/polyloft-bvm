@@ -762,6 +762,25 @@ func (c *Compiler) compileExpr(expr ast.Expr) error {
 		c.emit(bytecode.OpArray, 0)
 		c.emitByte(byte(len(node.Elements)), 0)
 		return nil
+
+	case *ast.ArrayNewExpr:
+		// compile size expression if present (result unused)
+		if node.Size != nil {
+			if err := c.compileExpr(node.Size); err != nil {
+				return err
+			}
+			// drop size from stack
+			c.emit(bytecode.OpPop, 0)
+		}
+		// compile initializer elements
+		for _, element := range node.Initializer {
+			if err := c.compileExpr(element); err != nil {
+				return err
+			}
+		}
+		c.emit(bytecode.OpArray, 0)
+		c.emitByte(byte(len(node.Initializer)), 0)
+		return nil
 	case *ast.MapExpr:
 		for _, entry := range node.Entries {
 			key := c.constant(entry.Key)

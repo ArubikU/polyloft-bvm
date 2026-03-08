@@ -1,12 +1,34 @@
 package value
 
 import (
+	"encoding/gob"
 	"fmt"
 	"math"
 	"strconv"
 
 	"github.com/ArubikU/polyloft-bvm/internal/bytecode"
 )
+
+func init() {
+	// register all concrete value types so gob can encode/decode them when
+	// they're stored in interface{} fields (e.g. Value.Object or constants).
+	gob.Register(Value{})
+	gob.Register(&Class{})
+	gob.Register(&Instance{})
+	gob.Register(&Array{})
+	gob.Register(&Map{})
+	gob.Register(&Tuple{})
+	gob.Register(&Builtin{})
+	gob.Register(&Module{})
+	gob.Register(&Cell{})
+	gob.Register(&Range{})
+	gob.Register(&Closure{})
+	gob.Register(&BoundMethod{})
+	gob.Register(&SAMWrapper{})
+	gob.Register(&SAMBoundMethod{})
+	gob.Register(&Iterator{})
+	gob.Register([]Value{})
+}
 
 type NumberKind uint8
 

@@ -1,0 +1,21 @@
+import math
+import utils
+import polyloft.common
+
+def main():
+    println("Complex Project Starting...")
+    utils.Utils.greet("Polyloft User")
+    
+    let sum = math.Math.add(10, 20)
+    println("10 + 20 = " + sum)
+    
+    let prod = math.Math.multiply(5, 6)
+    println("5 * 6 = " + prod)
+
+    // Stdlib usage
+    let s = polyloft.common.String("Stdlib String Wrapper")
+    println("Stdlib String: " + s.toString())
+    println("Length: " + s.length())
+end
+
+main()

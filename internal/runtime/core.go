@@ -1,9 +1,12 @@
 package runtime
 
 import (
+	"bufio"
 	"fmt"
 	"io"
+	"os"
 	"sort"
+	"strings"
 
 	"github.com/ArubikU/polyloft-bvm/internal/value"
 )
@@ -17,6 +20,21 @@ func InstallCoreGlobals(registry *Registry, stdout io.Writer) {
 	registry.DefineTypedBuiltin("println", []string{TypeAny}, TypeVoid, false, func(args []value.Value) (value.Value, error) {
 		_, err := fmt.Fprintln(stdout, args[0].String())
 		return value.NilValue(), err
+	})
+
+	registry.DefineTypedBuiltin("input", []string{TypeString}, TypeString, true, func(args []value.Value) (value.Value, error) {
+		if len(args) > 1 {
+			return value.NilValue(), fmt.Errorf("input expects 0 or 1 argument")
+		}
+		if len(args) == 1 {
+			fmt.Fprint(stdout, args[0].String())
+		}
+		reader := bufio.NewReader(os.Stdin)
+		text, err := reader.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return value.NilValue(), err
+		}
+		return value.StringValue(strings.TrimSuffix(strings.TrimSuffix(text, "\n"), "\r")), nil
 	})
 
 	registry.DefineTypedBuiltin("range", []string{TypeInt, TypeInt}, TypeRange, true, func(args []value.Value) (value.Value, error) {

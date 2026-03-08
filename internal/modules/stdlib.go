@@ -31,10 +31,10 @@ func resolveStdlibModule(parts []string) (string, bool) {
 	return "", false
 }
 
-func isStdlibModulePath(modulePath string) bool {
+func IsStdlibModulePath(modulePath string) bool {
 	return strings.HasPrefix(modulePath, stdlibModulePrefix)
 }
 
-func trimStdlibModulePath(modulePath string) string {
+func TrimStdlibModulePath(modulePath string) string {
 	return strings.TrimPrefix(modulePath, stdlibModulePrefix)
 }

@@ -616,6 +616,43 @@ func (c *Checker) checkExprWithExpected(expr ast.Expr, expected *Type) (Type, er
 			elementType = UnionOf(elementType, candidate)
 		}
 		return ArrayOf(elementType), nil
+
+	case *ast.ArrayNewExpr:
+		// size expression may be constant
+		elemType := c.resolveTypeRef(node.Type)
+		if node.Size != nil {
+			szType, err := c.checkExpr(node.Size)
+			if err != nil {
+				return Unknown(), err
+			}
+			if szType.Name != runtime.TypeInt {
+				return Unknown(), fmt.Errorf("array size must be int, got %s", szType.Name)
+			}
+			if lit, ok := node.Size.(*ast.LiteralExpr); ok {
+				num, ok2 := integerLiteralValue(lit)
+				if ok2 && len(node.Initializer) > 0 {
+					if num < len(node.Initializer) {
+						return Unknown(), fmt.Errorf("%d initializer values exceeds specified size %d", len(node.Initializer), num)
+					}
+				}
+			}
+		}
+		// check initializer value types
+		for _, elem := range node.Initializer {
+			candidate, err := c.checkExpr(elem)
+			if err != nil {
+				return Unknown(), err
+			}
+			if !elemType.IsAssignableFrom(candidate) {
+				return Unknown(), fmt.Errorf("initializer element %s not assignable to %s", candidate.Name, elemType.Name)
+			}
+			elemType = UnionOf(elemType, candidate)
+		}
+		// if a size was supplied wrap the element type in an array
+		if node.Size != nil {
+			return ArrayOf(elemType), nil
+		}
+		return elemType, nil
 	case *ast.MapExpr:
 		valueType := Any()
 		for _, entry := range node.Entries {
@@ -1030,13 +1067,29 @@ func (c *Checker) checkBinary(node *ast.BinaryExpr) (Type, error) {
 		}
 		return Primitive(runtime.TypeBool), nil
 	case token.Plus:
+		// string concatenation beats everything else
 		if left.Name == runtime.TypeString || right.Name == runtime.TypeString {
 			return Primitive(runtime.TypeString), nil
 		}
+		// array concatenation: both sides must be arrays, result tracks element union
+		if left.Name == runtime.TypeArray && right.Name == runtime.TypeArray {
+			// element type may be missing (untyped array literal) -> Any
+			elemL := Any()
+			if len(left.Args) > 0 {
+				elemL = left.Args[0]
+			}
+			elemR := Any()
+			if len(right.Args) > 0 {
+				elemR = right.Args[0]
+			}
+			elem := UnionOf(elemL, elemR)
+			return Type{Name: runtime.TypeArray, Args: []Type{elem}}, nil
+		}
+		// numeric addition
 		if (isNumericCompatibleType(left.Name) || left.Name == runtime.TypeAny) && (isNumericCompatibleType(right.Name) || right.Name == runtime.TypeAny) {
 			return numericBinaryType(token.Plus, left, right), nil
 		}
-		return Unknown(), fmt.Errorf("line %d:%d: '+' expects Number/Number or String concatenation, got %s and %s", node.Operator.Line, node.Operator.Column, left.Name, right.Name)
+		return Unknown(), fmt.Errorf("line %d:%d: '+' expects Number/Number, String or Array concatenation, got %s and %s", node.Operator.Line, node.Operator.Column, left.Name, right.Name)
 	case token.Minus, token.Star, token.Slash, token.Percent:
 		if (!isNumericCompatibleType(left.Name) && left.Name != runtime.TypeAny) || (!isNumericCompatibleType(right.Name) && right.Name != runtime.TypeAny) {
 			return Unknown(), fmt.Errorf("line %d:%d: arithmetic expects Number, got %s and %s", node.Operator.Line, node.Operator.Column, left.Name, right.Name)
