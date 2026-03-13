@@ -3,6 +3,7 @@ package main_test
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/ArubikU/polyloft-bvm/internal/bytecode"
 	"github.com/ArubikU/polyloft-bvm/internal/compiler"
+	"github.com/ArubikU/polyloft-bvm/internal/jit"
 	"github.com/ArubikU/polyloft-bvm/internal/lexer"
 	"github.com/ArubikU/polyloft-bvm/internal/modules"
 	"github.com/ArubikU/polyloft-bvm/internal/parser"
@@ -19,6 +21,22 @@ import (
 	"github.com/ArubikU/polyloft-bvm/internal/value"
 	"github.com/ArubikU/polyloft-bvm/internal/vm"
 )
+
+func jitFunction(name string, arity int, maxLocals int, ops ...byte) *bytecode.Function {
+	lines := make([]int, len(ops))
+	for i := range lines {
+		lines[i] = 1
+	}
+	return &bytecode.Function{
+		Name:      name,
+		Arity:     arity,
+		MaxLocals: maxLocals,
+		Chunk: &bytecode.Chunk{
+			Code:  ops,
+			Lines: lines,
+		},
+	}
+}
 
 func runPreparedFile(t *testing.T, filePath string) (string, error) {
 	t.Helper()
@@ -180,6 +198,346 @@ println(ll.asArray()[0])
 	}
 	if out != "2\ntrue\ntrue\nfalse\nb\n" {
 		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", "2\ntrue\ntrue\nfalse\nb\n", out)
+	}
+}
+
+func TestStdlibOverloadsKeepStrictTypes(t *testing.T) {
+	tempDir := t.TempDir()
+	mainPath := filepath.Join(tempDir, "main.pf")
+	mainSource := "import polyloft.io { IO }\n" +
+		"println(IO.readFile(1))\n" +
+		"IO.delete(1)\n"
+	if err := os.WriteFile(mainPath, []byte(mainSource), 0o644); err != nil {
+		t.Fatalf("failed to write source: %v", err)
+	}
+	if err := modules.CheckSource(mainPath, io.Discard); err == nil {
+		t.Fatalf("expected type checker to reject invalid stdlib overload arguments")
+	} else if !strings.Contains(err.Error(), "expects String") {
+		t.Fatalf("expected strict String argument error, got: %v", err)
+	}
+}
+
+func TestStdlibOverloadsAcceptSupportedArities(t *testing.T) {
+	tempDir := t.TempDir()
+	mainPath := filepath.Join(tempDir, "main.pf")
+	targetPath := filepath.Join(tempDir, "sample.txt")
+	mainSource := "import polyloft.io { IO }\n" +
+		"IO.writeFile(\"" + strings.ReplaceAll(targetPath, "\\", "/") + "\", \"ok\")\n" +
+		"println(IO.readFile(\"" + strings.ReplaceAll(targetPath, "\\", "/") + "\"))\n" +
+		"println(IO.readFile(\"" + strings.ReplaceAll(targetPath, "\\", "/") + "\", \"utf8\"))\n"
+	if err := os.WriteFile(mainPath, []byte(mainSource), 0o644); err != nil {
+		t.Fatalf("failed to write source: %v", err)
+	}
+	output, err := runPreparedFile(t, mainPath)
+	if err != nil {
+		t.Fatalf("expected valid overload calls to pass, got: %v", err)
+	}
+	if output != "ok\nok\n" {
+		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", "ok\nok\n", output)
+	}
+}
+
+func TestJITEngineExecutesSimpleNumericFunction(t *testing.T) {
+	engine := jit.NewEngineWithThreshold(3)
+	fn := jitFunction(
+		"add",
+		2,
+		2,
+		byte(bytecode.OpGetLocal), 0,
+		byte(bytecode.OpGetLocal), 1,
+		byte(bytecode.OpAddNum),
+		byte(bytecode.OpReturn),
+	)
+
+	for i := 0; i < 2; i++ {
+		_, ok, err := engine.TryExecute(fn, nil, []value.Value{value.IntValue(7), value.IntValue(5)})
+		if err != nil {
+			t.Fatalf("cold jit execution failed: %v", err)
+		}
+		if ok {
+			t.Fatalf("expected cold function not to jit before threshold")
+		}
+	}
+	result, ok, err := engine.TryExecute(fn, nil, []value.Value{value.IntValue(7), value.IntValue(5)})
+	if err != nil {
+		t.Fatalf("jit execution failed: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected jit to compile and execute the function")
+	}
+	if result.Kind != value.Number || result.Num != 12 || result.NumberKind != value.NumberInt {
+		t.Fatalf("unexpected jit result: %#v", result)
+	}
+	stats := engine.Stats()
+	if stats.Compiled == 0 || stats.Executed == 0 {
+		t.Fatalf("expected jit stats to record compilation and execution, got %+v", stats)
+	}
+	if stats.SkippedCold != 2 {
+		t.Fatalf("expected two cold skips before jit, got %+v", stats)
+	}
+}
+
+func TestJITBackendsExposeFullInstructionCatalog(t *testing.T) {
+	backendNames := []string{"windows-stackabi-v1", "posix-stackabi-v1"}
+	allOps := jit.AllInstructionSpecs()
+	for _, backendName := range backendNames {
+		catalog, ok := jit.InstructionCatalogForBackend(backendName)
+		if !ok {
+			t.Fatalf("missing jit instruction catalog for %s", backendName)
+		}
+		if len(catalog) != len(allOps) {
+			t.Fatalf("unexpected catalog size for %s: want %d, got %d", backendName, len(allOps), len(catalog))
+		}
+		seenCodes := make(map[byte]bool, len(catalog))
+		seenOps := make(map[bytecode.Op]bool, len(catalog))
+		implemented := 0
+		for _, spec := range catalog {
+			if spec.Name == "UNKNOWN" {
+				t.Fatalf("unexpected unknown instruction name in %s for op %d", backendName, spec.BytecodeOp)
+			}
+			if seenCodes[spec.BackendCode] {
+				t.Fatalf("duplicate backend opcode %d in %s", spec.BackendCode, backendName)
+			}
+			if seenOps[spec.BytecodeOp] {
+				t.Fatalf("duplicate bytecode op %d in %s", spec.BytecodeOp, backendName)
+			}
+			seenCodes[spec.BackendCode] = true
+			seenOps[spec.BytecodeOp] = true
+			if spec.Implemented {
+				implemented++
+			}
+		}
+		if implemented == 0 {
+			t.Fatalf("expected at least one implemented jit instruction in %s", backendName)
+		}
+	}
+}
+
+func TestVMUsesJITForBoundMethodCalls(t *testing.T) {
+	method := jitFunction(
+		"sum",
+		0,
+		1,
+		byte(bytecode.OpGetThisField), 0,
+		byte(bytecode.OpGetThisField), 1,
+		byte(bytecode.OpAddNum),
+		byte(bytecode.OpReturn),
+	)
+	classValue := &value.Class{
+		ClassDecl: value.ClassDecl{
+			Name:       "Vec2",
+			Fields:     map[string]value.FieldDef{"x": {TypeName: "Number"}, "y": {TypeName: "Number"}},
+			FieldOrder: []string{"x", "y"},
+			FieldIndex: map[string]int{"x": 0, "y": 1},
+		},
+		ClassRuntime: value.ClassRuntime{
+			MethodIndex: map[string]int{"sum": 0},
+			MethodOrder: []string{"sum"},
+			MethodTable: []*bytecode.Function{method},
+			Methods:     map[string]*bytecode.Function{"sum": method},
+			FastMethods: []*value.FastMethodPlan{nil},
+		},
+	}
+	instance := &value.Instance{Class: classValue, Fields: []value.Value{value.IntValue(2), value.IntValue(3)}}
+	var out bytes.Buffer
+	machine := vm.New(&out)
+	machine.SetJITWarmupThreshold(2)
+	machine.SetJITLogger(&out)
+
+	result, err := machine.CallClosure(value.ObjectValue(&value.BoundMethod{Receiver: instance, Name: "sum", Method: method, Owner: classValue}), nil)
+	if err != nil {
+		t.Fatalf("vm bound method call failed: %v", err)
+	}
+	if result.Kind != value.Number || result.Num != 5 {
+		t.Fatalf("unexpected vm jit result: %#v", result)
+	}
+	if stats := machine.JITStats(); stats.Executed != 0 {
+		t.Fatalf("expected first call to stay interpreted, got %+v", stats)
+	}
+	result, err = machine.CallClosure(value.ObjectValue(&value.BoundMethod{Receiver: instance, Name: "sum", Method: method, Owner: classValue}), nil)
+	if err != nil {
+		t.Fatalf("second vm bound method call failed: %v", err)
+	}
+	stats := machine.JITStats()
+	if stats.Executed == 0 {
+		t.Fatalf("expected vm to execute at least one jit program, got %+v", stats)
+	}
+	logs := out.String()
+	if !strings.Contains(logs, "[jit] compiled fn=sum") || !strings.Contains(logs, "[jit] executed fn=sum") {
+		t.Fatalf("expected jit compile and execute logs, got: %q", logs)
+	}
+}
+
+func TestPFMethodRunsThroughJITWithLogs(t *testing.T) {
+	var out bytes.Buffer
+	source := `
+class Vec2:
+	x: number
+	y: number
+
+	Vec2(x: number, y: number):
+		this.x = x
+		this.y = y
+	end
+
+	def sum(delta: number) -> number:
+		return this.x + delta
+	end
+end
+
+let point = Vec2(7, 5)
+println(point.sum(5))
+println(point.sum(5))
+println(point.sum(5))
+`
+	fn, registry, err := modules.CompileInlineSource("jit_vec2_test.pf", source, &out)
+	if err != nil {
+		t.Fatalf("inline compile failed: %v", err)
+	}
+	machine := vm.NewWithRegistry(&out, registry)
+	machine.SetJITWarmupThreshold(2)
+	machine.SetJITLogger(&out)
+	if _, err := machine.Run(fn); err != nil {
+		t.Fatalf("vm run failed: %v", err)
+	}
+	logs := out.String()
+	if strings.Count(logs, "12\n") != 3 {
+		t.Fatalf("expected three program outputs in log buffer, got: %q", logs)
+	}
+	if !strings.Contains(logs, "[jit] hot fn=sum") {
+		t.Fatalf("expected hotness log for pf method, got: %q", logs)
+	}
+	if !strings.Contains(logs, "[jit] compiled fn=sum") {
+		t.Fatalf("expected compilation log for pf method, got: %q", logs)
+	}
+	if !strings.Contains(logs, "[jit] executed fn=sum") {
+		t.Fatalf("expected execution log for pf method, got: %q", logs)
+	}
+}
+
+func TestPFMethodWithIfElseRunsThroughJITWithLogs(t *testing.T) {
+	var out bytes.Buffer
+	source := `
+class Switcher:
+	x: number
+	y: number
+
+	Switcher(x: number, y: number):
+		this.x = x
+		this.y = y
+	end
+
+	def choose(flag: bool) -> number:
+		let acc = 1
+		if flag:
+			acc = acc + this.x
+		else:
+			acc = acc + this.y
+		end
+		return acc
+	end
+end
+
+let value = Switcher(7, 5)
+println(value.choose(true))
+println(value.choose(false))
+println(value.choose(true))
+`
+	fn, registry, err := modules.CompileInlineSource("jit_switcher_test.pf", source, &out)
+	if err != nil {
+		t.Fatalf("inline compile failed: %v", err)
+	}
+	machine := vm.NewWithRegistry(&out, registry)
+	machine.SetJITWarmupThreshold(2)
+	machine.SetJITLogger(&out)
+	if _, err := machine.Run(fn); err != nil {
+		t.Fatalf("vm run failed: %v", err)
+	}
+	logs := out.String()
+	if strings.Count(logs, "8\n") != 2 || strings.Count(logs, "6\n") != 1 {
+		t.Fatalf("expected program outputs in log buffer, got: %q", logs)
+	}
+	if !strings.Contains(logs, "[jit] hot fn=choose") {
+		t.Fatalf("expected hotness log for pf branching method, got: %q", logs)
+	}
+	if !strings.Contains(logs, "[jit] compiled fn=choose") {
+		t.Fatalf("expected compilation log for pf branching method, got: %q", logs)
+	}
+	if strings.Count(logs, "[jit] executed fn=choose") < 2 {
+		t.Fatalf("expected repeated jit execution log for pf branching method, got: %q", logs)
+	}
+	stats := machine.JITStats()
+	if stats.Compiled == 0 || stats.Executed < 2 {
+		t.Fatalf("expected jit stats for branching pf method, got %+v", stats)
+	}
+}
+
+func TestPFMethodWithArrayAndSliceRunsThroughJITWithLogs(t *testing.T) {
+	var out bytes.Buffer
+	source := `
+class VectorOps:
+	def compute(values: array) -> number:
+        values[1] = 9
+		let middle = values[1...3]
+        return middle[0] + middle[1]
+    end
+end
+
+let ops = VectorOps()
+println(ops.compute([1, 2, 3, 4]))
+println(ops.compute([1, 2, 3, 4]))
+println(ops.compute([1, 2, 3, 4]))
+`
+	fn, registry, err := modules.CompileInlineSource("jit_vector_ops_test.pf", source, &out)
+	if err != nil {
+		t.Fatalf("inline compile failed: %v", err)
+	}
+	machine := vm.NewWithRegistry(&out, registry)
+	machine.SetJITWarmupThreshold(2)
+	machine.SetJITLogger(&out)
+	if _, err := machine.Run(fn); err != nil {
+		t.Fatalf("vm run failed: %v", err)
+	}
+	logs := out.String()
+	if strings.Count(logs, "12\n") != 3 {
+		t.Fatalf("expected array/slice outputs in log buffer, got: %q", logs)
+	}
+	if !strings.Contains(logs, "[jit] compiled fn=compute") || strings.Count(logs, "[jit] executed fn=compute") < 2 {
+		t.Fatalf("expected jit logs for array/slice method, got: %q", logs)
+	}
+}
+
+func TestPFMethodWithMapIndexRunsThroughJITWithLogs(t *testing.T) {
+	var out bytes.Buffer
+	source := `
+class TableOps:
+	def compute(table: map<string, int>) -> number:
+        table["left"] = table["left"] + 5
+        return table["left"]
+    end
+end
+
+let ops = TableOps()
+println(ops.compute({"left": 2, "right": 3}))
+println(ops.compute({"left": 2, "right": 3}))
+println(ops.compute({"left": 2, "right": 3}))
+`
+	fn, registry, err := modules.CompileInlineSource("jit_table_ops_test.pf", source, &out)
+	if err != nil {
+		t.Fatalf("inline compile failed: %v", err)
+	}
+	machine := vm.NewWithRegistry(&out, registry)
+	machine.SetJITWarmupThreshold(2)
+	machine.SetJITLogger(&out)
+	if _, err := machine.Run(fn); err != nil {
+		t.Fatalf("vm run failed: %v", err)
+	}
+	logs := out.String()
+	if strings.Count(logs, "7\n") != 3 {
+		t.Fatalf("expected map outputs in log buffer, got: %q", logs)
+	}
+	if !strings.Contains(logs, "[jit] compiled fn=compute") || strings.Count(logs, "[jit] executed fn=compute") < 2 {
+		t.Fatalf("expected jit logs for map/index method, got: %q", logs)
 	}
 }
 
@@ -2012,7 +2370,7 @@ func TestAccessModifiersEnforcedAndProtectedWorksInSubclass(t *testing.T) {
     end
 end
 
-class Child < Base:
+class Child extends Base:
     def total() -> number:
         return this.value + this.reveal()
     end
@@ -2081,7 +2439,7 @@ func TestAccessModifierAliasesWork(t *testing.T) {
     end
 end
 
-class Child < Vault:
+class Child extends Vault:
     pub def total() -> number:
         return this.value + this.reveal()
     end
@@ -2114,6 +2472,19 @@ println(new Child().total())
 	}
 	if got, want := out.String(), "12\n"; got != want {
 		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", want, got)
+	}
+}
+
+func TestParserRejectsLegacySuperclassAngleSyntax(t *testing.T) {
+	source := `class Child < Base:
+end
+`
+	tokens, err := lexer.Scan(source)
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	if _, err := parser.Parse(tokens); err == nil {
+		t.Fatalf("expected parser to reject legacy superclass syntax with <")
 	}
 }
 
@@ -2158,7 +2529,7 @@ func TestProtectedConstructorWorksOnlyInSubclass(t *testing.T) {
 	    end
 end
 
-class Child < Base:
+class Child extends Base:
 	    static def emit(value: number) -> number:
 	        return new Base(value).reveal()
     end
@@ -2637,7 +3008,7 @@ func TestEmbeddedStdlibImportLoadsPolyloftCommon(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
-	if want := "true\nfalse\nfalse\ntrue\n12\n20\n7\ntrue\nenabled\nguarded\ntrue\ntrue\ntrue\ntrue\n7\n10\nPolyloft\nP\nL\n2\n"; output != want {
+	if want := "true\ntrue\ntrue\ntrue\n12\n20\n7\ntrue\nenabled\nguarded\ntrue\ntrue\ntrue\ntrue\n7\n10\nPolyloft\nP\nL\n2\n"; output != want {
 		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", want, output)
 	}
 }
@@ -2784,6 +3155,54 @@ func TestFunctionalInterfacesUseContextualLambdaTyping(t *testing.T) {
 		t.Fatalf("run failed: %v", err)
 	}
 	if want := "true\n4\n18\ntrue\n5\nsink\ninline\n"; output != want {
+		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", want, output)
+	}
+}
+
+func TestEmbeddedStdlibConcurrentAsyncAcceptsSupplierLambda(t *testing.T) {
+	tempDir := t.TempDir()
+	mainPath := filepath.Join(tempDir, "main.pf")
+	mainSource := "import polyloft.concurrent { async }\n" +
+		"let future = async(() => 5 + 7)\n" +
+		"println(future.get())\n"
+	if err := os.WriteFile(mainPath, []byte(mainSource), 0o644); err != nil {
+		t.Fatalf("write main failed: %v", err)
+	}
+	output, err := runPreparedFile(t, mainPath)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if want := "12\n"; output != want {
+		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", want, output)
+	}
+}
+
+func TestOmittedGenericArgsDefaultToAnyAndConcatWithString(t *testing.T) {
+	tempDir := t.TempDir()
+	mainPath := filepath.Join(tempDir, "main.pf")
+	mainSource := "import polyloft.collections { ArrayList }\n" +
+		"import polyloft.maps { HashMap }\n" +
+		"def stringify<T>(value: T) -> string:\n" +
+		"    return value + \"!\"\n" +
+		"end\n" +
+		"let items: ArrayList = ArrayList()\n" +
+		"items.add(\"poly\")\n" +
+		"items.add(7)\n" +
+		"println(items.get(0))\n" +
+		"println(stringify(items.get(1)))\n" +
+		"let store: HashMap = HashMap()\n" +
+		"store.put(\"answer\", 42)\n" +
+		"store.put(\"label\", \"ok\")\n" +
+		"println(store.get(\"answer\") + \"!\")\n" +
+		"println(\"value=\" + store.get(\"label\"))\n"
+	if err := os.WriteFile(mainPath, []byte(mainSource), 0o644); err != nil {
+		t.Fatalf("write main failed: %v", err)
+	}
+	output, err := runPreparedFile(t, mainPath)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if want := "poly\n7!\n42!\nvalue=ok\n"; output != want {
 		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", want, output)
 	}
 }
@@ -2945,7 +3364,7 @@ func TestAbstractClassRequiresOverrideAndRejectsInstantiation(t *testing.T) {
     abstract def area() -> number
 end
 
-class Square < Shape:
+class Square extends Shape:
 end
 `
 
@@ -2989,7 +3408,7 @@ func TestAbstractClassAllowsConcreteSubclass(t *testing.T) {
     abstract def area() -> number
 end
 
-class Square < Shape:
+class Square extends Shape:
     let size: number
 
     Square(size: number):
@@ -3035,7 +3454,7 @@ func TestSealedClassRestrictsSubclasses(t *testing.T) {
 	valid := `sealed class Expr(Add):
 end
 
-class Add < Expr:
+class Add extends Expr:
 end
 
 println(Add())
@@ -3067,7 +3486,7 @@ println(Add())
 	invalid := `sealed class Expr(Add):
 end
 
-class Mul < Expr:
+class Mul extends Expr:
 end
 `
 	tokens, err = lexer.Scan(invalid)
@@ -3082,6 +3501,59 @@ end
 	bvmruntime.InstallCoreGlobals(registry, &bytes.Buffer{})
 	if err := sema.Check(program, registry); err == nil {
 		t.Fatalf("expected non-permitted sealed subclass to fail")
+	}
+}
+
+func TestInstanceFieldInitializersRunOnObjectCreation(t *testing.T) {
+	source := `
+def makeLabel() -> String:
+    return "ready"
+end
+
+def makeSeed() -> int:
+    return 41
+end
+
+class LazyLabel:
+    var label: String = makeLabel()
+end
+
+class Counter:
+    var seed: int = makeSeed()
+
+    Counter():
+        this.seed = this.seed + 1
+    end
+end
+
+println(LazyLabel().label)
+println(Counter().seed)
+`
+
+	tokens, err := lexer.Scan(source)
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	program, err := parser.Parse(tokens)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	var out bytes.Buffer
+	registry := bvmruntime.NewRegistry()
+	bvmruntime.InstallCoreGlobals(registry, &out)
+	if err := sema.Check(program, registry); err != nil {
+		t.Fatalf("type check failed: %v", err)
+	}
+	fn, err := compiler.Compile(program)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	machine := vm.NewWithRegistry(&out, registry)
+	if _, err := machine.Run(fn); err != nil {
+		t.Fatalf("vm run failed: %v", err)
+	}
+	if got, want := out.String(), "ready\n42\n"; got != want {
+		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", want, got)
 	}
 }
 
@@ -3126,7 +3598,7 @@ end
 
 	invalidMain := `import shape { Shape }
 
-class Square < Shape:
+class Square extends Shape:
 end
 `
 	invalidMainPath := filepath.Join(tempDir, "invalid_main.pf")
@@ -3150,7 +3622,7 @@ let shape = new Shape()
 
 	validMain := `import shape { Shape }
 
-class Square < Shape:
+class Square extends Shape:
     let size: number
 
     Square(size: number):
@@ -3182,7 +3654,7 @@ func TestImportedSealedRestrictionsCrossModules(t *testing.T) {
 	sealedClassSource := `public sealed class Expr(Add):
 end
 
-public class Add < Expr:
+public class Add extends Expr:
 end
 `
 	if err := os.WriteFile(filepath.Join(tempDir, "expr.pf"), []byte(sealedClassSource), 0o644); err != nil {
@@ -3190,7 +3662,7 @@ end
 	}
 	invalidSubclassMain := `import expr { Expr }
 
-class Mul < Expr:
+class Mul extends Expr:
 end
 `
 	invalidSubclassPath := filepath.Join(tempDir, "invalid_subclass_main.pf")
@@ -3226,7 +3698,7 @@ end
 }
 
 func TestTypeCheckerRejectsWrongGenericElementType(t *testing.T) {
-	// Creamos una clase genérica simple para demostrar la especialización.
+	// Creamos una clase gen+�rica simple para demostrar la especializaci+�n.
 	source := `
 interface Container<T>:
     add(item: T) -> void
@@ -3257,7 +3729,7 @@ c.add("hola")
 }
 
 func TestFixedArrayHasNoAppend(t *testing.T) {
-	// Los arrays son de tamaño fijo; no existe append.
+	// Los arrays son de tama+�o fijo; no existe append.
 	source := `let xs: array<int> = []
 	xs.append(1)
 `
@@ -3274,5 +3746,439 @@ func TestFixedArrayHasNoAppend(t *testing.T) {
 	err = sema.Check(program, registry)
 	if err == nil || !strings.Contains(err.Error(), "append") {
 		t.Fatalf("expected error about missing append on fixed array, got: %v", err)
+	}
+}
+
+func TestEmbeddedStdlibBytesContractExtended(t *testing.T) {
+	tempDir := t.TempDir()
+	mainPath := filepath.Join(tempDir, "main.pf")
+	mainSource := "import polyloft.common { Bytes }\n" +
+		"let fromHex = Bytes.fromHex(\"0x48656C6C6F\")\n" +
+		"let suffix = Bytes([33])\n" +
+		"let merged = fromHex.concat(suffix)\n" +
+		"let expected = Bytes([72, 101, 108, 108, 111])\n" +
+		"println(fromHex.asHex())\n" +
+		"println(fromHex.length())\n" +
+		"println(fromHex[1])\n" +
+		"println(merged.asHex())\n" +
+		"println(fromHex.slice(2).asHex())\n" +
+		"println(fromHex[1...3].asHex())\n" +
+		"println(fromHex.contains(108))\n" +
+		"println(fromHex.indexOf(111))\n" +
+		"println(fromHex.equals(expected))\n"
+	if err := os.WriteFile(mainPath, []byte(mainSource), 0o644); err != nil {
+		t.Fatalf("write main failed: %v", err)
+	}
+	output, err := runPreparedFile(t, mainPath)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if want := "48656c6c6f\n5\n101\n48656c6c6f21\n6c6c6f\n656c6c\ntrue\n4\ntrue\n"; output != want {
+		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", want, output)
+	}
+}
+
+func TestEmbeddedStdlibBytesRejectInvalidInputs(t *testing.T) {
+	tempDir := t.TempDir()
+	tests := []struct {
+		name    string
+		source  string
+		message string
+	}{
+		{
+			name:    "odd hex digits",
+			source:  "import polyloft.common { Bytes }\nprintln(Bytes.fromHex(\"abc\"))\n",
+			message: "even number of hexadecimal digits",
+		},
+		{
+			name:    "invalid hex digit",
+			source:  "import polyloft.common { Bytes }\nprintln(Bytes.fromHex(\"zz\"))\n",
+			message: "hexadecimal digits",
+		},
+		{
+			name:    "byte range",
+			source:  "import polyloft.common { Bytes }\nprintln(Bytes([300]))\n",
+			message: "between 0 and 255",
+		},
+		{
+			name:    "slice bounds",
+			source:  "import polyloft.common { Bytes }\nprintln(Bytes([1, 2]).slice(3))\n",
+			message: "slice index out of range",
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			mainPath := filepath.Join(tempDir, strings.ReplaceAll(testCase.name, " ", "_")+".pf")
+			if err := os.WriteFile(mainPath, []byte(testCase.source), 0o644); err != nil {
+				t.Fatalf("write main failed: %v", err)
+			}
+			_, err := runPreparedFile(t, mainPath)
+			if err == nil || !strings.Contains(err.Error(), testCase.message) {
+				t.Fatalf("expected error containing %q, got: %v", testCase.message, err)
+			}
+		})
+	}
+}
+
+func TestEmbeddedStdlibCompositeEnumRecordCollectionWorkflow(t *testing.T) {
+	tempDir := t.TempDir()
+	mainPath := filepath.Join(tempDir, "main.pf")
+	mainSource := "import polyloft.collections { ArrayList }\n" +
+		"import polyloft.function { Function, Predicate }\n" +
+		"import polyloft.maps { HashMap }\n" +
+		"import polyloft.common { Pair }\n" +
+		"sealed enum Stage\n" +
+		"    READY(1)\n" +
+		"    RUNNING(2)\n" +
+		"    DONE(3)\n" +
+		"    let weight: number\n" +
+		"    Stage(weight: number):\n" +
+		"        this.weight = weight\n" +
+		"    end\n" +
+		"    def decorate(name: string) -> string:\n" +
+		"        return name + \":\" + this.weight\n" +
+		"    end\n" +
+		"end\n" +
+		"\n" +
+		"record Job(name: string, stage: Stage)\n" +
+		"    def label() -> string:\n" +
+		"        return this.name + \"@\" + this.stage.name\n" +
+		"    end\n" +
+		"end\n" +
+		"\n" +
+		"def project(items: array<Job>, mapper: Function<Job, string>) -> ArrayList<string>:\n" +
+		"    let out = ArrayList<string>()\n" +
+		"    for item in items:\n" +
+		"        out.add(mapper.apply(item))\n" +
+		"    end\n" +
+		"    return out\n" +
+		"end\n" +
+		"\n" +
+		"def countMatches(items: array<Job>, test: Predicate<Job>) -> int:\n" +
+		"    let total = 0\n" +
+		"    for item in items:\n" +
+		"        if test.test(item):\n" +
+		"            total += 1\n" +
+		"        end\n" +
+		"    end\n" +
+		"    return total\n" +
+		"end\n" +
+		"\n" +
+		"let jobs: array<Job> = [Job(\"build\", Stage.READY), Job(\"ship\", Stage.DONE), Job(\"test\", Stage.RUNNING)]\n" +
+		"let labels = project(jobs, (job) => job.label() + \":\" + job.stage.decorate(job.name))\n" +
+		"println(labels[0])\n" +
+		"println(labels[1])\n" +
+		"println(countMatches(jobs, (job) => job.stage == Stage.DONE))\n" +
+		"let byName = HashMap<string, Job>()\n" +
+		"for job in jobs:\n" +
+		"    byName.put(job.name, job)\n" +
+		"end\n" +
+		"let ship: Job = byName.get(\"ship\")\n" +
+		"let pair: Pair<string, string> = Pair(ship.name, ship.stage.name)\n" +
+		"let running = Stage.valueOf(\"RUNNING\")\n" +
+		"println(pair[0] + \":\" + pair[1])\n" +
+		"println(Stage.names()[2])\n" +
+		"println(running.ordinal)\n" +
+		"println(Stage.valueOf(\"READY\").decorate(\"boot\"))\n"
+	if err := os.WriteFile(mainPath, []byte(mainSource), 0o644); err != nil {
+		t.Fatalf("write main failed: %v", err)
+	}
+	output, err := runPreparedFile(t, mainPath)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if want := "build@READY:build:1\nship@DONE:ship:3\n1\nship:DONE\nDONE\n1\nboot:1\n"; output != want {
+		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", want, output)
+	}
+}
+
+func TestInlineBytesEqualsConstructorArgumentWorks(t *testing.T) {
+	tempDir := t.TempDir()
+	mainPath := filepath.Join(tempDir, "main.pf")
+	mainSource := "import polyloft.common { Bytes }\n" +
+		"let fromHex = Bytes.fromHex(\"0x48656C6C6F\")\n" +
+		"println(fromHex.equals(Bytes([72, 101, 108, 108, 111])))\n"
+	if err := os.WriteFile(mainPath, []byte(mainSource), 0o644); err != nil {
+		t.Fatalf("write main failed: %v", err)
+	}
+	output, err := runPreparedFile(t, mainPath)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if want := "true\n"; output != want {
+		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", want, output)
+	}
+}
+
+func TestToStringDrivesPrintlnAndStringConcatenation(t *testing.T) {
+	source := `class Person:
+    let name: string
+
+    Person(name: string):
+        this.name = name
+    end
+
+    def toString() -> string:
+        return "Person(" + this.name + ")"
+    end
+end
+
+let person = Person("Ada")
+println(person)
+println(person + "!")
+println(">" + person)
+`
+	tokens, err := lexer.Scan(source)
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	program, err := parser.Parse(tokens)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	var out bytes.Buffer
+	registry := bvmruntime.NewRegistry()
+	bvmruntime.InstallCoreGlobals(registry, &out)
+	if err := sema.Check(program, registry); err != nil {
+		t.Fatalf("type check failed: %v", err)
+	}
+	fn, err := compiler.Compile(program)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	machine := vm.NewWithRegistry(&out, registry)
+	if _, err := machine.Run(fn); err != nil {
+		t.Fatalf("vm run failed: %v", err)
+	}
+	if got, want := out.String(), "Person(Ada)\nPerson(Ada)!\n>Person(Ada)\n"; got != want {
+		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", want, got)
+	}
+}
+
+func TestOriginalEnumAndRecordScenarioPort(t *testing.T) {
+	source := `enum Color
+    RED
+    GREEN
+    BLUE
+end
+
+record Point(x: number, y: number)
+    def sum() -> number:
+        return this.x + this.y
+    end
+end
+
+let green = Color.valueOf("GREEN")
+println(green.name)
+println(green.ordinal)
+
+let point = Point(2, 5)
+println(point.x)
+println(point.y)
+println(point.sum())
+
+enum Planet
+    MERCURY(3.7)
+    MARS(3.71)
+
+    var gravity: number
+
+    Planet(g: number):
+        this.gravity = g
+    end
+
+    def weight(mass: number) -> number:
+        return mass * this.gravity
+    end
+end
+
+println(Planet.MARS.gravity)
+println(Planet.MARS.weight(10.0))
+`
+	tokens, err := lexer.Scan(source)
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	program, err := parser.Parse(tokens)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	var out bytes.Buffer
+	registry := bvmruntime.NewRegistry()
+	bvmruntime.InstallCoreGlobals(registry, &out)
+	if err := sema.Check(program, registry); err != nil {
+		t.Fatalf("type check failed: %v", err)
+	}
+	fn, err := compiler.Compile(program)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	machine := vm.NewWithRegistry(&out, registry)
+	if _, err := machine.Run(fn); err != nil {
+		t.Fatalf("vm run failed: %v", err)
+	}
+	if got, want := out.String(), "GREEN\n1\n2\n5\n7\n3.71\n37.1\n"; got != want {
+		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", want, got)
+	}
+}
+
+func TestOriginalSealedEnumHelpersPort(t *testing.T) {
+	source := `sealed enum Mode
+    OFF
+    ON
+end
+
+let names: array<string> = Mode.names()
+let values: array<Mode> = Mode.values()
+println(names[0])
+println(values[1].name)
+println(Mode.size())
+println(Mode.valueOf("ON").ordinal)
+`
+	tokens, err := lexer.Scan(source)
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	program, err := parser.Parse(tokens)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	var out bytes.Buffer
+	registry := bvmruntime.NewRegistry()
+	bvmruntime.InstallCoreGlobals(registry, &out)
+	if err := sema.Check(program, registry); err != nil {
+		t.Fatalf("type check failed: %v", err)
+	}
+	fn, err := compiler.Compile(program)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	machine := vm.NewWithRegistry(&out, registry)
+	if _, err := machine.Run(fn); err != nil {
+		t.Fatalf("vm run failed: %v", err)
+	}
+	if got, want := out.String(), "OFF\nON\n2\n1\n"; got != want {
+		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", want, got)
+	}
+}
+
+func TestSysTypeAndInstanceOfBuiltins(t *testing.T) {
+	tempDir := t.TempDir()
+	mainPath := filepath.Join(tempDir, "main.pf")
+	mainSource := "import polyloft.common { Integer }\n" +
+		"class Animal:\n" +
+		"end\n\n" +
+		"class Dog extends Animal:\n" +
+		"    def bark() -> string:\n" +
+		"        return \"woof\"\n" +
+		"    end\n" +
+		"end\n\n" +
+		"println(Sys.type(Dog))\n" +
+		"println(Sys.type(Dog()))\n" +
+		"println(Sys.type(5))\n" +
+		"println(Sys.instanceof(Dog(), Dog))\n" +
+		"println(Sys.instanceof(Dog(), Animal))\n" +
+		"println(Sys.instanceof(5, Integer))\n" +
+		"println(Sys.instanceof(\"hi\", \"string\"))\n"
+	if err := os.WriteFile(mainPath, []byte(mainSource), 0o644); err != nil {
+		t.Fatalf("write main failed: %v", err)
+	}
+	output, err := runPreparedFile(t, mainPath)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if want := "Class Dog\nDog\nint\ntrue\ntrue\ntrue\ntrue\n"; output != want {
+		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", want, output)
+	}
+}
+
+func TestInstanceOfOperatorAndBinding(t *testing.T) {
+	tempDir := t.TempDir()
+	mainPath := filepath.Join(tempDir, "main.pf")
+	mainSource := "import polyloft.common { Integer }\n" +
+		"class Animal:\n" +
+		"end\n\n" +
+		"class Dog extends Animal:\n" +
+		"    def bark() -> string:\n" +
+		"        return \"woof\"\n" +
+		"    end\n" +
+		"end\n\n" +
+		"let count: any = 5\n" +
+		"let pet: Animal = Dog()\n\n" +
+		"println(count instanceof Integer)\n" +
+		"println(pet instanceof Animal)\n\n" +
+		"if pet instanceof Dog dog:\n" +
+		"    println(dog.bark())\n" +
+		"else:\n" +
+		"    println(\"no\")\n" +
+		"end\n\n" +
+		"if count instanceof Integer integer:\n" +
+		"    println(Sys.type(integer))\n" +
+		"else:\n" +
+		"    println(0)\n" +
+		"end\n"
+	if err := os.WriteFile(mainPath, []byte(mainSource), 0o644); err != nil {
+		t.Fatalf("write main failed: %v", err)
+	}
+	output, err := runPreparedFile(t, mainPath)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if want := "true\ntrue\nwoof\nInteger\n"; output != want {
+		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", want, output)
+	}
+}
+
+func TestVariadicPrintAndStringBuilderFeatures(t *testing.T) {
+	tempDir := t.TempDir()
+	mainPath := filepath.Join(tempDir, "main.pf")
+	mainSource := "import polyloft.common { String, StringBuilder, Integer }\n" +
+		"println(\"a\", 1)\n" +
+		"println(String.format(\"hola {} {}\", [\"mundo\", 7]))\n" +
+		"let sb = StringBuilder(\"\")\n" +
+		"sb.append(\"A\").append(1).appendLine(\"!\")\n" +
+		"println(sb.toString())\n" +
+		"println(\"x\", Integer(2), [3])\n"
+	if err := os.WriteFile(mainPath, []byte(mainSource), 0o644); err != nil {
+		t.Fatalf("write main failed: %v", err)
+	}
+	output, err := runPreparedFile(t, mainPath)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if want := "a 1\nhola mundo 7\nA1!\n\nx 2 [3]\n"; output != want {
+		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", want, output)
+	}
+}
+
+func TestInstanceOfBindingInComposedIfAndForWhere(t *testing.T) {
+	tempDir := t.TempDir()
+	mainPath := filepath.Join(tempDir, "main.pf")
+	mainSource := "import polyloft.common { Integer }\n" +
+		"class Animal:\n" +
+		"end\n\n" +
+		"class Dog extends Animal:\n" +
+		"    def bark() -> string:\n" +
+		"        return \"woof\"\n" +
+		"    end\n" +
+		"end\n\n" +
+		"let pet: Animal = Dog()\n" +
+		"if pet instanceof Dog dog && dog.bark() == \"woof\":\n" +
+		"    println(\"ok\")\n" +
+		"else:\n" +
+		"    println(\"bad\")\n" +
+		"end\n\n" +
+		"for a in [1, \"2\", [3], 4] where a instanceof Integer b:\n" +
+		"    println(Sys.type(b), b)\n" +
+		"end\n"
+	if err := os.WriteFile(mainPath, []byte(mainSource), 0o644); err != nil {
+		t.Fatalf("write main failed: %v", err)
+	}
+	output, err := runPreparedFile(t, mainPath)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if want := "ok\nInteger 1\nInteger 4\n"; output != want {
+		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", want, output)
 	}
 }

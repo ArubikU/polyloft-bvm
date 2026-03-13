@@ -10,6 +10,10 @@ public interface Supplier<T>:
 	get() -> T
 end
 
+public interface Runnable:
+	run() -> void
+end
+
 public interface Function<T, R>:
 	apply(value: T) -> R
 end

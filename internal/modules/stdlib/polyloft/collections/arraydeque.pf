@@ -1,0 +1,54 @@
+import polyloft.collections.contracts { Deque }
+import polyloft.collections.listnative { list_new, list_size, list_add, list_add_first, list_add_last, list_remove, list_contains, list_clear, list_as_array, list_remove_first, list_remove_last }
+
+public class ArrayDeque<T> implements Deque<T>:
+	var nativeHandle: any
+
+	ArrayDeque():
+		this.nativeHandle = list_new()
+	end
+
+	def size() -> number:
+		return list_size(this.nativeHandle)
+	end
+
+	def isEmpty() -> bool:
+		return list_size(this.nativeHandle) == 0
+	end
+
+	def add(element: T) -> void:
+		list_add_last(this.nativeHandle, element)
+	end
+
+	def remove(element: T) -> bool:
+		return list_remove(this.nativeHandle, element)
+	end
+
+	def contains(element: T) -> bool:
+		return list_contains(this.nativeHandle, element)
+	end
+
+	def clear() -> void:
+		list_clear(this.nativeHandle)
+	end
+
+	def asArray() -> any:
+		return list_as_array(this.nativeHandle)
+	end
+
+	def addFirst(element: T) -> void:
+		list_add_first(this.nativeHandle, element)
+	end
+
+	def addLast(element: T) -> void:
+		list_add_last(this.nativeHandle, element)
+	end
+
+	def removeFirst() -> T:
+		return list_remove_first(this.nativeHandle)
+	end
+
+	def removeLast() -> T:
+		return list_remove_last(this.nativeHandle)
+	end
+end

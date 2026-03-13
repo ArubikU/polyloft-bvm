@@ -2,6 +2,7 @@ package sema
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/ArubikU/polyloft-bvm/internal/ast"
 	"github.com/ArubikU/polyloft-bvm/internal/runtime"
@@ -9,20 +10,22 @@ import (
 )
 
 type Checker struct {
-	registry       *runtime.Registry
-	scopes         []map[string]symbol
-	typeScopes     []map[string]Type
-	currentFunc    *CallableType
-	currentClass   *ast.ClassStmt
-	currentMethod  *ast.MethodDecl
-	interfaces     map[string]Type
-	interfaceDecls map[string]*ast.InterfaceStmt
-	typeAliasDecls map[string]*ast.TypeAliasStmt
-	classes        map[string]*ast.ClassStmt
-	specTypeCache  map[string]*Type
-	instanceCache  map[string]*Type
-	resolvingTypes map[string]bool
-	insideLoop     int
+	registry         *runtime.Registry
+	scopes           []map[string]symbol
+	typeScopes       []map[string]Type
+	currentFunc      *CallableType
+	currentClass     *ast.ClassStmt
+	currentMethod    *ast.MethodDecl
+	interfaces       map[string]Type
+	interfaceDecls   map[string]*ast.InterfaceStmt
+	typeAliasDecls   map[string]*ast.TypeAliasStmt
+	classes          map[string]*ast.ClassStmt
+	specTypeCache    map[string]*Type
+	instanceCache    map[string]*Type
+	resolvingTypes   map[string]bool
+	resolvingIfaces  map[string]bool
+	resolvingClasses map[string]bool
+	insideLoop       int
 }
 
 type symbol struct {
@@ -31,7 +34,7 @@ type symbol struct {
 }
 
 func Check(program *ast.Program, registry *runtime.Registry) error {
-	checker := &Checker{registry: registry, scopes: []map[string]symbol{{}}, typeScopes: []map[string]Type{{}}, interfaces: map[string]Type{}, interfaceDecls: map[string]*ast.InterfaceStmt{}, typeAliasDecls: map[string]*ast.TypeAliasStmt{}, classes: map[string]*ast.ClassStmt{}, specTypeCache: map[string]*Type{}, instanceCache: map[string]*Type{}, resolvingTypes: map[string]bool{}}
+	checker := &Checker{registry: registry, scopes: []map[string]symbol{{}}, typeScopes: []map[string]Type{{}}, interfaces: map[string]Type{}, interfaceDecls: map[string]*ast.InterfaceStmt{}, typeAliasDecls: map[string]*ast.TypeAliasStmt{}, classes: map[string]*ast.ClassStmt{}, specTypeCache: map[string]*Type{}, instanceCache: map[string]*Type{}, resolvingTypes: map[string]bool{}, resolvingIfaces: map[string]bool{}, resolvingClasses: map[string]bool{}}
 	for _, stmt := range program.Statements {
 		switch node := stmt.(type) {
 		case *ast.InterfaceStmt:
@@ -64,6 +67,37 @@ func Check(program *ast.Program, registry *runtime.Registry) error {
 	return nil
 }
 
+func unwrapInstanceOfCondition(expr ast.Expr) (*ast.InstanceOfExpr, bool) {
+	for {
+		grouping, ok := expr.(*ast.GroupingExpr)
+		if !ok {
+			break
+		}
+		expr = grouping.Expr
+	}
+	condition, ok := expr.(*ast.InstanceOfExpr)
+	return condition, ok
+}
+
+func unwrapInstanceOfConditionAndGuard(expr ast.Expr) (*ast.InstanceOfExpr, ast.Expr, bool) {
+	for {
+		grouping, ok := expr.(*ast.GroupingExpr)
+		if !ok {
+			break
+		}
+		expr = grouping.Expr
+	}
+	binary, ok := expr.(*ast.BinaryExpr)
+	if !ok || binary.Operator.Type != token.AndAnd {
+		return nil, nil, false
+	}
+	condition, ok := unwrapInstanceOfCondition(binary.Left)
+	if !ok || condition.Binding == nil {
+		return nil, nil, false
+	}
+	return condition, binary.Right, true
+}
+
 func (c *Checker) installBuiltins() {
 	for name, spec := range c.registry.Specs() {
 		c.currentScope()[name] = symbol{Type: c.typeFromSpec(spec), Mutable: false}
@@ -83,7 +117,73 @@ func builtinInterfaceTypes() map[string]Type {
 	itemType := TypeVariable("T", nil)
 	keyType := TypeVariable("K", nil)
 	valueType := TypeVariable("V", nil)
+	leftType := TypeVariable("L", nil)
+	rightType := TypeVariable("R", nil)
+	secondType := TypeVariable("U", nil)
 	return map[string]Type{
+		"Predicate": {
+			Name:        "Predicate",
+			Args:        []Type{itemType},
+			IsInterface: true,
+			Members: map[string]Type{
+				"test": {Callable: &CallableType{Params: []Type{itemType}, Return: boolType}},
+			},
+		},
+		"Consumer": {
+			Name:        "Consumer",
+			Args:        []Type{itemType},
+			IsInterface: true,
+			Members: map[string]Type{
+				"accept": {Callable: &CallableType{Params: []Type{itemType}, Return: voidType}},
+			},
+		},
+		"Supplier": {
+			Name:        "Supplier",
+			Args:        []Type{itemType},
+			IsInterface: true,
+			Members: map[string]Type{
+				"get": {Callable: &CallableType{Return: itemType}},
+			},
+		},
+		"Runnable": {
+			Name:        "Runnable",
+			IsInterface: true,
+			Members: map[string]Type{
+				"run": {Callable: &CallableType{Return: voidType}},
+			},
+		},
+		"Function": {
+			Name:        "Function",
+			Args:        []Type{leftType, rightType},
+			IsInterface: true,
+			Members: map[string]Type{
+				"apply": {Callable: &CallableType{Params: []Type{leftType}, Return: rightType}},
+			},
+		},
+		"BiFunction": {
+			Name:        "BiFunction",
+			Args:        []Type{leftType, secondType, rightType},
+			IsInterface: true,
+			Members: map[string]Type{
+				"apply": {Callable: &CallableType{Params: []Type{leftType, secondType}, Return: rightType}},
+			},
+		},
+		"UnaryOperator": {
+			Name:        "UnaryOperator",
+			Args:        []Type{itemType},
+			IsInterface: true,
+			Members: map[string]Type{
+				"apply": {Callable: &CallableType{Params: []Type{itemType}, Return: itemType}},
+			},
+		},
+		"BinaryOperator": {
+			Name:        "BinaryOperator",
+			Args:        []Type{itemType},
+			IsInterface: true,
+			Members: map[string]Type{
+				"apply": {Callable: &CallableType{Params: []Type{itemType, itemType}, Return: itemType}},
+			},
+		},
 		"Iterable": {
 			Name:        "Iterable",
 			Args:        []Type{itemType},
@@ -276,6 +376,32 @@ func (c *Checker) checkStmt(stmt ast.Stmt) error {
 		_, err := c.checkExpr(node.Expr)
 		return err
 	case *ast.IfStmt:
+		if condition, guard, ok := unwrapInstanceOfConditionAndGuard(node.Condition); ok {
+			if _, err := c.checkExpr(condition.Expr); err != nil {
+				return err
+			}
+			_ = c.resolveTypeRef(condition.Target)
+			c.pushScope()
+			c.currentScope()[condition.Binding.Lexeme] = symbol{Type: c.resolveTypeRef(condition.Target), Mutable: false}
+			guardType, err := c.checkExpr(guard)
+			if err != nil {
+				c.popScope()
+				return err
+			}
+			if !isBooleanCompatibleType(guardType.Name) && guardType.Name != runtime.TypeAny {
+				c.popScope()
+				return fmt.Errorf("if condition must be Bool or Boolean, got %s", guardType.Name)
+			}
+			if err := c.checkBlock(node.Then); err != nil {
+				c.popScope()
+				return err
+			}
+			c.popScope()
+			if node.Else != nil {
+				return c.checkBlock(node.Else)
+			}
+			return nil
+		}
 		condType, err := c.checkExpr(node.Condition)
 		if err != nil {
 			return err
@@ -283,8 +409,18 @@ func (c *Checker) checkStmt(stmt ast.Stmt) error {
 		if !isBooleanCompatibleType(condType.Name) && condType.Name != runtime.TypeAny {
 			return fmt.Errorf("if condition must be Bool or Boolean, got %s", condType.Name)
 		}
-		if err := c.checkBlock(node.Then); err != nil {
-			return err
+		if condition, ok := unwrapInstanceOfCondition(node.Condition); ok && condition.Binding != nil {
+			c.pushScope()
+			c.currentScope()[condition.Binding.Lexeme] = symbol{Type: c.resolveTypeRef(condition.Target), Mutable: false}
+			if err := c.checkBlock(node.Then); err != nil {
+				c.popScope()
+				return err
+			}
+			c.popScope()
+		} else {
+			if err := c.checkBlock(node.Then); err != nil {
+				return err
+			}
 		}
 		if node.Else != nil {
 			return c.checkBlock(node.Else)
@@ -304,7 +440,7 @@ func (c *Checker) checkStmt(stmt ast.Stmt) error {
 					}
 				}
 				if pattern.Type != nil {
-					boundType := Primitive(pattern.Type.Type.Name.Lexeme)
+					boundType := c.resolveTypeRef(pattern.Type.Type)
 					c.currentScope()[pattern.Type.Binding.Lexeme] = symbol{Type: boundType, Mutable: true}
 				}
 			}
@@ -318,6 +454,31 @@ func (c *Checker) checkStmt(stmt ast.Stmt) error {
 		}
 		if node.Default != nil {
 			return c.checkBlock(node.Default)
+		}
+		return nil
+	case *ast.TryStmt:
+		if err := c.checkBlock(node.Body); err != nil {
+			return err
+		}
+		for _, clause := range node.Catches {
+			c.pushScope()
+			if clause.Binding.Type != "" {
+				bindingType := Any()
+				if clause.Type != nil {
+					bindingType = c.resolveTypeRef(clause.Type)
+					if bindingType.Callable != nil {
+						bindingType = bindingType.Callable.Return
+					}
+				}
+				c.currentScope()[clause.Binding.Lexeme] = symbol{Type: bindingType, Mutable: true}
+			}
+			for _, stmt := range clause.Body.Statements {
+				if err := c.checkStmt(stmt); err != nil {
+					c.popScope()
+					return err
+				}
+			}
+			c.popScope()
 		}
 		return nil
 	case *ast.ReturnStmt:
@@ -340,9 +501,12 @@ func (c *Checker) checkStmt(stmt ast.Stmt) error {
 			return nil
 		}
 		if !c.isAssignable(c.currentFunc.Return, retType) {
-			return fmt.Errorf("line %d:%d: return type %s does not match %s", node.Keyword.Line, node.Keyword.Column, retType.Name, c.currentFunc.Return.Name)
+			return fmt.Errorf("line %d:%d: return type %s does not match %s", node.Keyword.Line, node.Keyword.Column, DisplayName(retType), DisplayName(c.currentFunc.Return))
 		}
 		return nil
+	case *ast.ThrowStmt:
+		_, err := c.checkExpr(node.Value)
+		return err
 	case *ast.InterfaceStmt:
 		return c.validateInterfaceDecl(node)
 	case *ast.TypeAliasStmt:
@@ -358,11 +522,13 @@ func (c *Checker) checkStmt(stmt ast.Stmt) error {
 		for i, param := range node.Params {
 			c.currentScope()[param.Name.Lexeme] = symbol{Type: fnType.Callable.Params[i], Mutable: true}
 		}
-		for _, bodyStmt := range node.Body.Statements {
-			if err := c.checkStmt(bodyStmt); err != nil {
-				c.currentFunc = prev
-				c.popScope()
-				return err
+		if node.Body != nil {
+			for _, bodyStmt := range node.Body.Statements {
+				if err := c.checkStmt(bodyStmt); err != nil {
+					c.currentFunc = prev
+					c.popScope()
+					return err
+				}
 			}
 		}
 		c.currentFunc = prev
@@ -393,24 +559,89 @@ func (c *Checker) checkStmt(stmt ast.Stmt) error {
 				c.currentScope()[target.Lexeme] = symbol{Type: targetTypes[i], Mutable: true}
 			}
 		}
+		whereBindingActive := false
+		if node.Condition != nil {
+			if condition, guard, ok := unwrapInstanceOfConditionAndGuard(node.Condition); ok {
+				if _, err := c.checkExpr(condition.Expr); err != nil {
+					c.popScope()
+					return err
+				}
+				boundType := c.resolveTypeRef(condition.Target)
+				c.pushScope()
+				whereBindingActive = true
+				c.currentScope()[condition.Binding.Lexeme] = symbol{Type: boundType, Mutable: false}
+				guardType, err := c.checkExpr(guard)
+				if err != nil {
+					c.popScope()
+					c.popScope()
+					return err
+				}
+				if !isBooleanCompatibleType(guardType.Name) && guardType.Name != runtime.TypeAny {
+					c.popScope()
+					c.popScope()
+					return fmt.Errorf("where condition must be Bool or Boolean, got %s", guardType.Name)
+				}
+			} else if condition, ok := unwrapInstanceOfCondition(node.Condition); ok && condition.Binding != nil {
+				if _, err := c.checkExpr(condition.Expr); err != nil {
+					c.popScope()
+					return err
+				}
+				boundType := c.resolveTypeRef(condition.Target)
+				c.pushScope()
+				whereBindingActive = true
+				c.currentScope()[condition.Binding.Lexeme] = symbol{Type: boundType, Mutable: false}
+			} else {
+				condType, err := c.checkExpr(node.Condition)
+				if err != nil {
+					c.popScope()
+					return err
+				}
+				if !isBooleanCompatibleType(condType.Name) && condType.Name != runtime.TypeAny {
+					c.popScope()
+					return fmt.Errorf("where condition must be Bool or Boolean, got %s", condType.Name)
+				}
+			}
+		}
+		c.insideLoop++
+		for _, bodyStmt := range node.Body.Statements {
+			if err := c.checkStmt(bodyStmt); err != nil {
+				c.insideLoop--
+				if whereBindingActive {
+					c.popScope()
+				}
+				c.popScope()
+				return err
+			}
+		}
+		c.insideLoop--
+		if whereBindingActive {
+			c.popScope()
+		}
+		c.popScope()
+		return nil
+	case *ast.LoopStmt:
 		if node.Condition != nil {
 			condType, err := c.checkExpr(node.Condition)
 			if err != nil {
-				c.popScope()
 				return err
 			}
 			if !isBooleanCompatibleType(condType.Name) && condType.Name != runtime.TypeAny {
-				c.popScope()
-				return fmt.Errorf("where condition must be Bool or Boolean, got %s", condType.Name)
+				return fmt.Errorf("line %d:%d: loop condition must be Bool or Boolean, got %s", node.Keyword.Line, node.Keyword.Column, condType.Name)
 			}
 		}
-		for _, bodyStmt := range node.Body.Statements {
-			if err := c.checkStmt(bodyStmt); err != nil {
-				c.popScope()
-				return err
-			}
+		c.insideLoop++
+		err := c.checkBlock(node.Body)
+		c.insideLoop--
+		return err
+	case *ast.BreakStmt:
+		if c.insideLoop == 0 {
+			return fmt.Errorf("line %d:%d: break used outside loop", node.Keyword.Line, node.Keyword.Column)
 		}
-		c.popScope()
+		return nil
+	case *ast.ContinueStmt:
+		if c.insideLoop == 0 {
+			return fmt.Errorf("line %d:%d: continue used outside loop", node.Keyword.Line, node.Keyword.Column)
+		}
 		return nil
 	case *ast.BlockStmt:
 		return c.checkBlock(node)
@@ -451,11 +682,13 @@ func (c *Checker) checkStmt(stmt ast.Stmt) error {
 			for i, param := range method.Params {
 				c.currentScope()[param.Name.Lexeme] = symbol{Type: callable.Callable.Params[i], Mutable: true}
 			}
-			for _, stmt := range method.Body.Statements {
-				if err := c.checkStmt(stmt); err != nil {
-					c.popScope()
-					c.currentFunc = prev
-					return err
+			if method.Body != nil {
+				for _, stmt := range method.Body.Statements {
+					if err := c.checkStmt(stmt); err != nil {
+						c.popScope()
+						c.currentFunc = prev
+						return err
+					}
 				}
 			}
 			if err := c.validateMethodAnnotations(node, method, classSym.Type, instanceType, callable); err != nil {
@@ -466,8 +699,14 @@ func (c *Checker) checkStmt(stmt ast.Stmt) error {
 			}
 			if !method.IsConstructor {
 				if method.Static {
+					if existing, ok := classSym.Type.Members[method.Name.Lexeme]; ok && existing.Callable != nil {
+						callable = mergeCallableOverloads(existing, callable)
+					}
 					classSym.Type.Members[method.Name.Lexeme] = callable
 				} else {
+					if existing, ok := instanceType.Members[method.Name.Lexeme]; ok && existing.Callable != nil {
+						callable = mergeCallableOverloads(existing, callable)
+					}
 					instanceType.Members[method.Name.Lexeme] = callable
 				}
 			}
@@ -498,6 +737,9 @@ func (c *Checker) compoundAssignable(target Type, valueType Type, operator token
 			resultType := numericBinaryType(token.Plus, target, valueType)
 			return c.isAssignable(target, resultType)
 		}
+		if resultType, ok := c.resolveBinaryOperatorType(token.Plus, target, valueType); ok {
+			return c.isAssignable(target, resultType)
+		}
 		return false
 	case token.MinusEqual, token.StarEqual, token.SlashEqual:
 		if target.Name == runtime.TypeAny || valueType.Name == runtime.TypeAny {
@@ -505,6 +747,16 @@ func (c *Checker) compoundAssignable(target Type, valueType Type, operator token
 		}
 		if isNumericCompatibleType(target.Name) && isNumericCompatibleType(valueType.Name) {
 			resultType := numericBinaryType(operator.Type, target, valueType)
+			return c.isAssignable(target, resultType)
+		}
+		binaryOperator := token.Minus
+		switch operator.Type {
+		case token.StarEqual:
+			binaryOperator = token.Star
+		case token.SlashEqual:
+			binaryOperator = token.Slash
+		}
+		if resultType, ok := c.resolveBinaryOperatorType(binaryOperator, target, valueType); ok {
 			return c.isAssignable(target, resultType)
 		}
 		return false
@@ -532,17 +784,29 @@ func (c *Checker) expectedCallableType(expected *Type) *CallableType {
 	if expected == nil {
 		return nil
 	}
-	if expected.Callable != nil {
-		return expected.Callable
+	resolved := c.resolveKnownInterfaceShape(*expected)
+	if resolved.Callable != nil {
+		return resolved.Callable
 	}
-	if expected.IsInterface && len(expected.Members) == 1 {
-		for _, member := range expected.Members {
+	if resolved.IsInterface && len(resolved.Members) == 1 {
+		for _, member := range resolved.Members {
 			if member.Callable != nil {
 				return member.Callable
 			}
 		}
 	}
 	return nil
+}
+
+func (c *Checker) resolveKnownInterfaceShape(t Type) Type {
+	if t.Callable != nil || len(t.Members) > 0 || len(t.ConstructorOverloads) > 0 {
+		return t
+	}
+	ifaceType, ok := c.interfaces[t.Name]
+	if !ok {
+		return t
+	}
+	return c.applyResolvedTypeArgs(ifaceType, t.Args)
 }
 
 func (c *Checker) checkExprWithExpected(expr ast.Expr, expected *Type) (Type, error) {
@@ -580,6 +844,12 @@ func (c *Checker) checkExprWithExpected(expr ast.Expr, expected *Type) (Type, er
 			return Unknown(), fmt.Errorf("cannot cast %s to %s", source.Name, target.Name)
 		}
 		return target, nil
+	case *ast.InstanceOfExpr:
+		if _, err := c.checkExpr(node.Expr); err != nil {
+			return Unknown(), err
+		}
+		_ = c.resolveTypeRef(node.Target)
+		return Primitive(runtime.TypeBool), nil
 	case *ast.VariableExpr:
 		if t, ok := c.lookup(node.Name.Lexeme); ok {
 			return t.Type, nil
@@ -675,6 +945,9 @@ func (c *Checker) checkExprWithExpected(expr ast.Expr, expected *Type) (Type, er
 		switch node.Operator.Type {
 		case token.Minus:
 			if !isNumericCompatibleType(right.Name) && right.Name != runtime.TypeAny {
+				if result, ok := c.resolveUnaryOperatorType(node.Operator.Type, right); ok {
+					return result, nil
+				}
 				return Unknown(), fmt.Errorf("line %d:%d: unary '-' expects Number, got %s", node.Operator.Line, node.Operator.Column, right.Name)
 			}
 			if right.Name == runtime.TypeInt || right.Name == runtime.TypeFloat {
@@ -695,14 +968,74 @@ func (c *Checker) checkExprWithExpected(expr ast.Expr, expected *Type) (Type, er
 		if err != nil {
 			return Unknown(), err
 		}
+		if calleeType.Name == runtime.TypeAny {
+			// Fast path for dynamic "any" type: assume it's callable and bypass strict structural checks.
+			for _, arg := range node.Arguments {
+				if _, err := c.checkExpr(arg); err != nil {
+					return Unknown(), err
+				}
+			}
+			return Any(), nil
+		}
 		if calleeType.Callable == nil {
 			return Unknown(), fmt.Errorf("line %d:%d: expression is not callable", node.Paren.Line, node.Paren.Column)
+		}
+
+		if calleeType.Callable.Overloaded && len(node.TypeArgs) == 0 {
+			return c.resolveOverloadedCall(node, calleeType)
 		}
 		if !calleeType.Callable.Variadic && len(node.Arguments) != len(calleeType.Callable.Params) {
 			return Unknown(), fmt.Errorf("line %d:%d: expected %d arguments, got %d", node.Paren.Line, node.Paren.Column, len(calleeType.Callable.Params), len(node.Arguments))
 		}
 		specializedParams := calleeType.Callable.Params
 		specializedReturn := calleeType.Callable.Return
+		if len(node.TypeArgs) > 0 {
+			if len(calleeType.Args) == 0 {
+				return Unknown(), fmt.Errorf("line %d:%d: expression does not accept type arguments", node.Paren.Line, node.Paren.Column)
+			}
+			if len(node.TypeArgs) != len(calleeType.Args) {
+				return Unknown(), fmt.Errorf("line %d:%d: expected %d type arguments, got %d", node.Paren.Line, node.Paren.Column, len(calleeType.Args), len(node.TypeArgs))
+			}
+			explicitArgs := make([]Type, len(node.TypeArgs))
+			for i, typeArgRef := range node.TypeArgs {
+				resolvedType := c.resolveTypeRef(typeArgRef)
+				explicitArgs[i] = resolvedType
+				genericArg := calleeType.Args[i]
+				if genericArg.IsTypeParam {
+					if !c.isAssignable(genericArg, resolvedType) {
+						return Unknown(), fmt.Errorf("line %d:%d: type argument %s does not satisfy bounds of %s", node.Paren.Line, node.Paren.Column, resolvedType.Name, genericArg.Name)
+					}
+				}
+			}
+			specializedCallee := applyTypeArgs(calleeType, explicitArgs)
+			specializedParams = specializedCallee.Callable.Params
+			specializedReturn = specializedCallee.Callable.Return
+			for i, arg := range node.Arguments {
+				expectedIndex := i
+				if expectedIndex >= len(specializedParams) {
+					expectedIndex = len(specializedParams) - 1
+				}
+				if expectedIndex < 0 {
+					argType, err := c.checkExpr(arg)
+					if err != nil {
+						return Unknown(), err
+					}
+					_ = argType
+					continue
+				}
+				argType, err := c.checkExprWithExpected(arg, &specializedParams[expectedIndex])
+				if err != nil {
+					return Unknown(), err
+				}
+				if calleeType.Callable.Variadic {
+					continue
+				}
+				if !c.isAssignable(specializedParams[i], argType) {
+					return Unknown(), fmt.Errorf("line %d:%d: argument %d expects %s, got %s", node.Paren.Line, node.Paren.Column, i+1, DisplayName(specializedParams[i]), DisplayName(argType))
+				}
+			}
+			return specializedReturn, nil
+		}
 		if len(calleeType.Args) > 0 {
 			bindings := make(map[string]Type)
 			argTypes := make([]Type, len(node.Arguments))
@@ -730,7 +1063,15 @@ func (c *Checker) checkExprWithExpected(expr ast.Expr, expected *Type) (Type, er
 			specializedReturn = c.substituteWithBindings(calleeType.Callable.Return, bindings)
 			for i, argType := range argTypes {
 				if _, isLambda := node.Arguments[i].(*ast.LambdaExpr); isLambda {
-					argType, err = c.checkExprWithExpected(node.Arguments[i], &specializedParams[i])
+					expectedIndex := i
+					if expectedIndex >= len(specializedParams) {
+						expectedIndex = len(specializedParams) - 1
+					}
+					if expectedIndex < 0 {
+						argType, err = c.checkExpr(node.Arguments[i])
+					} else {
+						argType, err = c.checkExprWithExpected(node.Arguments[i], &specializedParams[expectedIndex])
+					}
 					if err != nil {
 						return Unknown(), err
 					}
@@ -739,13 +1080,23 @@ func (c *Checker) checkExprWithExpected(expr ast.Expr, expected *Type) (Type, er
 					continue
 				}
 				if !c.isAssignable(specializedParams[i], argType) {
-					return Unknown(), fmt.Errorf("line %d:%d: argument %d expects %s, got %s", node.Paren.Line, node.Paren.Column, i+1, specializedParams[i].Name, argType.Name)
+					return Unknown(), fmt.Errorf("line %d:%d: argument %d expects %s, got %s", node.Paren.Line, node.Paren.Column, i+1, DisplayName(specializedParams[i]), DisplayName(argType))
 				}
 			}
 			return specializedReturn, nil
 		}
 		for i, arg := range node.Arguments {
-			argType, err := c.checkExprWithExpected(arg, &specializedParams[i])
+			expectedIndex := i
+			if expectedIndex >= len(specializedParams) {
+				expectedIndex = len(specializedParams) - 1
+			}
+			var argType Type
+			var err error
+			if expectedIndex < 0 {
+				argType, err = c.checkExpr(arg)
+			} else {
+				argType, err = c.checkExprWithExpected(arg, &specializedParams[expectedIndex])
+			}
 			if err != nil {
 				return Unknown(), err
 			}
@@ -753,7 +1104,7 @@ func (c *Checker) checkExprWithExpected(expr ast.Expr, expected *Type) (Type, er
 				continue
 			}
 			if !c.isAssignable(specializedParams[i], argType) {
-				return Unknown(), fmt.Errorf("line %d:%d: argument %d expects %s, got %s", node.Paren.Line, node.Paren.Column, i+1, specializedParams[i].Name, argType.Name)
+				return Unknown(), fmt.Errorf("line %d:%d: argument %d expects %s, got %s", node.Paren.Line, node.Paren.Column, i+1, DisplayName(specializedParams[i]), DisplayName(argType))
 			}
 		}
 		return specializedReturn, nil
@@ -763,11 +1114,9 @@ func (c *Checker) checkExprWithExpected(expr ast.Expr, expected *Type) (Type, er
 			return Unknown(), fmt.Errorf("line %d:%d: undefined class %s", node.Class.Line, node.Class.Column, node.Class.Lexeme)
 		}
 		calleeType := classSymbol.Type
-		if calleeType.Callable == nil {
+		constructorCandidates := c.constructorCandidates(calleeType)
+		if len(constructorCandidates) == 0 {
 			return Unknown(), fmt.Errorf("line %d:%d: %s is not constructible", node.Class.Line, node.Class.Column, node.Class.Lexeme)
-		}
-		if len(node.Arguments) != len(calleeType.Callable.Params) {
-			return Unknown(), fmt.Errorf("line %d:%d: expected %d arguments, got %d", node.Paren.Line, node.Paren.Column, len(calleeType.Callable.Params), len(node.Arguments))
 		}
 		if calleeType.IsAbstract {
 			return Unknown(), fmt.Errorf("line %d:%d: cannot instantiate abstract class %s", node.Class.Line, node.Class.Column, node.Class.Lexeme)
@@ -775,9 +1124,6 @@ func (c *Checker) checkExprWithExpected(expr ast.Expr, expected *Type) (Type, er
 		if err := c.ensureConstructorAccessible(node.Class.Lexeme, calleeType.ConstructorVisibility, node.Class.Line, node.Class.Column); err != nil {
 			return Unknown(), err
 		}
-		specializedParams := calleeType.Callable.Params
-		specializedReturn := calleeType.Callable.Return
-		bindings := make(map[string]Type)
 		argTypes := make([]Type, len(node.Arguments))
 		for i, arg := range node.Arguments {
 			argType, err := c.checkExpr(arg)
@@ -785,38 +1131,89 @@ func (c *Checker) checkExprWithExpected(expr ast.Expr, expected *Type) (Type, er
 				return Unknown(), err
 			}
 			argTypes[i] = argType
-			if len(calleeType.Args) > 0 {
-				c.inferGenericBindings(calleeType.Callable.Params[i], argType, bindings)
-			}
 		}
-		if len(calleeType.Args) > 0 {
-			for _, genericArg := range calleeType.Args {
-				if genericArg.IsTypeParam {
-					if boundValue, ok := bindings[genericArg.Name]; ok && !c.isAssignable(genericArg, boundValue) {
-						return Unknown(), fmt.Errorf("line %d:%d: inferred type %s does not satisfy bounds of %s", node.Paren.Line, node.Paren.Column, boundValue.Name, genericArg.Name)
+		matchedByArity := false
+		var lastTypeError error
+		for _, candidate := range constructorCandidates {
+			if candidate == nil || (!candidate.Variadic && len(candidate.Params) != len(node.Arguments)) {
+				continue
+			}
+			matchedByArity = true
+			specializedParams := candidate.Params
+			specializedReturn := candidate.Return
+			bindings := make(map[string]Type)
+			if len(calleeType.Args) > 0 {
+				for i, argType := range argTypes {
+					c.inferGenericBindings(candidate.Params[i], argType, bindings)
+				}
+				for _, genericArg := range calleeType.Args {
+					if genericArg.IsTypeParam {
+						if boundValue, ok := bindings[genericArg.Name]; ok && !c.isAssignable(genericArg, boundValue) {
+							return Unknown(), fmt.Errorf("line %d:%d: inferred type %s does not satisfy bounds of %s", node.Paren.Line, node.Paren.Column, boundValue.Name, genericArg.Name)
+						}
 					}
 				}
+				specializedParams = make([]Type, len(candidate.Params))
+				for i, param := range candidate.Params {
+					specializedParams[i] = c.substituteWithBindings(param, bindings)
+				}
+				specializedReturn = c.substituteWithBindings(candidate.Return, bindings)
 			}
-			specializedParams = make([]Type, len(calleeType.Callable.Params))
-			for i, param := range calleeType.Callable.Params {
-				specializedParams[i] = c.substituteWithBindings(param, bindings)
-			}
-			specializedReturn = c.substituteWithBindings(calleeType.Callable.Return, bindings)
-		}
-		for i, argType := range argTypes {
-			if _, isLambda := node.Arguments[i].(*ast.LambdaExpr); isLambda {
-				var err error
-				argType, err = c.checkExprWithExpected(node.Arguments[i], &specializedParams[i])
-				if err != nil {
-					return Unknown(), err
+			matched := true
+			for i, argType := range argTypes {
+				resolvedArgType := argType
+				if _, isLambda := node.Arguments[i].(*ast.LambdaExpr); isLambda {
+					var err error
+					resolvedArgType, err = c.checkExprWithExpected(node.Arguments[i], &specializedParams[i])
+					if err != nil {
+						return Unknown(), err
+					}
+				}
+				if !c.isAssignable(specializedParams[i], resolvedArgType) {
+					lastTypeError = fmt.Errorf("line %d:%d: constructor argument %d expects %s, got %s", node.Paren.Line, node.Paren.Column, i+1, DisplayName(specializedParams[i]), DisplayName(resolvedArgType))
+					matched = false
+					break
 				}
 			}
-			if !c.isAssignable(specializedParams[i], argType) {
-				return Unknown(), fmt.Errorf("line %d:%d: constructor argument %d expects %s, got %s", node.Paren.Line, node.Paren.Column, i+1, specializedParams[i].Name, argType.Name)
+			if matched {
+				return specializedReturn, nil
 			}
 		}
-		return specializedReturn, nil
+		if !matchedByArity {
+			return Unknown(), fmt.Errorf("line %d:%d: no constructor overload of %s accepts %d arguments", node.Paren.Line, node.Paren.Column, node.Class.Lexeme, len(node.Arguments))
+		}
+		if lastTypeError != nil {
+			return Unknown(), lastTypeError
+		}
+		return Unknown(), fmt.Errorf("line %d:%d: no constructor overload of %s matches the provided arguments", node.Paren.Line, node.Paren.Column, node.Class.Lexeme)
 	case *ast.GetExpr:
+		if _, isSuper := node.Object.(*ast.SuperExpr); isSuper {
+			if c.currentClass == nil || c.currentMethod == nil {
+				return Unknown(), fmt.Errorf("line %d:%d: 'super' outside method or constructor", node.Name.Line, node.Name.Column)
+			}
+			if c.currentClass.Superclass == nil {
+				return Unknown(), fmt.Errorf("line %d:%d: class %s has no superclass", node.Name.Line, node.Name.Column, c.currentClass.Name.Lexeme)
+			}
+			parentSym, ok := c.lookup(c.currentClass.Superclass.Name.Lexeme)
+			if !ok || parentSym.Type.Callable == nil {
+				return Unknown(), fmt.Errorf("line %d:%d: undefined superclass %s", node.Name.Line, node.Name.Column, c.currentClass.Superclass.Name.Lexeme)
+			}
+			_, _, isStatic, found := c.lookupClassMember(c.currentClass.Superclass.Name.Lexeme, node.Name.Lexeme)
+			if !found {
+				return Unknown(), fmt.Errorf("line %d:%d: %s has no member %s", node.Name.Line, node.Name.Column, c.currentClass.Superclass.Name.Lexeme, node.Name.Lexeme)
+			}
+			if isStatic {
+				return Unknown(), fmt.Errorf("line %d:%d: super cannot access static member %s", node.Name.Line, node.Name.Column, node.Name.Lexeme)
+			}
+			member, ok := parentSym.Type.Callable.Return.Members[node.Name.Lexeme]
+			if !ok {
+				return Unknown(), fmt.Errorf("line %d:%d: %s has no member %s", node.Name.Line, node.Name.Column, c.currentClass.Superclass.Name.Lexeme, node.Name.Lexeme)
+			}
+			if err := c.ensureMemberAccessible(parentSym.Type.Callable.Return, node.Name.Lexeme, true, node.Name.Line, node.Name.Column); err != nil {
+				return Unknown(), err
+			}
+			return member, nil
+		}
 		objType, err := c.checkExpr(node.Object)
 		if err != nil {
 			return Unknown(), err
@@ -1011,6 +1408,9 @@ func (c *Checker) canReferenceCast(source Type, target Type) bool {
 	if source.Name == runtime.TypeNil {
 		return !c.isNumericCastType(target) && !isPrimitiveScalarType(target.Name)
 	}
+	if isWrapperPrimitiveCastPair(source.Name, target.Name) || isWrapperPrimitiveCastPair(target.Name, source.Name) {
+		return true
+	}
 	if target.Name == runtime.TypeAny || source.Name == runtime.TypeAny || source.Name == "Unknown" {
 		return true
 	}
@@ -1027,6 +1427,29 @@ func (c *Checker) canReferenceCast(source Type, target Type) bool {
 		return true
 	}
 	return len(target.Members) > 0 && len(source.Members) > 0
+}
+
+func isWrapperPrimitiveCastPair(sourceName string, targetName string) bool {
+	switch sourceName {
+	case "Integer":
+		return targetName == runtime.TypeInt || targetName == runtime.TypeFloat || targetName == runtime.TypeNumber
+	case "Float", "Double":
+		return targetName == runtime.TypeFloat || targetName == runtime.TypeNumber || targetName == runtime.TypeInt
+	case "Boolean":
+		return targetName == runtime.TypeBool
+	case "Char":
+		return targetName == runtime.TypeChar || targetName == runtime.TypeString
+	case runtime.TypeInt:
+		return targetName == "Integer" || targetName == "Float" || targetName == "Double"
+	case runtime.TypeFloat, runtime.TypeNumber:
+		return targetName == "Integer" || targetName == "Float" || targetName == "Double"
+	case runtime.TypeBool:
+		return targetName == "Boolean"
+	case runtime.TypeChar:
+		return targetName == "Char"
+	default:
+		return false
+	}
 }
 
 func (c *Checker) checkLambdaBlock(block *ast.BlockStmt) (Type, error) {
@@ -1049,6 +1472,100 @@ func (c *Checker) checkLambdaBlock(block *ast.BlockStmt) (Type, error) {
 		result = c.currentFunc.Return
 	}
 	return result, nil
+}
+
+func binaryOperatorMethodNames(operator token.Type) (string, string) {
+	switch operator {
+	case token.Plus:
+		return "__add", "__radd"
+	case token.Minus:
+		return "__sub", "__rsub"
+	case token.Star:
+		return "__mul", "__rmul"
+	case token.Slash:
+		return "__div", "__rdiv"
+	case token.Percent:
+		return "__mod", "__rmod"
+	case token.StarStar, token.Caret:
+		return "__pow", "__rpow"
+	case token.Greater:
+		return "__gt", "__rgt"
+	case token.Less:
+		return "__lt", "__rlt"
+	default:
+		return "", ""
+	}
+}
+
+func unaryOperatorMethodName(operator token.Type) string {
+	switch operator {
+	case token.Minus:
+		return "__neg"
+	default:
+		return ""
+	}
+}
+
+func (c *Checker) resolveUnaryOperatorType(operator token.Type, operand Type) (Type, bool) {
+	methodName := unaryOperatorMethodName(operator)
+	if methodName == "" {
+		return Unknown(), false
+	}
+	member, ok := operand.Members[methodName]
+	if !ok || member.Callable == nil {
+		return Unknown(), false
+	}
+	if member.Callable.Overloaded {
+		if member.Callable.Return.Name == "Unknown" {
+			return Any(), true
+		}
+		return member.Callable.Return, true
+	}
+	if len(member.Callable.Params) != 0 {
+		return Unknown(), false
+	}
+	if member.Callable.Return.Name == "Unknown" {
+		return Any(), true
+	}
+	return member.Callable.Return, true
+}
+
+func (c *Checker) resolveBinaryOperatorType(operator token.Type, left Type, right Type) (Type, bool) {
+	leftMethod, rightMethod := binaryOperatorMethodNames(operator)
+	if leftMethod != "" {
+		if result, ok := c.resolveOperatorMethodReturn(left, leftMethod, right); ok {
+			return result, true
+		}
+	}
+	if rightMethod != "" {
+		if result, ok := c.resolveOperatorMethodReturn(right, rightMethod, left); ok {
+			return result, true
+		}
+	}
+	return Unknown(), false
+}
+
+func (c *Checker) resolveOperatorMethodReturn(receiver Type, methodName string, arg Type) (Type, bool) {
+	member, ok := receiver.Members[methodName]
+	if !ok || member.Callable == nil {
+		return Unknown(), false
+	}
+	if member.Callable.Overloaded {
+		if member.Callable.Return.Name == "Unknown" {
+			return Any(), true
+		}
+		return member.Callable.Return, true
+	}
+	if len(member.Callable.Params) != 1 {
+		return Unknown(), false
+	}
+	if !c.isAssignable(member.Callable.Params[0], arg) {
+		return Unknown(), false
+	}
+	if member.Callable.Return.Name == "Unknown" {
+		return Any(), true
+	}
+	return member.Callable.Return, true
 }
 
 func (c *Checker) checkBinary(node *ast.BinaryExpr) (Type, error) {
@@ -1089,9 +1606,15 @@ func (c *Checker) checkBinary(node *ast.BinaryExpr) (Type, error) {
 		if (isNumericCompatibleType(left.Name) || left.Name == runtime.TypeAny) && (isNumericCompatibleType(right.Name) || right.Name == runtime.TypeAny) {
 			return numericBinaryType(token.Plus, left, right), nil
 		}
+		if result, ok := c.resolveBinaryOperatorType(node.Operator.Type, left, right); ok {
+			return result, nil
+		}
 		return Unknown(), fmt.Errorf("line %d:%d: '+' expects Number/Number, String or Array concatenation, got %s and %s", node.Operator.Line, node.Operator.Column, left.Name, right.Name)
-	case token.Minus, token.Star, token.Slash, token.Percent:
+	case token.Minus, token.Star, token.StarStar, token.Caret, token.Slash, token.Percent:
 		if (!isNumericCompatibleType(left.Name) && left.Name != runtime.TypeAny) || (!isNumericCompatibleType(right.Name) && right.Name != runtime.TypeAny) {
+			if result, ok := c.resolveBinaryOperatorType(node.Operator.Type, left, right); ok {
+				return result, nil
+			}
 			return Unknown(), fmt.Errorf("line %d:%d: arithmetic expects Number, got %s and %s", node.Operator.Line, node.Operator.Column, left.Name, right.Name)
 		}
 		return numericBinaryType(node.Operator.Type, left, right), nil
@@ -1100,6 +1623,12 @@ func (c *Checker) checkBinary(node *ast.BinaryExpr) (Type, error) {
 			return Primitive(runtime.TypeBool), nil
 		}
 		if (!isNumericCompatibleType(left.Name) && left.Name != runtime.TypeAny) || (!isNumericCompatibleType(right.Name) && right.Name != runtime.TypeAny) {
+			if result, ok := c.resolveBinaryOperatorType(node.Operator.Type, left, right); ok {
+				if result.Name == "Unknown" {
+					return Primitive(runtime.TypeBool), nil
+				}
+				return result, nil
+			}
 			return Unknown(), fmt.Errorf("line %d:%d: comparison expects Number, got %s and %s", node.Operator.Line, node.Operator.Column, left.Name, right.Name)
 		}
 		return Primitive(runtime.TypeBool), nil
@@ -1139,29 +1668,40 @@ func (c *Checker) functionType(fn *ast.FunctionStmt) Type {
 }
 
 func (c *Checker) classType(classStmt *ast.ClassStmt) Type {
+	if c.resolvingClasses[classStmt.Name.Lexeme] {
+		if self, ok := c.lookup(classStmt.Name.Lexeme); ok {
+			return self.Type
+		}
+	}
+	c.resolvingClasses[classStmt.Name.Lexeme] = true
+	defer delete(c.resolvingClasses, classStmt.Name.Lexeme)
 	c.pushScope()
 	typeParams := c.bindTypeParams(classStmt.TypeParams)
 	defer c.popScope()
 	instanceMembers := make(map[string]Type, len(classStmt.Fields)+len(classStmt.Methods))
 	classMembers := make(map[string]Type, len(classStmt.Fields)+len(classStmt.Methods))
 	instance := Type{Name: classStmt.Name.Lexeme, Args: append([]Type(nil), typeParams...), Members: instanceMembers, IsAbstract: classStmt.IsAbstract, IsEnum: classStmt.IsEnum, IsSealed: classStmt.IsSealed || classStmt.IsFinal || classStmt.IsEnum, IsRecord: classStmt.IsRecord, Permits: permitSet(permitNamesFromRefs(classStmt.Permits))}
+	placeholder := Type{Name: classStmt.Name.Lexeme, Args: append([]Type(nil), typeParams...), Members: classMembers, Callable: &CallableType{Params: nil, Return: instance}, IsAbstract: classStmt.IsAbstract, IsEnum: classStmt.IsEnum, IsSealed: classStmt.IsSealed || classStmt.IsFinal, IsRecord: classStmt.IsRecord, Permits: permitSet(permitNamesFromRefs(classStmt.Permits))}
+	c.currentScope()[classStmt.Name.Lexeme] = symbol{Type: placeholder, Mutable: false}
 	ctorParams := []Type{}
+	ctorOverloads := make([]*CallableType, 0)
 	ctorVisibility := string(ast.VisibilityPublic)
 	if classStmt.IsEnum {
 		instanceMembers["name"] = Primitive(runtime.TypeString)
 		instanceMembers["ordinal"] = Primitive(runtime.TypeNumber)
 	}
 	if classStmt.Superclass != nil {
-		parentType := c.resolveTypeRef(classStmt.Superclass)
 		if parent, ok := c.lookup(classStmt.Superclass.Name.Lexeme); ok {
-			_ = parent
-			for name, member := range parentType.Members {
-				classMembers[name] = member
-			}
+			parentType := parent.Type
+			parentInstance := parentType
 			if parentType.Callable != nil {
-				for name, member := range parentType.Callable.Return.Members {
-					instanceMembers[name] = member
+				for name, member := range parentType.Members {
+					classMembers[name] = member
 				}
+				parentInstance = parentType.Callable.Return
+			}
+			for name, member := range parentInstance.Members {
+				instanceMembers[name] = member
 			}
 		}
 	}
@@ -1183,14 +1723,26 @@ func (c *Checker) classType(classStmt *ast.ClassStmt) Type {
 				continue
 			}
 			ctorParams = methodType.Callable.Params
+			ctorCopy := *methodType.Callable
+			ctorOverloads = append(ctorOverloads, &ctorCopy)
 			ctorVisibility = string(method.Visibility)
 			continue
 		}
 		if method.Static {
+			if existing, ok := classMembers[method.Name.Lexeme]; ok {
+				if existing.Callable != nil && methodType.Callable != nil {
+					methodType = mergeCallableOverloads(existing, methodType)
+				}
+			}
 			classMembers[method.Name.Lexeme] = methodType
-		} else {
-			instanceMembers[method.Name.Lexeme] = methodType
+			continue
 		}
+		if existing, ok := instanceMembers[method.Name.Lexeme]; ok {
+			if existing.Callable != nil && methodType.Callable != nil {
+				methodType = mergeCallableOverloads(existing, methodType)
+			}
+		}
+		instanceMembers[method.Name.Lexeme] = methodType
 	}
 	if classStmt.IsEnum {
 		for _, enumValue := range classStmt.EnumValues {
@@ -1200,9 +1752,132 @@ func (c *Checker) classType(classStmt *ast.ClassStmt) Type {
 		classMembers["values"] = Type{Name: runtime.TypeFunction, Callable: &CallableType{Params: nil, Return: Primitive(runtime.TypeArray)}}
 		classMembers["names"] = Type{Name: runtime.TypeFunction, Callable: &CallableType{Params: nil, Return: Primitive(runtime.TypeArray)}}
 		classMembers["size"] = Type{Name: runtime.TypeFunction, Callable: &CallableType{Params: nil, Return: Primitive(runtime.TypeNumber)}}
-		return Type{Name: classStmt.Name.Lexeme, Args: append([]Type(nil), typeParams...), Members: classMembers, Callable: &CallableType{Params: nil, Return: instance}, ConstructorVisibility: string(ast.VisibilityPrivate), IsEnum: true, IsSealed: true, IsRecord: classStmt.IsRecord, Permits: permitSet(permitNamesFromRefs(classStmt.Permits))}
+		finalType := Type{Name: classStmt.Name.Lexeme, Args: append([]Type(nil), typeParams...), Members: classMembers, Callable: &CallableType{Params: nil, Return: instance}, ConstructorVisibility: string(ast.VisibilityPrivate), IsEnum: true, IsSealed: true, IsRecord: classStmt.IsRecord, Permits: permitSet(permitNamesFromRefs(classStmt.Permits))}
+		c.currentScope()[classStmt.Name.Lexeme] = symbol{Type: finalType, Mutable: false}
+		return finalType
 	}
-	return Type{Name: classStmt.Name.Lexeme, Args: append([]Type(nil), typeParams...), Members: classMembers, Callable: &CallableType{Params: ctorParams, Return: instance}, ConstructorVisibility: ctorVisibility, IsAbstract: classStmt.IsAbstract, IsEnum: classStmt.IsEnum, IsSealed: classStmt.IsSealed || classStmt.IsFinal, IsRecord: classStmt.IsRecord, Permits: permitSet(permitNamesFromRefs(classStmt.Permits))}
+	finalType := Type{Name: classStmt.Name.Lexeme, Args: append([]Type(nil), typeParams...), Members: classMembers, Callable: &CallableType{Params: ctorParams, Return: instance}, ConstructorOverloads: ctorOverloads, ConstructorVisibility: ctorVisibility, IsAbstract: classStmt.IsAbstract, IsEnum: classStmt.IsEnum, IsSealed: classStmt.IsSealed || classStmt.IsFinal, IsRecord: classStmt.IsRecord, Permits: permitSet(permitNamesFromRefs(classStmt.Permits))}
+	c.currentScope()[classStmt.Name.Lexeme] = symbol{Type: finalType, Mutable: false}
+	return finalType
+}
+
+func (c *Checker) constructorCandidates(classType Type) []*CallableType {
+	if len(classType.ConstructorOverloads) > 0 {
+		return classType.ConstructorOverloads
+	}
+	if classType.Callable == nil {
+		return nil
+	}
+	return []*CallableType{classType.Callable}
+}
+
+func cloneCallableType(callable *CallableType) *CallableType {
+	if callable == nil {
+		return nil
+	}
+	return &CallableType{
+		Params:     append([]Type(nil), callable.Params...),
+		Return:     callable.Return,
+		Variadic:   callable.Variadic,
+		Overloaded: callable.Overloaded,
+	}
+}
+
+func mergeCallableOverloads(existing Type, current Type) Type {
+	if existing.Callable == nil || current.Callable == nil {
+		return current
+	}
+	overloads := make([]*CallableType, 0, 2)
+	if len(existing.CallOverloads) > 0 {
+		for _, overload := range existing.CallOverloads {
+			if overload == nil {
+				continue
+			}
+			overloads = append(overloads, cloneCallableType(overload))
+		}
+	} else {
+		overloads = append(overloads, cloneCallableType(existing.Callable))
+	}
+	if len(current.CallOverloads) > 0 {
+		for _, overload := range current.CallOverloads {
+			if overload == nil {
+				continue
+			}
+			overloads = append(overloads, cloneCallableType(overload))
+		}
+	} else {
+		overloads = append(overloads, cloneCallableType(current.Callable))
+	}
+	current.Callable = cloneCallableType(current.Callable)
+	current.Callable.Overloaded = len(overloads) > 1
+	current.CallOverloads = overloads
+	return current
+}
+
+func (c *Checker) callCandidates(t Type) []*CallableType {
+	if len(t.CallOverloads) > 0 {
+		return t.CallOverloads
+	}
+	if t.Callable == nil {
+		return nil
+	}
+	return []*CallableType{t.Callable}
+}
+
+func (c *Checker) resolveOverloadedCall(node *ast.CallExpr, calleeType Type) (Type, error) {
+	candidates := c.callCandidates(calleeType)
+	if len(candidates) == 0 {
+		return Unknown(), fmt.Errorf("line %d:%d: expression is not callable", node.Paren.Line, node.Paren.Column)
+	}
+	matchedByArity := false
+	var lastTypeError error
+	for _, candidate := range candidates {
+		if candidate == nil {
+			continue
+		}
+		if !candidate.Variadic && len(node.Arguments) != len(candidate.Params) {
+			continue
+		}
+		matchedByArity = true
+		matched := true
+		for i, arg := range node.Arguments {
+			expectedIndex := i
+			if expectedIndex >= len(candidate.Params) {
+				expectedIndex = len(candidate.Params) - 1
+			}
+			var argType Type
+			var err error
+			if expectedIndex < 0 {
+				argType, err = c.checkExpr(arg)
+			} else {
+				argType, err = c.checkExprWithExpected(arg, &candidate.Params[expectedIndex])
+			}
+			if err != nil {
+				return Unknown(), err
+			}
+			if candidate.Variadic || expectedIndex < 0 {
+				continue
+			}
+			if !c.isAssignable(candidate.Params[expectedIndex], argType) {
+				lastTypeError = fmt.Errorf("line %d:%d: argument %d expects %s, got %s", node.Paren.Line, node.Paren.Column, i+1, DisplayName(candidate.Params[expectedIndex]), DisplayName(argType))
+				matched = false
+				break
+			}
+		}
+		if matched {
+			if candidate.Return.Name == "Unknown" {
+				return Any(), nil
+			}
+			return candidate.Return, nil
+		}
+	}
+	if !matchedByArity {
+		return Unknown(), fmt.Errorf("line %d:%d: no overload accepts %d arguments", node.Paren.Line, node.Paren.Column, len(node.Arguments))
+	}
+	if lastTypeError != nil {
+		return Unknown(), lastTypeError
+	}
+	return Unknown(), fmt.Errorf("line %d:%d: no overload matches the provided arguments", node.Paren.Line, node.Paren.Column)
 }
 
 func (c *Checker) methodType(instance Type, method ast.MethodDecl) Type {
@@ -1235,17 +1910,22 @@ func (c *Checker) methodType(instance Type, method ast.MethodDecl) Type {
 }
 
 func (c *Checker) interfaceType(name string, seen map[string]bool) Type {
-	if iface, ok := c.interfaces[name]; ok {
+	if iface, ok := c.interfaces[name]; ok && !c.resolvingIfaces[name] {
 		return iface
 	}
 	if seen[name] {
-		return Type{Name: name, Members: map[string]Type{}}
+		return Type{Name: name, Members: map[string]Type{}, IsInterface: true}
+	}
+	if c.resolvingIfaces[name] {
+		return Type{Name: name, Members: map[string]Type{}, IsInterface: true}
 	}
 	decl, ok := c.interfaceDecls[name]
 	if !ok {
 		return Primitive(name)
 	}
 	seen[name] = true
+	c.resolvingIfaces[name] = true
+	c.interfaces[name] = Type{Name: name, Members: map[string]Type{}, IsInterface: true}
 	c.pushScope()
 	typeParams := c.bindTypeParams(decl.TypeParams)
 	members := make(map[string]Type)
@@ -1273,6 +1953,7 @@ func (c *Checker) interfaceType(name string, seen map[string]bool) Type {
 	c.popScope()
 	ifaceType := Type{Name: name, Args: typeParams, Members: members, IsInterface: true, IsSealed: decl.IsSealed, Permits: permitSet(permitNamesFromRefs(decl.Permits))}
 	c.interfaces[name] = ifaceType
+	delete(c.resolvingIfaces, name)
 	delete(seen, name)
 	return ifaceType
 }
@@ -1303,7 +1984,7 @@ func (c *Checker) resolveTypeRef(typeRef *ast.TypeRef) Type {
 		args[i] = c.resolveTypeRef(arg)
 	}
 	if alias, ok := c.lookupTypeAlias(typeRef.Name.Lexeme); ok {
-		return applyTypeArgs(alias, args)
+		return c.applyResolvedTypeArgs(alias, args)
 	}
 	if decl, ok := c.typeAliasDecls[typeRef.Name.Lexeme]; ok {
 		if c.resolvingTypes[typeRef.Name.Lexeme] {
@@ -1313,48 +1994,106 @@ func (c *Checker) resolveTypeRef(typeRef *ast.TypeRef) Type {
 		resolved := c.resolveTypeRef(decl.Target)
 		delete(c.resolvingTypes, typeRef.Name.Lexeme)
 		c.typeScopes[0][typeRef.Name.Lexeme] = resolved
-		return applyTypeArgs(resolved, args)
+		return c.applyResolvedTypeArgs(resolved, args)
+	}
+	if ifaceType, ok := c.interfaces[typeRef.Name.Lexeme]; ok {
+		return c.applyResolvedTypeArgs(ifaceType, args)
 	}
 	if iface, ok := c.interfaceDecls[typeRef.Name.Lexeme]; ok && iface != nil {
-		return applyTypeArgs(c.interfaceType(typeRef.Name.Lexeme, map[string]bool{}), args)
+		return c.applyResolvedTypeArgs(c.interfaceType(typeRef.Name.Lexeme, map[string]bool{}), args)
 	}
-	if sym, ok := c.lookup(typeRef.Name.Lexeme); ok && (sym.Type.Name == typeRef.Name.Lexeme || sym.Type.IsTypeParam) {
-		return applyTypeArgs(sym.Type, args)
+	if _, ok := c.classes[typeRef.Name.Lexeme]; ok {
+		if sym, found := c.lookup(typeRef.Name.Lexeme); found {
+			if sym.Type.Callable != nil && sym.Type.Callable.Return.Name == typeRef.Name.Lexeme {
+				return c.applyResolvedTypeArgs(sym.Type.Callable.Return, args)
+			}
+			return c.applyResolvedTypeArgs(sym.Type, args)
+		}
+		classType := c.classType(c.classes[typeRef.Name.Lexeme])
+		if classType.Callable != nil {
+			return c.applyResolvedTypeArgs(classType.Callable.Return, args)
+		}
+		return c.applyResolvedTypeArgs(classType, args)
+	}
+	if sym, ok := c.lookup(typeRef.Name.Lexeme); ok && (sym.Type.Name == typeRef.Name.Lexeme || sym.Type.IsTypeParam || (sym.Type.Callable != nil && sym.Type.Callable.Return.Name == typeRef.Name.Lexeme)) {
+		return c.applyResolvedTypeArgs(c.namedTypeValue(sym.Type, typeRef.Name.Lexeme), args)
 	}
 	if builtin, ok := sourceBuiltinType(typeRef.Name.Lexeme); ok {
-		return applyTypeArgs(Primitive(builtin), args)
+		return c.applyResolvedTypeArgs(Primitive(builtin), args)
 	}
-	return applyTypeArgs(Primitive(typeRef.Name.Lexeme), args)
+	return c.applyResolvedTypeArgs(Primitive(typeRef.Name.Lexeme), args)
+}
+
+func (c *Checker) applyResolvedTypeArgs(base Type, args []Type) Type {
+	if len(base.Args) > 0 && len(args) < len(base.Args) {
+		filled := make([]Type, len(base.Args))
+		copy(filled, args)
+		for i := len(args); i < len(filled); i++ {
+			filled[i] = Any()
+		}
+		args = filled
+	}
+	if len(args) == 0 {
+		return base
+	}
+	return applyTypeArgs(base, args)
+}
+
+func (c *Checker) namedTypeValue(t Type, name string) Type {
+	if t.Callable != nil && t.Callable.Return.Name == name && (len(t.Members) > 0 || len(t.ConstructorOverloads) > 0 || t.ConstructorVisibility != "") {
+		return t.Callable.Return
+	}
+	return t
 }
 
 func sourceBuiltinType(name string) (string, bool) {
 	switch name {
 	case "int":
 		return runtime.TypeInt, true
+	case "Int":
+		return runtime.TypeInt, true
 	case "float":
+		return runtime.TypeFloat, true
+	case "Float":
 		return runtime.TypeFloat, true
 	case "number":
 		return runtime.TypeNumber, true
+	case "Number":
+		return runtime.TypeNumber, true
 	case "bool":
 		return runtime.TypeBool, true
+	case "Bool":
+		return runtime.TypeBool, true
 	case "char":
+		return runtime.TypeChar, true
+	case "Char":
 		return runtime.TypeChar, true
 	case "String":
 		return runtime.TypeString, true
 	case "string":
 		return runtime.TypeString, true
+	case "Array":
+		return runtime.TypeArray, true
 	case "nil":
 		return runtime.TypeNil, true
 	case "void":
 		return runtime.TypeVoid, true
 	case "array":
 		return runtime.TypeArray, true
+	case "Map":
+		return runtime.TypeMap, true
 	case "map":
 		return runtime.TypeMap, true
+	case "Tuple":
+		return runtime.TypeTuple, true
 	case "tuple":
 		return runtime.TypeTuple, true
 	case "Range":
 		return runtime.TypeRange, true
+	case "range":
+		return runtime.TypeRange, true
+	case "Function":
+		return runtime.TypeFunction, true
 	case "any", "":
 		return runtime.TypeAny, true
 	case "Any":
@@ -1442,45 +2181,67 @@ func (c *Checker) typeFromSpecWithParams(spec runtime.Spec, typeParams map[strin
 	if spec.Callable != nil {
 		params := make([]Type, len(spec.Callable.Params))
 		for i, param := range spec.Callable.Params {
-			if localTypeParams != nil {
-				if resolved, ok := localTypeParams[param]; ok {
-					params[i] = resolved
+			params[i] = c.resolveSpecTypeName(param, localTypeParams)
+		}
+		ret := c.resolveSpecTypeName(spec.Callable.Return, localTypeParams)
+		if len(spec.InstanceMembers) > 0 {
+			ret = c.instanceTypeFromSpecsWithParams(spec.Callable.Return, spec.InstanceMembers, localTypeParams, declaredArgs)
+		}
+		t.Callable = &CallableType{Params: params, Return: ret, Variadic: spec.Callable.Variadic, Overloaded: spec.Callable.Overloaded}
+		if len(spec.Callable.Overloads) > 0 {
+			t.CallOverloads = make([]*CallableType, 0, len(spec.Callable.Overloads))
+			for _, overload := range spec.Callable.Overloads {
+				if overload == nil {
 					continue
 				}
+				overloadParams := make([]Type, len(overload.Params))
+				for i, param := range overload.Params {
+					overloadParams[i] = c.resolveSpecTypeName(param, localTypeParams)
+				}
+				overloadReturn := c.resolveSpecTypeName(overload.Return, localTypeParams)
+				if len(spec.InstanceMembers) > 0 {
+					overloadReturn = c.instanceTypeFromSpecsWithParams(overload.Return, spec.InstanceMembers, localTypeParams, declaredArgs)
+				}
+				t.CallOverloads = append(t.CallOverloads, &CallableType{Params: overloadParams, Return: overloadReturn, Variadic: overload.Variadic, Overloaded: overload.Overloaded})
 			}
-			params[i] = Primitive(param)
 		}
-		ret := Primitive(spec.Callable.Return)
-		if localTypeParams != nil {
-			if resolved, ok := localTypeParams[spec.Callable.Return]; ok {
-				ret = resolved
+	}
+	if len(spec.ConstructorOverloads) > 0 {
+		t.ConstructorOverloads = make([]*CallableType, 0, len(spec.ConstructorOverloads))
+		for _, overload := range spec.ConstructorOverloads {
+			if overload == nil {
+				continue
 			}
+			params := make([]Type, len(overload.Params))
+			for i, param := range overload.Params {
+				params[i] = c.resolveSpecTypeName(param, localTypeParams)
+			}
+			ret := c.resolveSpecTypeName(overload.Return, localTypeParams)
+			if len(spec.InstanceMembers) > 0 {
+				ret = c.instanceTypeFromSpecsWithParams(overload.Return, spec.InstanceMembers, localTypeParams, declaredArgs)
+			}
+			t.ConstructorOverloads = append(t.ConstructorOverloads, &CallableType{Params: params, Return: ret, Variadic: overload.Variadic, Overloaded: overload.Overloaded})
 		}
-		if len(spec.InstanceMembers) > 0 {
-			ret = c.instanceTypeFromSpecs(spec.Callable.Return, spec.InstanceMembers)
-		}
-		t.Callable = &CallableType{Params: params, Return: ret, Variadic: spec.Callable.Variadic}
 	}
 	return *t
 }
 
 func (c *Checker) instanceTypeFromSpecs(typeName string, members map[string]runtime.Spec) Type {
+	return c.instanceTypeFromSpecsWithParams(typeName, members, nil, nil)
+}
+
+func (c *Checker) instanceTypeFromSpecsWithParams(typeName string, members map[string]runtime.Spec, typeParams map[string]Type, declaredArgs []Type) Type {
 	cacheKey := Primitive(typeName).Name
+	if len(declaredArgs) > 0 {
+		cacheKey += "<" + DisplayName(Type{Name: Primitive(typeName).Name, Args: declaredArgs}) + ">"
+	}
 	if cached, ok := c.instanceCache[cacheKey]; ok {
 		return *cached
 	}
-	instanceType := &Type{Name: cacheKey, Members: make(map[string]Type, len(members))}
+	instanceType := &Type{Name: Primitive(typeName).Name, Args: append([]Type(nil), declaredArgs...), Members: make(map[string]Type, len(members))}
 	c.instanceCache[cacheKey] = instanceType
 	for name, member := range members {
-		instanceType.Members[name] = c.shallowTypeFromSpec(member)
-	}
-	for name, member := range members {
-		if member.Callable == nil || len(member.InstanceMembers) == 0 {
-			continue
-		}
-		memberType := instanceType.Members[name]
-		memberType.Callable.Return = c.instanceTypeFromSpecs(member.Callable.Return, member.InstanceMembers)
-		instanceType.Members[name] = memberType
+		instanceType.Members[name] = c.typeFromSpecWithParams(member, typeParams)
 	}
 	return *instanceType
 }
@@ -1496,15 +2257,154 @@ func (c *Checker) shallowTypeFromSpec(spec runtime.Spec) Type {
 	if spec.Callable != nil {
 		params := make([]Type, len(spec.Callable.Params))
 		for i, param := range spec.Callable.Params {
-			params[i] = Primitive(param)
+			params[i] = c.resolveSpecTypeName(param, nil)
 		}
-		ret := Primitive(spec.Callable.Return)
+		ret := c.resolveSpecTypeName(spec.Callable.Return, nil)
 		if len(spec.InstanceMembers) > 0 {
 			ret = Type{Name: Primitive(spec.Callable.Return).Name}
 		}
-		t.Callable = &CallableType{Params: params, Return: ret, Variadic: spec.Callable.Variadic}
+		t.Callable = &CallableType{Params: params, Return: ret, Variadic: spec.Callable.Variadic, Overloaded: spec.Callable.Overloaded}
+		if len(spec.Callable.Overloads) > 0 {
+			t.CallOverloads = make([]*CallableType, 0, len(spec.Callable.Overloads))
+			for _, overload := range spec.Callable.Overloads {
+				if overload == nil {
+					continue
+				}
+				overloadParams := make([]Type, len(overload.Params))
+				for i, param := range overload.Params {
+					overloadParams[i] = c.resolveSpecTypeName(param, nil)
+				}
+				overloadReturn := c.resolveSpecTypeName(overload.Return, nil)
+				if len(spec.InstanceMembers) > 0 {
+					overloadReturn = Type{Name: Primitive(overload.Return).Name}
+				}
+				t.CallOverloads = append(t.CallOverloads, &CallableType{Params: overloadParams, Return: overloadReturn, Variadic: overload.Variadic, Overloaded: overload.Overloaded})
+			}
+		}
+	}
+	if len(spec.ConstructorOverloads) > 0 {
+		t.ConstructorOverloads = make([]*CallableType, 0, len(spec.ConstructorOverloads))
+		for _, overload := range spec.ConstructorOverloads {
+			if overload == nil {
+				continue
+			}
+			params := make([]Type, len(overload.Params))
+			for i, param := range overload.Params {
+				params[i] = c.resolveSpecTypeName(param, nil)
+			}
+			ret := c.resolveSpecTypeName(overload.Return, nil)
+			if len(spec.InstanceMembers) > 0 {
+				ret = Type{Name: Primitive(overload.Return).Name}
+			}
+			t.ConstructorOverloads = append(t.ConstructorOverloads, &CallableType{Params: params, Return: ret, Variadic: overload.Variadic, Overloaded: overload.Overloaded})
+		}
 	}
 	return t
+}
+
+func (c *Checker) resolveSpecTypeName(typeName string, typeParams map[string]Type) Type {
+	trimmed := strings.TrimSpace(typeName)
+	if trimmed == "" {
+		return Any()
+	}
+	if typeParams != nil {
+		if resolved, ok := typeParams[trimmed]; ok {
+			return resolved
+		}
+	}
+	unionParts := splitSpecTypeList(trimmed, '|')
+	if len(unionParts) > 1 {
+		options := make([]Type, len(unionParts))
+		for i, part := range unionParts {
+			options[i] = c.resolveSpecTypeName(part, typeParams)
+		}
+		return UnionOf(options...)
+	}
+	base, args := parseSpecGenericType(trimmed)
+	resolvedArgs := make([]Type, len(args))
+	for i, arg := range args {
+		resolvedArgs[i] = c.resolveSpecTypeName(arg, typeParams)
+	}
+	if alias, ok := c.lookupTypeAlias(base); ok {
+		return c.applyResolvedTypeArgs(alias, resolvedArgs)
+	}
+	if decl, ok := c.typeAliasDecls[base]; ok {
+		if c.resolvingTypes[base] {
+			return Unknown()
+		}
+		c.resolvingTypes[base] = true
+		resolved := c.resolveTypeRef(decl.Target)
+		delete(c.resolvingTypes, base)
+		c.typeScopes[0][base] = resolved
+		return c.applyResolvedTypeArgs(resolved, resolvedArgs)
+	}
+	if ifaceType, ok := c.interfaces[base]; ok {
+		return c.applyResolvedTypeArgs(ifaceType, resolvedArgs)
+	}
+	if iface, ok := c.interfaceDecls[base]; ok && iface != nil {
+		return c.applyResolvedTypeArgs(c.interfaceType(base, map[string]bool{}), resolvedArgs)
+	}
+	if _, ok := c.classes[base]; ok {
+		classType := c.classType(c.classes[base])
+		if classType.Callable != nil {
+			return c.applyResolvedTypeArgs(classType.Callable.Return, resolvedArgs)
+		}
+		return c.applyResolvedTypeArgs(classType, resolvedArgs)
+	}
+	if sym, ok := c.lookup(base); ok && (sym.Type.Name == base || sym.Type.IsTypeParam) {
+		return c.applyResolvedTypeArgs(c.namedTypeValue(sym.Type, base), resolvedArgs)
+	}
+	if builtin, ok := sourceBuiltinType(base); ok {
+		return c.applyResolvedTypeArgs(Primitive(builtin), resolvedArgs)
+	}
+	return c.applyResolvedTypeArgs(Primitive(base), resolvedArgs)
+}
+
+func parseSpecGenericType(typeName string) (string, []string) {
+	typeName = strings.TrimSpace(typeName)
+	if !strings.HasSuffix(typeName, ">") {
+		return typeName, nil
+	}
+	depth := 0
+	start := -1
+	for i, ch := range typeName {
+		switch ch {
+		case '<':
+			if depth == 0 {
+				start = i
+			}
+			depth++
+		case '>':
+			depth--
+		}
+	}
+	if start < 0 {
+		return typeName, nil
+	}
+	return strings.TrimSpace(typeName[:start]), splitSpecTypeList(typeName[start+1:len(typeName)-1], ',')
+}
+
+func splitSpecTypeList(input string, separator rune) []string {
+	parts := make([]string, 0)
+	depth := 0
+	start := 0
+	for i, ch := range input {
+		switch ch {
+		case '<':
+			depth++
+		case '>':
+			if depth > 0 {
+				depth--
+			}
+		default:
+			if ch == separator && depth == 0 {
+				parts = append(parts, strings.TrimSpace(input[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	parts = append(parts, strings.TrimSpace(input[start:]))
+	return parts
 }
 
 func (c *Checker) validateImplementedInterfaces(classStmt *ast.ClassStmt, instanceType Type) error {
@@ -1519,8 +2419,8 @@ func (c *Checker) validateImplementedInterfaces(classStmt *ast.ClassStmt, instan
 					}
 					return fmt.Errorf("line %d:%d: %s declares %s but is missing %s", iface.Name.Line, iface.Name.Column, classStmt.Name.Lexeme, iface.Name.Lexeme, name)
 				}
-				if !c.isAssignable(member, actual) {
-					return fmt.Errorf("line %d:%d: %s.%s does not match interface %s", iface.Name.Line, iface.Name.Column, classStmt.Name.Lexeme, name, iface.Name.Lexeme)
+				if !c.interfaceMemberAssignable(member, actual) {
+					return fmt.Errorf("line %d:%d: %s.%s does not match interface %s: expected %s, got %s", iface.Name.Line, iface.Name.Column, classStmt.Name.Lexeme, name, iface.Name.Lexeme, DisplayName(member), DisplayName(actual))
 				}
 			}
 			continue
@@ -1534,8 +2434,8 @@ func (c *Checker) validateImplementedInterfaces(classStmt *ast.ClassStmt, instan
 					}
 					return fmt.Errorf("line %d:%d: %s declares %s but is missing %s", iface.Name.Line, iface.Name.Column, classStmt.Name.Lexeme, iface.Name.Lexeme, name)
 				}
-				if !c.isAssignable(member, actual) {
-					return fmt.Errorf("line %d:%d: %s.%s does not match interface %s", iface.Name.Line, iface.Name.Column, classStmt.Name.Lexeme, name, iface.Name.Lexeme)
+				if !c.interfaceMemberAssignable(member, actual) {
+					return fmt.Errorf("line %d:%d: %s.%s does not match interface %s: expected %s, got %s", iface.Name.Line, iface.Name.Column, classStmt.Name.Lexeme, name, iface.Name.Lexeme, DisplayName(member), DisplayName(actual))
 				}
 			}
 			continue
@@ -1569,6 +2469,29 @@ func (c *Checker) validateImplementedInterfaces(classStmt *ast.ClassStmt, instan
 	return nil
 }
 
+func (c *Checker) interfaceMemberAssignable(expected Type, actual Type) bool {
+	if c.isAssignable(expected, actual) {
+		return true
+	}
+	if expected.Callable == nil || actual.Callable == nil {
+		return false
+	}
+	if len(expected.Callable.Params) != len(actual.Callable.Params) {
+		return false
+	}
+	for i := range expected.Callable.Params {
+		if !c.isAssignable(expected.Callable.Params[i], actual.Callable.Params[i]) {
+			return false
+		}
+	}
+	if c.isAssignable(expected.Callable.Return, actual.Callable.Return) {
+		return true
+	}
+	if c.explicitlyImplementsResolvedInterface(actual.Callable.Return, expected.Callable.Return) {
+		return true
+	}
+	return c.recursiveStructuralAssignable(expected.Callable.Return, actual.Callable.Return, map[string]bool{})
+}
 func (c *Checker) validateInterfaceDecl(node *ast.InterfaceStmt) error {
 	if node.IsSealed {
 		if len(node.Permits) == 0 {
@@ -1768,6 +2691,21 @@ func joinNames(items []string) string {
 }
 
 func (c *Checker) validateMethodAnnotations(classStmt *ast.ClassStmt, method ast.MethodDecl, classType Type, instanceType Type, callable Type) error {
+	if !method.Static {
+		switch method.Name.Lexeme {
+		case "__eq":
+			if len(callable.Callable.Params) != 1 {
+				return fmt.Errorf("line %d:%d: __eq requires exactly one parameter", method.Name.Line, method.Name.Column)
+			}
+			if callable.Callable.Return.Name != runtime.TypeBool && callable.Callable.Return.Name != runtime.TypeAny && callable.Callable.Return.Name != "Unknown" {
+				return fmt.Errorf("line %d:%d: __eq must return Bool", method.Name.Line, method.Name.Column)
+			}
+		case "__hash":
+			if len(callable.Callable.Params) != 0 {
+				return fmt.Errorf("line %d:%d: __hash requires zero parameters", method.Name.Line, method.Name.Column)
+			}
+		}
+	}
 	for _, annotation := range method.Annotations {
 		switch normalizeAnnotation(annotation.Name.Lexeme) {
 		case "Override":
@@ -1844,6 +2782,8 @@ func (c *Checker) hasOverrideTarget(classStmt *ast.ClassStmt, method ast.MethodD
 }
 
 func (c *Checker) isAssignable(target Type, source Type) bool {
+	target = c.resolveKnownInterfaceShape(target)
+	source = c.resolveKnownInterfaceShape(source)
 	if target.IsTypeParam && source.IsTypeParam && target.Name == source.Name {
 		return true
 	}
@@ -1868,22 +2808,57 @@ func (c *Checker) isAssignable(target Type, source Type) bool {
 		}
 		return true
 	}
-	if target.Name == source.Name && len(target.Args) > 0 && target.IsInterface == source.IsInterface && ((target.Callable != nil) == (source.Callable != nil)) {
-		if len(target.Args) != len(source.Args) {
-			return false
+	if target.Name == source.Name && (len(target.Args) > 0 || len(source.Args) > 0) && target.IsInterface == source.IsInterface && ((target.Callable != nil) == (source.Callable != nil)) {
+		argCount := len(target.Args)
+		if len(source.Args) > argCount {
+			argCount = len(source.Args)
 		}
-		for i := range target.Args {
-			if target.Args[i].WildcardKind != "" {
-				if !c.isAssignable(target.Args[i], source.Args[i]) {
+		if argCount == 0 {
+			return true
+		}
+		targetArgs := make([]Type, argCount)
+		sourceArgs := make([]Type, argCount)
+		for i := 0; i < argCount; i++ {
+			if i < len(target.Args) {
+				targetArgs[i] = target.Args[i]
+			} else {
+				targetArgs[i] = Any()
+			}
+			if i < len(source.Args) {
+				sourceArgs[i] = source.Args[i]
+			} else {
+				sourceArgs[i] = Any()
+			}
+		}
+		for i := 0; i < argCount; i++ {
+			if targetArgs[i].WildcardKind != "" {
+				if !c.isAssignable(targetArgs[i], sourceArgs[i]) {
 					return false
 				}
 				continue
 			}
-			if !c.isAssignable(target.Args[i], source.Args[i]) {
+			if !c.isAssignable(targetArgs[i], sourceArgs[i]) {
 				return false
 			}
 		}
 		return true
+	}
+	if target.IsInterface && c.explicitlyImplementsResolvedInterface(source, target) {
+		return true
+	}
+	if target.Callable != nil && source.Callable != nil {
+		if len(target.Callable.Params) != len(source.Callable.Params) {
+			return false
+		}
+		for i := range target.Callable.Params {
+			if !c.isAssignable(target.Callable.Params[i], source.Callable.Params[i]) {
+				return false
+			}
+		}
+		if c.isAssignable(target.Callable.Return, source.Callable.Return) {
+			return true
+		}
+		return c.recursiveStructuralAssignable(target.Callable.Return, source.Callable.Return, map[string]bool{})
 	}
 	if target.IsAssignableFrom(source) {
 		return true
@@ -1900,13 +2875,7 @@ func (c *Checker) isAssignable(target Type, source Type) bool {
 		}
 	}
 	if len(target.Members) > 0 && len(source.Members) > 0 {
-		for name, member := range target.Members {
-			actual, exists := source.Members[name]
-			if !exists || !c.isAssignable(member, actual) {
-				return false
-			}
-		}
-		return true
+		return c.recursiveStructuralAssignable(target, source, map[string]bool{})
 	}
 	if _, ok := c.interfaceDecls[target.Name]; ok {
 		return c.implementsInterface(source, target.Name)
@@ -1947,6 +2916,80 @@ func (c *Checker) implementsInterface(source Type, ifaceName string) bool {
 		}
 	}
 	return true
+}
+
+func (c *Checker) recursiveStructuralAssignable(target Type, source Type, seen map[string]bool) bool {
+	if len(target.Members) == 0 || len(source.Members) == 0 {
+		return false
+	}
+	key := DisplayName(target) + "<=" + DisplayName(source)
+	if seen[key] {
+		return true
+	}
+	seen[key] = true
+	defer delete(seen, key)
+	for name, member := range target.Members {
+		actual, exists := source.Members[name]
+		if !exists {
+			return false
+		}
+		if member.Callable != nil || actual.Callable != nil {
+			if member.Callable == nil || actual.Callable == nil {
+				return false
+			}
+			if len(member.Callable.Params) != len(actual.Callable.Params) {
+				return false
+			}
+			for i := range member.Callable.Params {
+				if !c.isAssignable(member.Callable.Params[i], actual.Callable.Params[i]) {
+					return false
+				}
+			}
+			if !c.isAssignable(member.Callable.Return, actual.Callable.Return) && !c.recursiveStructuralAssignable(member.Callable.Return, actual.Callable.Return, seen) {
+				return false
+			}
+			continue
+		}
+		if !c.isAssignable(member, actual) && !c.recursiveStructuralAssignable(member, actual, seen) {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *Checker) explicitlyImplementsResolvedInterface(source Type, target Type) bool {
+	classStmt, ok := c.classes[source.Name]
+	if !ok || classStmt == nil {
+		return false
+	}
+	bindings := make(map[string]Type, len(classStmt.TypeParams))
+	for i, param := range classStmt.TypeParams {
+		if i < len(source.Args) {
+			bindings[param.Name.Lexeme] = source.Args[i]
+		}
+	}
+	for _, ifaceRef := range classStmt.Implements {
+		if ifaceRef.Name.Lexeme != target.Name {
+			continue
+		}
+		resolved := c.resolveTypeRefWithBindings(ifaceRef, bindings)
+		if c.isAssignable(target, resolved) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Checker) resolveTypeRefWithBindings(typeRef *ast.TypeRef, bindings map[string]Type) Type {
+	if len(bindings) == 0 {
+		return c.resolveTypeRef(typeRef)
+	}
+	c.pushScope()
+	defer c.popScope()
+	for name, resolved := range bindings {
+		c.currentScope()[name] = symbol{Type: resolved, Mutable: false}
+	}
+	return c.resolveTypeRef(typeRef)
 }
 
 func (c *Checker) ensureMemberAccessible(objType Type, memberName string, read bool, line int, col int) error {

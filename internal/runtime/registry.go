@@ -21,9 +21,11 @@ const (
 )
 
 type CallableSpec struct {
-	Params   []string
-	Return   string
-	Variadic bool
+	Params     []string
+	Return     string
+	Variadic   bool
+	Overloaded bool
+	Overloads  []*CallableSpec
 }
 
 type Spec struct {
@@ -31,6 +33,7 @@ type Spec struct {
 	TypeName              string
 	TypeParams            []string
 	Callable              *CallableSpec
+	ConstructorOverloads  []*CallableSpec
 	ConstructorVisibility string
 	Module                *ModuleSpec
 	Members               map[string]Spec
@@ -78,6 +81,10 @@ func (r *Registry) DefineWithSpec(name string, val value.Value, spec Spec) {
 	r.specs[name] = spec
 }
 
+func (r *Registry) DefineClass(name string, class *value.Class, spec Spec) {
+	r.DefineWithSpec(name, value.ObjectValue(class), spec)
+}
+
 func (r *Registry) DefineBuiltin(name string, arity int, fn value.BuiltinFunc) {
 	params := make([]string, 0)
 	if arity > 0 {
@@ -90,14 +97,19 @@ func (r *Registry) DefineBuiltin(name string, arity int, fn value.BuiltinFunc) {
 }
 
 func (r *Registry) DefineTypedBuiltin(name string, params []string, returnType string, variadic bool, fn value.BuiltinFunc) {
+	r.DefineGenericBuiltin(name, nil, params, returnType, variadic, fn)
+}
+
+func (r *Registry) DefineGenericBuiltin(name string, typeParams []string, params []string, returnType string, variadic bool, fn value.BuiltinFunc) {
 	r.Define(name, value.ObjectValue(&value.Builtin{Name: name, Arity: len(params), Fn: fn}))
 	if variadic {
 		r.globals[name] = value.ObjectValue(&value.Builtin{Name: name, Arity: -1, Fn: fn})
 	}
 	r.specs[name] = Spec{
-		Name:     name,
-		TypeName: TypeFunction,
-		Callable: &CallableSpec{Params: params, Return: returnType, Variadic: variadic},
+		Name:       name,
+		TypeName:   TypeFunction,
+		TypeParams: append([]string(nil), typeParams...),
+		Callable:   &CallableSpec{Params: params, Return: returnType, Variadic: variadic},
 	}
 }
 

@@ -1,0 +1,19 @@
+var size = 50000
+var original = new int[size]
+for i in range(0, size):
+    original[i] = i
+end
+
+var started = Sys.time()
+var slice_sum = 0
+var half = size / 2
+var ihalf = (int) half
+var subset = new int[ihalf]
+for i in range(0, ihalf):
+    subset[i] = original[i]
+    slice_sum = slice_sum + subset[i]
+end
+var ended = Sys.time()
+println(slice_sum)
+println("TIME_PF")
+println(ended - started)

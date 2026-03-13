@@ -1,0 +1,13 @@
+public native def list_new() -> any
+public native def list_size(handle: any) -> int
+public native def list_add<T>(handle: any, element: T) -> void
+public native def list_add_first<T>(handle: any, element: T) -> void
+public native def list_add_last<T>(handle: any, element: T) -> void
+public native def list_remove<T>(handle: any, element: T) -> bool
+public native def list_contains<T>(handle: any, element: T) -> bool
+public native def list_clear(handle: any) -> void
+public native def list_as_array<T>(handle: any) -> array<T>
+public native def list_get<T>(handle: any, index: int) -> T
+public native def list_remove_first<T>(handle: any) -> T
+public native def list_remove_last<T>(handle: any) -> T
+public native def list_set<T>(handle: any, index: int, value: T) -> void

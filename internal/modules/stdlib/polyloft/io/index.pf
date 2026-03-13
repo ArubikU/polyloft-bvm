@@ -1,0 +1,65 @@
+native def read_file(path: String) -> String
+native def write_file(path: String, content: String) -> void
+native def append_file(path: String, content: String) -> void
+native def exists(path: String) -> bool
+native def delete_path(path: String) -> void
+native def mkdir(path: String) -> void
+native def read_dir(path: String) -> array
+native def is_dir(path: String) -> bool
+native def is_file(path: String) -> bool
+native def file_size(path: String) -> int
+native def file_info(path: String) -> map
+
+public class IO:
+    static def readFile(path: String) -> String:
+        return read_file(path)
+    end
+
+    static def readFile(path: String, encoding: String) -> String:
+        return read_file(path)
+    end
+
+    static def writeFile(path: String, content: String) -> void:
+        write_file(path, content)
+    end
+
+    static def writeFile(path: String, content: String, encoding: String) -> void:
+        write_file(path, content)
+    end
+
+    static def appendFile(path: String, content: String) -> void:
+        append_file(path, content)
+    end
+
+    static def exists(path: String) -> bool:
+        return exists(path)
+    end
+
+    static def delete(path: String) -> void:
+        delete_path(path)
+    end
+
+    static def mkdir(path: String) -> void:
+        mkdir(path)
+    end
+
+    static def readDir(path: String) -> array:
+        return read_dir(path)
+    end
+
+    static def isDir(path: String) -> bool:
+        return is_dir(path)
+    end
+
+    static def isFile(path: String) -> bool:
+        return is_file(path)
+    end
+
+    static def getFileSize(path: String) -> int:
+        return file_size(path)
+    end
+
+    static def getFileInfo(path: String) -> map:
+        return file_info(path)
+    end
+end

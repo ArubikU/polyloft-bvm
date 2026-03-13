@@ -1,0 +1,10 @@
+class Simple:
+    x: int
+
+    Simple(val):
+        this.x = val
+    end
+end
+
+let obj = new Simple(42)
+println(obj.x)

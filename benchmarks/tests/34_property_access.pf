@@ -1,0 +1,19 @@
+class Box:
+    inner: int
+
+    Box():
+        this.inner = 0
+    end
+end
+
+var started = Sys.time()
+var b = new Box()
+var s = 0
+for i in range(0, 1000000):
+    b.inner = i
+    s = s + b.inner
+end
+var ended = Sys.time()
+println(1000000)
+println("TIME_PF")
+println(ended - started)

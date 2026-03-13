@@ -26,28 +26,44 @@ const (
 	OpAdd
 	OpSub
 	OpMul
+	OpPow
 	OpDiv
 	OpMod
 	OpNot
 	OpNegate
+	OpPushHandler
+	OpPopHandler
+	OpThrow
 	OpJump
 	OpJumpIfFalse
 	OpLoop
 	OpAddNum
 	OpSubNum
 	OpMulNum
+	OpPowNum
 	OpDivNum
+	OpModNum
 	OpLessNum
 	OpGreaterNum
 	OpAddLocalMulThisField
+	OpAddLocalMulLocal
+	OpAppendLocalString
 	OpClosure
 	OpCall
+	OpCallConst
+	OpAddConstLocalInt
+	OpCallConstLocalSubInt
+	OpCallSelfLocalSubInt
+	OpCallGlobalSlot
 	OpInvoke
 	OpInvokeMethod
 	OpCallSuper
+	OpInvokeSuper
 	OpRange
 	OpRangeInitFast
 	OpRangeNextFast
+	OpJumpIfLocalLessEqualIntConstFalse
+	OpJumpIfLocalDivisibleByIntConstFalse
 	OpIterInit
 	OpIterNext
 	OpGetField
@@ -77,6 +93,8 @@ const (
 	OpTuple
 	OpUnpack
 	OpFreeze
+	OpSwap
+	OpSwapTwo
 	OpReturn
 )
 
@@ -128,6 +146,8 @@ func (op Op) String() string {
 		return "SUB"
 	case OpMul:
 		return "MUL"
+	case OpPow:
+		return "POW"
 	case OpDiv:
 		return "DIV"
 	case OpMod:
@@ -136,6 +156,12 @@ func (op Op) String() string {
 		return "NOT"
 	case OpNegate:
 		return "NEGATE"
+	case OpPushHandler:
+		return "PUSH_HANDLER"
+	case OpPopHandler:
+		return "POP_HANDLER"
+	case OpThrow:
+		return "THROW"
 	case OpJump:
 		return "JUMP"
 	case OpJumpIfFalse:
@@ -148,30 +174,54 @@ func (op Op) String() string {
 		return "SUB_NUM"
 	case OpMulNum:
 		return "MUL_NUM"
+	case OpPowNum:
+		return "POW_NUM"
 	case OpDivNum:
 		return "DIV_NUM"
+	case OpModNum:
+		return "MOD_NUM"
 	case OpLessNum:
 		return "LESS_NUM"
 	case OpGreaterNum:
 		return "GREATER_NUM"
 	case OpAddLocalMulThisField:
 		return "ADD_LOCAL_MUL_THIS_FIELD"
+	case OpAddLocalMulLocal:
+		return "ADD_LOCAL_MUL_LOCAL"
+	case OpAppendLocalString:
+		return "APPEND_LOCAL_STRING"
 	case OpClosure:
 		return "CLOSURE"
 	case OpCall:
 		return "CALL"
+	case OpCallConst:
+		return "CALL_CONST"
+	case OpAddConstLocalInt:
+		return "ADD_CONST_LOCAL_INT"
+	case OpCallConstLocalSubInt:
+		return "CALL_CONST_LOCAL_SUB_INT"
+	case OpCallSelfLocalSubInt:
+		return "CALL_SELF_LOCAL_SUB_INT"
+	case OpCallGlobalSlot:
+		return "CALL_GLOBAL_SLOT"
 	case OpInvoke:
 		return "INVOKE"
 	case OpInvokeMethod:
 		return "INVOKE_METHOD"
 	case OpCallSuper:
 		return "CALL_SUPER"
+	case OpInvokeSuper:
+		return "INVOKE_SUPER"
 	case OpRange:
 		return "RANGE"
 	case OpRangeInitFast:
 		return "RANGE_INIT_FAST"
 	case OpRangeNextFast:
 		return "RANGE_NEXT_FAST"
+	case OpJumpIfLocalLessEqualIntConstFalse:
+		return "JUMP_IF_LOCAL_LE_INT_CONST_FALSE"
+	case OpJumpIfLocalDivisibleByIntConstFalse:
+		return "JUMP_IF_LOCAL_DIVISIBLE_INT_CONST_FALSE"
 	case OpIterInit:
 		return "ITER_INIT"
 	case OpIterNext:
@@ -230,6 +280,10 @@ func (op Op) String() string {
 		return "UNPACK"
 	case OpFreeze:
 		return "FREEZE"
+	case OpSwap:
+		return "SWAP"
+	case OpSwapTwo:
+		return "SWAP_TWO"
 	case OpReturn:
 		return "RETURN"
 	default:

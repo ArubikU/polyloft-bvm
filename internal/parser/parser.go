@@ -3,18 +3,20 @@ package parser
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/ArubikU/polyloft-bvm/internal/ast"
 	"github.com/ArubikU/polyloft-bvm/internal/token"
 )
 
 type Parser struct {
-	tokens []token.Token
-	cur    int
+	tokens             []token.Token
+	cur                int
+	allowRangeShortcut bool
 }
 
 func Parse(tokens []token.Token) (*ast.Program, error) {
-	p := &Parser{tokens: tokens}
+	p := &Parser{tokens: tokens, allowRangeShortcut: true}
 	return p.parseProgram()
 }
 
@@ -43,6 +45,10 @@ func (p *Parser) topLevelDeclaration() (ast.Stmt, error) {
 	if p.match(token.Import) {
 		return p.importDeclaration()
 	}
+	annotations, err := p.annotations()
+	if err != nil {
+		return nil, err
+	}
 	modifiers, err := p.topLevelModifiers()
 	if err != nil {
 		return nil, err
@@ -52,7 +58,7 @@ func (p *Parser) topLevelDeclaration() (ast.Stmt, error) {
 	}
 	switch {
 	case p.match(token.Enum):
-		stmt, err := p.enumDeclaration(false)
+		stmt, err := p.enumDeclaration(p.previous(), false, annotations)
 		if err != nil {
 			return nil, err
 		}
@@ -64,7 +70,7 @@ func (p *Parser) topLevelDeclaration() (ast.Stmt, error) {
 		}
 		return enumStmt, nil
 	case p.match(token.Interface):
-		stmt, err := p.interfaceDeclaration()
+		stmt, err := p.interfaceDeclaration(p.previous(), annotations)
 		if err != nil {
 			return nil, err
 		}
@@ -76,7 +82,7 @@ func (p *Parser) topLevelDeclaration() (ast.Stmt, error) {
 		}
 		return iface, nil
 	case p.match(token.Class):
-		stmt, err := p.classDeclaration()
+		stmt, err := p.classDeclaration(p.previous(), annotations)
 		if err != nil {
 			return nil, err
 		}
@@ -90,19 +96,35 @@ func (p *Parser) topLevelDeclaration() (ast.Stmt, error) {
 			current := p.previous()
 			return nil, fmt.Errorf("line %d:%d: records do not support abstract or sealed modifiers", current.Line, current.Column)
 		}
-		stmt, err := p.recordDeclaration()
+		stmt, err := p.recordDeclaration(p.previous(), annotations)
 		if err != nil {
 			return nil, err
 		}
 		record := stmt.(*ast.ClassStmt)
 		record.Visibility = modifiers.Visibility
 		return record, nil
+	case p.match(token.Native):
+		if modifiers.IsAbstract || modifiers.IsSealed {
+			current := p.previous()
+			return nil, fmt.Errorf("line %d:%d: abstract and sealed modifiers only apply to classes and interfaces", current.Line, current.Column)
+		}
+		if _, err := p.consume(token.Def, "expected 'def' after 'native'"); err != nil {
+			return nil, err
+		}
+		stmt, err := p.functionDeclaration(p.previous(), annotations, true)
+		if err != nil {
+			return nil, err
+		}
+		fnStmt := stmt.(*ast.FunctionStmt)
+		fnStmt.Visibility = modifiers.Visibility
+		fnStmt.IsNative = true
+		return fnStmt, nil
 	case p.match(token.Def):
 		if modifiers.IsAbstract || modifiers.IsSealed {
 			current := p.previous()
 			return nil, fmt.Errorf("line %d:%d: abstract and sealed modifiers only apply to classes and interfaces", current.Line, current.Column)
 		}
-		stmt, err := p.functionDeclaration()
+		stmt, err := p.functionDeclaration(p.previous(), annotations, false)
 		if err != nil {
 			return nil, err
 		}
@@ -134,7 +156,7 @@ func (p *Parser) topLevelDeclaration() (ast.Stmt, error) {
 		return p.variableDeclarationWithVisibility(ast.VariableConst, modifiers.Visibility)
 	case p.match(token.Final):
 		if p.match(token.Enum) {
-			stmt, err := p.enumDeclaration(true)
+			stmt, err := p.enumDeclaration(p.previous(), true, annotations)
 			if err != nil {
 				return nil, err
 			}
@@ -151,6 +173,10 @@ func (p *Parser) topLevelDeclaration() (ast.Stmt, error) {
 			return nil, fmt.Errorf("line %d:%d: abstract and sealed modifiers only apply to classes and interfaces", current.Line, current.Column)
 		}
 		return p.variableDeclarationWithVisibility(ast.VariableFinal, modifiers.Visibility)
+	}
+	if len(annotations) > 0 {
+		current := p.peek()
+		return nil, fmt.Errorf("line %d:%d: annotations can only be applied to top-level functions, classes, records, enums, and interfaces", current.Line, current.Column)
 	}
 	if modifiers.HasVisibility || modifiers.IsAbstract || modifiers.IsSealed {
 		current := p.peek()
@@ -229,19 +255,19 @@ func (p *Parser) topLevelModifiers() (topLevelModifiers, error) {
 
 func (p *Parser) declaration() (ast.Stmt, error) {
 	if p.match(token.Interface) {
-		return p.interfaceDeclaration()
+		return p.interfaceDeclaration(p.previous(), nil)
 	}
 	if p.match(token.Enum) {
-		return p.enumDeclaration(false)
+		return p.enumDeclaration(p.previous(), false, nil)
 	}
 	if p.match(token.Record) {
-		return p.recordDeclaration()
+		return p.recordDeclaration(p.previous(), nil)
 	}
 	if p.match(token.Class) {
-		return p.classDeclaration()
+		return p.classDeclaration(p.previous(), nil)
 	}
 	if p.match(token.Def) {
-		return p.functionDeclaration()
+		return p.functionDeclaration(p.previous(), nil, false)
 	}
 	if p.match(token.TypeKw) {
 		return p.typeAliasDeclaration()
@@ -422,7 +448,7 @@ func (p *Parser) maybeTypeParams() ([]ast.TypeParam, bool, error) {
 	return params, true, nil
 }
 
-func (p *Parser) interfaceDeclaration() (ast.Stmt, error) {
+func (p *Parser) interfaceDeclaration(start token.Token, annotations []ast.Annotation) (ast.Stmt, error) {
 	name, err := p.consume(token.Identifier, "expected interface name")
 	if err != nil {
 		return nil, err
@@ -432,7 +458,7 @@ func (p *Parser) interfaceDeclaration() (ast.Stmt, error) {
 		return nil, err
 	}
 	extends := make([]*ast.TypeRef, 0)
-	if p.match(token.Extends) || p.match(token.Less) {
+	if p.match(token.Extends) {
 		for {
 			base, err := p.parseTypeRef("expected interface name after extends")
 			if err != nil {
@@ -454,7 +480,7 @@ func (p *Parser) interfaceDeclaration() (ast.Stmt, error) {
 	p.skipNewlines()
 	methods := make([]ast.InterfaceMethod, 0)
 	for !p.isAtEnd() && !p.check(token.End) {
-		methodName, err := p.consume(token.Identifier, "expected interface method name")
+		methodName, err := p.consumeName("expected interface method name")
 		if err != nil {
 			return nil, err
 		}
@@ -472,10 +498,10 @@ func (p *Parser) interfaceDeclaration() (ast.Stmt, error) {
 	if _, err := p.consume(token.End, "expected 'end' after interface body"); err != nil {
 		return nil, err
 	}
-	return &ast.InterfaceStmt{Visibility: ast.VisibilityPrivate, Name: name, TypeParams: typeParams, Extends: extends, Permits: permits, Methods: methods}, nil
+	return &ast.InterfaceStmt{Visibility: ast.VisibilityPrivate, Annotations: annotations, Name: name, TypeParams: typeParams, Extends: extends, Permits: permits, Methods: methods, SourceSpan: ast.SourceSpan{StartLine: sourceStartLine(start, annotations), EndLine: p.previous().Line}}, nil
 }
 
-func (p *Parser) classDeclaration() (ast.Stmt, error) {
+func (p *Parser) classDeclaration(start token.Token, annotations []ast.Annotation) (ast.Stmt, error) {
 	name, err := p.consume(token.Identifier, "expected class name")
 	if err != nil {
 		return nil, err
@@ -485,7 +511,7 @@ func (p *Parser) classDeclaration() (ast.Stmt, error) {
 		return nil, err
 	}
 	var superclass *ast.TypeRef
-	if p.match(token.Extends) || p.match(token.Less) {
+	if p.match(token.Extends) {
 		base, err := p.parseTypeRef("expected superclass name after extends")
 		if err != nil {
 			return nil, err
@@ -519,7 +545,7 @@ func (p *Parser) classDeclaration() (ast.Stmt, error) {
 		if err != nil {
 			return nil, err
 		}
-		visibility, isStatic, isAbstract, err := p.memberModifiers()
+		visibility, isStatic, isAbstract, isNative, err := p.memberModifiers()
 		if err != nil {
 			return nil, err
 		}
@@ -530,6 +556,7 @@ func (p *Parser) classDeclaration() (ast.Stmt, error) {
 			}
 			method.Static = true
 			method.Visibility = visibility
+			method.IsNative = isNative
 			classStmt.Methods = append(classStmt.Methods, method)
 			p.skipNewlines()
 			continue
@@ -588,6 +615,7 @@ func (p *Parser) classDeclaration() (ast.Stmt, error) {
 				return nil, err
 			}
 			method.Visibility = visibility
+			method.IsNative = isNative
 			classStmt.Methods = append(classStmt.Methods, method)
 			p.skipNewlines()
 			continue
@@ -611,6 +639,10 @@ func (p *Parser) classDeclaration() (ast.Stmt, error) {
 				if isAbstract {
 					current := p.peek()
 					return nil, fmt.Errorf("line %d:%d: constructors cannot be abstract", current.Line, current.Column)
+				}
+				if isNative {
+					current := p.peek()
+					return nil, fmt.Errorf("line %d:%d: constructors cannot be native", current.Line, current.Column)
 				}
 				method, err := p.methodDeclaration(true, classStmt.IsAbstract, false, name.Lexeme, annotations)
 				if err != nil {
@@ -669,6 +701,10 @@ func (p *Parser) classDeclaration() (ast.Stmt, error) {
 				current := p.peek()
 				return nil, fmt.Errorf("line %d:%d: constructors cannot be abstract", current.Line, current.Column)
 			}
+			if isNative {
+				current := p.peek()
+				return nil, fmt.Errorf("line %d:%d: constructors cannot be native", current.Line, current.Column)
+			}
 			method, err := p.methodDeclaration(true, classStmt.IsAbstract, false, name.Lexeme, nil)
 			if err != nil {
 				return nil, err
@@ -684,10 +720,12 @@ func (p *Parser) classDeclaration() (ast.Stmt, error) {
 	if _, err := p.consume(token.End, "expected 'end' after class body"); err != nil {
 		return nil, err
 	}
+	classStmt.Annotations = annotations
+	classStmt.SourceSpan = ast.SourceSpan{StartLine: sourceStartLine(start, annotations), EndLine: p.previous().Line}
 	return classStmt, nil
 }
 
-func (p *Parser) recordDeclaration() (ast.Stmt, error) {
+func (p *Parser) recordDeclaration(start token.Token, annotations []ast.Annotation) (ast.Stmt, error) {
 	name, err := p.consume(token.Identifier, "expected record name")
 	if err != nil {
 		return nil, err
@@ -708,7 +746,7 @@ func (p *Parser) recordDeclaration() (ast.Stmt, error) {
 		if err != nil {
 			return nil, err
 		}
-		visibility, isStatic, isAbstract, err := p.memberModifiers()
+		visibility, isStatic, isAbstract, isNative, err := p.memberModifiers()
 		if err != nil {
 			return nil, err
 		}
@@ -719,6 +757,7 @@ func (p *Parser) recordDeclaration() (ast.Stmt, error) {
 			}
 			method.Static = isStatic
 			method.Visibility = visibility
+			method.IsNative = isNative
 			methods = append(methods, method)
 			p.skipNewlines()
 			continue
@@ -733,10 +772,10 @@ func (p *Parser) recordDeclaration() (ast.Stmt, error) {
 	if _, err := p.consume(token.End, "expected 'end' after record body"); err != nil {
 		return nil, err
 	}
-	return &ast.ClassStmt{Visibility: ast.VisibilityPrivate, Name: name, IsRecord: true, Fields: fields, Methods: methods}, nil
+	return &ast.ClassStmt{Visibility: ast.VisibilityPrivate, Annotations: annotations, Name: name, IsRecord: true, Fields: fields, Methods: methods, SourceSpan: ast.SourceSpan{StartLine: sourceStartLine(start, annotations), EndLine: p.previous().Line}}, nil
 }
 
-func (p *Parser) enumDeclaration(isFinal bool) (ast.Stmt, error) {
+func (p *Parser) enumDeclaration(start token.Token, isFinal bool, annotations []ast.Annotation) (ast.Stmt, error) {
 	name, err := p.consume(token.Identifier, "expected enum name")
 	if err != nil {
 		return nil, err
@@ -765,7 +804,7 @@ func (p *Parser) enumDeclaration(isFinal bool) (ast.Stmt, error) {
 		if err != nil {
 			return nil, err
 		}
-		visibility, isStatic, isAbstract, err := p.memberModifiers()
+		visibility, isStatic, isAbstract, isNative, err := p.memberModifiers()
 		if err != nil {
 			return nil, err
 		}
@@ -776,6 +815,7 @@ func (p *Parser) enumDeclaration(isFinal bool) (ast.Stmt, error) {
 			}
 			method.Static = true
 			method.Visibility = visibility
+			method.IsNative = isNative
 			methods = append(methods, method)
 			p.skipNewlines()
 			continue
@@ -834,6 +874,7 @@ func (p *Parser) enumDeclaration(isFinal bool) (ast.Stmt, error) {
 				return nil, err
 			}
 			method.Visibility = visibility
+			method.IsNative = isNative
 			methods = append(methods, method)
 			p.skipNewlines()
 			continue
@@ -883,6 +924,14 @@ func (p *Parser) enumDeclaration(isFinal bool) (ast.Stmt, error) {
 				current := p.peek()
 				return nil, fmt.Errorf("line %d:%d: constructors cannot be abstract", current.Line, current.Column)
 			}
+			if isNative {
+				current := p.peek()
+				return nil, fmt.Errorf("line %d:%d: constructors cannot be native", current.Line, current.Column)
+			}
+			if isNative {
+				current := p.peek()
+				return nil, fmt.Errorf("line %d:%d: constructors cannot be native", current.Line, current.Column)
+			}
 			method, err := p.methodDeclaration(true, false, false, name.Lexeme, annotations)
 			if err != nil {
 				return nil, err
@@ -901,7 +950,7 @@ func (p *Parser) enumDeclaration(isFinal bool) (ast.Stmt, error) {
 	if _, err := p.consume(token.End, "expected 'end' after enum body"); err != nil {
 		return nil, err
 	}
-	return &ast.ClassStmt{Visibility: ast.VisibilityPrivate, Name: name, IsFinal: isFinal, IsEnum: true, EnumValues: values, Fields: fields, Methods: methods}, nil
+	return &ast.ClassStmt{Visibility: ast.VisibilityPrivate, Annotations: annotations, Name: name, IsFinal: isFinal, IsEnum: true, EnumValues: values, Fields: fields, Methods: methods, SourceSpan: ast.SourceSpan{StartLine: sourceStartLine(start, annotations), EndLine: p.previous().Line}}, nil
 }
 
 func (p *Parser) generatedRecordConstructor(name token.Token, params []ast.Parameter) ast.MethodDecl {
@@ -917,46 +966,55 @@ func (p *Parser) generatedRecordConstructor(name token.Token, params []ast.Param
 	return ast.MethodDecl{Name: name, Params: params, Body: body, IsConstructor: true, Visibility: ast.VisibilityPublic}
 }
 
-func (p *Parser) memberModifiers() (ast.Visibility, bool, bool, error) {
+func (p *Parser) memberModifiers() (ast.Visibility, bool, bool, bool, error) {
 	visibility := ast.VisibilityPublic
 	isStatic := false
 	isAbstract := false
+	isNative := false
 	seenVisibility := false
 	for {
 		switch {
 		case p.match(token.Static):
 			if isStatic {
-				return visibility, isStatic, isAbstract, fmt.Errorf("line %d:%d: duplicate static modifier", p.previous().Line, p.previous().Column)
+				return visibility, isStatic, isAbstract, isNative, fmt.Errorf("line %d:%d: duplicate static modifier", p.previous().Line, p.previous().Column)
 			}
 			isStatic = true
+		case p.match(token.Native):
+			if isNative {
+				return visibility, isStatic, isAbstract, isNative, fmt.Errorf("line %d:%d: duplicate native modifier", p.previous().Line, p.previous().Column)
+			}
+			isNative = true
 		case p.match(token.Abstract):
 			if isAbstract {
-				return visibility, isStatic, isAbstract, fmt.Errorf("line %d:%d: duplicate abstract modifier", p.previous().Line, p.previous().Column)
+				return visibility, isStatic, isAbstract, isNative, fmt.Errorf("line %d:%d: duplicate abstract modifier", p.previous().Line, p.previous().Column)
 			}
 			isAbstract = true
 		case p.match(token.Public):
 			if seenVisibility {
-				return visibility, isStatic, isAbstract, fmt.Errorf("line %d:%d: duplicate visibility modifier", p.previous().Line, p.previous().Column)
+				return visibility, isStatic, isAbstract, isNative, fmt.Errorf("line %d:%d: duplicate visibility modifier", p.previous().Line, p.previous().Column)
 			}
 			visibility = ast.VisibilityPublic
 			seenVisibility = true
 		case p.match(token.Private):
 			if seenVisibility {
-				return visibility, isStatic, isAbstract, fmt.Errorf("line %d:%d: duplicate visibility modifier", p.previous().Line, p.previous().Column)
+				return visibility, isStatic, isAbstract, isNative, fmt.Errorf("line %d:%d: duplicate visibility modifier", p.previous().Line, p.previous().Column)
 			}
 			visibility = ast.VisibilityPrivate
 			seenVisibility = true
 		case p.match(token.Protected):
 			if seenVisibility {
-				return visibility, isStatic, isAbstract, fmt.Errorf("line %d:%d: duplicate visibility modifier", p.previous().Line, p.previous().Column)
+				return visibility, isStatic, isAbstract, isNative, fmt.Errorf("line %d:%d: duplicate visibility modifier", p.previous().Line, p.previous().Column)
 			}
 			visibility = ast.VisibilityProtected
 			seenVisibility = true
 		default:
 			if isStatic && isAbstract {
-				return visibility, isStatic, isAbstract, fmt.Errorf("line %d:%d: methods cannot be both static and abstract", p.peek().Line, p.peek().Column)
+				return visibility, isStatic, isAbstract, isNative, fmt.Errorf("line %d:%d: methods cannot be both static and abstract", p.peek().Line, p.peek().Column)
 			}
-			return visibility, isStatic, isAbstract, nil
+			if isNative && isAbstract {
+				return visibility, isStatic, isAbstract, isNative, fmt.Errorf("line %d:%d: methods cannot be both native and abstract", p.peek().Line, p.peek().Column)
+			}
+			return visibility, isStatic, isAbstract, isNative, nil
 		}
 	}
 }
@@ -1001,12 +1059,14 @@ func (p *Parser) classFieldDeclaration(kind ast.VariableKind) (ast.FieldDecl, er
 		if err != nil {
 			return ast.FieldDecl{}, err
 		}
+	} else if kind == ast.VariableFinal {
+		return ast.FieldDecl{}, fmt.Errorf("line %d:%d: 'final' field '%s' must be initialized on declaration", name.Line, name.Column, name.Lexeme)
 	}
 	return ast.FieldDecl{Kind: kind, Name: name, Type: typeRef, Value: valueExpr}, nil
 }
 
 func (p *Parser) methodDeclaration(isConstructor bool, classIsAbstract bool, isAbstract bool, className string, annotations []ast.Annotation) (ast.MethodDecl, error) {
-	name, err := p.consume(token.Identifier, "expected method name")
+	name, err := p.consumeName("expected method name")
 	if err != nil {
 		return ast.MethodDecl{}, err
 	}
@@ -1122,7 +1182,7 @@ func (p *Parser) parameterList() ([]ast.Parameter, error) {
 	return params, nil
 }
 
-func (p *Parser) functionDeclaration() (ast.Stmt, error) {
+func (p *Parser) functionDeclaration(start token.Token, annotations []ast.Annotation, isNative bool) (ast.Stmt, error) {
 	name, err := p.consume(token.Identifier, "expected function name")
 	if err != nil {
 		return nil, err
@@ -1139,6 +1199,15 @@ func (p *Parser) functionDeclaration() (ast.Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	if isNative {
+		if p.match(token.Colon) {
+			// Optional colon for native defs
+		}
+		p.skipNewlines()
+		return &ast.FunctionStmt{Visibility: ast.VisibilityPrivate, Annotations: annotations, Name: name, TypeParams: typeParams, Params: params, ReturnType: returnType, IsNative: true, Body: nil, SourceSpan: ast.SourceSpan{StartLine: sourceStartLine(start, annotations), EndLine: p.previous().Line}}, nil
+	}
+
 	if _, err := p.consume(token.Colon, "expected ':' after function signature"); err != nil {
 		return nil, err
 	}
@@ -1150,7 +1219,14 @@ func (p *Parser) functionDeclaration() (ast.Stmt, error) {
 	if _, err := p.consume(token.End, "expected 'end' after function body"); err != nil {
 		return nil, err
 	}
-	return &ast.FunctionStmt{Visibility: ast.VisibilityPrivate, Name: name, TypeParams: typeParams, Params: params, ReturnType: returnType, Body: body}, nil
+	return &ast.FunctionStmt{Visibility: ast.VisibilityPrivate, Annotations: annotations, Name: name, TypeParams: typeParams, Params: params, ReturnType: returnType, Body: body, SourceSpan: ast.SourceSpan{StartLine: sourceStartLine(start, annotations), EndLine: p.previous().Line}}, nil
+}
+
+func sourceStartLine(start token.Token, annotations []ast.Annotation) int {
+	if len(annotations) > 0 {
+		return annotations[0].Name.Line
+	}
+	return start.Line
 }
 
 func (p *Parser) statement() (ast.Stmt, error) {
@@ -1172,13 +1248,44 @@ func (p *Parser) statement() (ast.Stmt, error) {
 	if p.match(token.Switch) {
 		return p.switchStatement()
 	}
+	if p.match(token.Try) {
+		return p.tryStatement()
+	}
+	if p.match(token.LoopKw) {
+		return p.loopStatement(p.previous())
+	}
+	if p.match(token.DoKw) {
+		return p.doLoopStatement(p.previous())
+	}
+	if p.match(token.BreakKw) {
+		return &ast.BreakStmt{Keyword: p.previous()}, nil
+	}
+	if p.match(token.ContinueKw) {
+		return &ast.ContinueStmt{Keyword: p.previous()}, nil
+	}
 	if p.match(token.Return) {
 		return p.returnStatement()
+	}
+	if p.match(token.Throw) {
+		return p.throwStatement()
 	}
 	if p.match(token.For) {
 		return p.forStatement()
 	}
 	return p.expressionStatement()
+}
+
+func (p *Parser) statementSuite(stop ...token.Type) (*ast.BlockStmt, bool, error) {
+	if p.match(token.Newline) {
+		p.skipNewlines()
+		body, err := p.block(stop...)
+		return body, false, err
+	}
+	stmt, err := p.declaration()
+	if err != nil {
+		return nil, false, err
+	}
+	return &ast.BlockStmt{Statements: []ast.Stmt{stmt}}, true, nil
 }
 
 func (p *Parser) variableDeclaration(kind ast.VariableKind) (ast.Stmt, error) {
@@ -1229,33 +1336,53 @@ func (p *Parser) variableDeclarationWithVisibility(kind ast.VariableKind, visibi
 }
 
 func (p *Parser) ifStatement() (ast.Stmt, error) {
+	stmt, requiresEnd, err := p.ifStatementTail()
+	if err != nil {
+		return nil, err
+	}
+	if requiresEnd {
+		if _, err := p.consume(token.End, "expected 'end' after if block"); err != nil {
+			return nil, err
+		}
+	}
+	return stmt, nil
+}
+
+func (p *Parser) ifStatementTail() (*ast.IfStmt, bool, error) {
 	condition, err := p.expression()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if _, err := p.consume(token.Colon, "expected ':' after if condition"); err != nil {
-		return nil, err
+		return nil, false, err
+	}
+	thenBlock, thenInline, err := p.statementSuite(token.Elif, token.Else, token.End)
+	if err != nil {
+		return nil, false, err
+	}
+	requiresEnd := !thenInline
+	p.skipNewlines()
+	var elseBlock *ast.BlockStmt
+	if p.match(token.Elif) {
+		nested, nestedRequiresEnd, err := p.ifStatementTail()
+		if err != nil {
+			return nil, false, err
+		}
+		elseBlock = &ast.BlockStmt{Statements: []ast.Stmt{nested}}
+		requiresEnd = requiresEnd || nestedRequiresEnd
+	} else if p.match(token.Else) {
+		if _, err := p.consume(token.Colon, "expected ':' after else"); err != nil {
+			return nil, false, err
+		}
+		var elseInline bool
+		elseBlock, elseInline, err = p.statementSuite(token.End)
+		if err != nil {
+			return nil, false, err
+		}
+		requiresEnd = requiresEnd || !elseInline
 	}
 	p.skipNewlines()
-	thenBlock, err := p.block(token.Else, token.End)
-	if err != nil {
-		return nil, err
-	}
-	var elseBlock *ast.BlockStmt
-	if p.match(token.Else) {
-		if _, err := p.consume(token.Colon, "expected ':' after else"); err != nil {
-			return nil, err
-		}
-		p.skipNewlines()
-		elseBlock, err = p.block(token.End)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if _, err := p.consume(token.End, "expected 'end' after if block"); err != nil {
-		return nil, err
-	}
-	return &ast.IfStmt{Condition: condition, Then: thenBlock, Else: elseBlock}, nil
+	return &ast.IfStmt{Condition: condition, Then: thenBlock, Else: elseBlock}, requiresEnd, nil
 }
 
 func (p *Parser) switchStatement() (ast.Stmt, error) {
@@ -1373,6 +1500,71 @@ func (p *Parser) switchCaseBody() (*ast.BlockStmt, error) {
 	return p.inlineCaseBody()
 }
 
+func (p *Parser) tryStatement() (ast.Stmt, error) {
+	keyword := p.previous()
+	if _, err := p.consume(token.Colon, "expected ':' after try"); err != nil {
+		return nil, err
+	}
+	body, inline, err := p.statementSuite(token.Catch, token.End)
+	if err != nil {
+		return nil, err
+	}
+	requiresEnd := !inline
+	p.skipNewlines()
+	catches := make([]ast.CatchClause, 0, 1)
+	for p.match(token.Catch) {
+		clause, catchInline, err := p.catchClause()
+		if err != nil {
+			return nil, err
+		}
+		catches = append(catches, clause)
+		requiresEnd = requiresEnd || !catchInline
+		p.skipNewlines()
+	}
+	if len(catches) == 0 {
+		return nil, fmt.Errorf("line %d:%d: try requires at least one catch clause", keyword.Line, keyword.Column)
+	}
+	if requiresEnd {
+		if _, err := p.consume(token.End, "expected 'end' after try block"); err != nil {
+			return nil, err
+		}
+	}
+	return &ast.TryStmt{Keyword: keyword, Body: body, Catches: catches}, nil
+}
+
+func (p *Parser) catchClause() (ast.CatchClause, bool, error) {
+	keyword := p.previous()
+	var binding token.Token
+	var typeRef *ast.TypeRef
+	if p.match(token.LeftParen) {
+		name, err := p.consume(token.Identifier, "expected catch binding name")
+		if err != nil {
+			return ast.CatchClause{}, false, err
+		}
+		binding = name
+		if p.match(token.Colon) {
+			parsedType, err := p.parseTypeRef("expected exception type in catch clause")
+			if err != nil {
+				return ast.CatchClause{}, false, err
+			}
+			typeRef = parsedType
+		}
+		if _, err := p.consume(token.RightParen, "expected ')' after catch binding"); err != nil {
+			return ast.CatchClause{}, false, err
+		}
+	} else if p.check(token.Identifier) && p.checkNext(token.Colon) {
+		binding = p.advance()
+	}
+	if _, err := p.consume(token.Colon, "expected ':' after catch clause"); err != nil {
+		return ast.CatchClause{}, false, err
+	}
+	body, inline, err := p.statementSuite(token.Catch, token.End)
+	if err != nil {
+		return ast.CatchClause{}, false, err
+	}
+	return ast.CatchClause{Keyword: keyword, Binding: binding, Type: typeRef, Body: body}, inline, nil
+}
+
 func (p *Parser) inlineCaseBody() (*ast.BlockStmt, error) {
 	stmt, err := p.declaration()
 	if err != nil {
@@ -1391,6 +1583,15 @@ func (p *Parser) returnStatement() (ast.Stmt, error) {
 		return nil, err
 	}
 	return &ast.ReturnStmt{Keyword: keyword, Value: value}, nil
+}
+
+func (p *Parser) throwStatement() (ast.Stmt, error) {
+	keyword := p.previous()
+	valueExpr, err := p.expression()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.ThrowStmt{Keyword: keyword, Value: valueExpr}, nil
 }
 
 func (p *Parser) forStatement() (ast.Stmt, error) {
@@ -1423,15 +1624,108 @@ func (p *Parser) forStatement() (ast.Stmt, error) {
 	if _, err := p.consume(token.Colon, "expected ':' after for header"); err != nil {
 		return nil, err
 	}
-	p.skipNewlines()
-	body, err := p.block(token.End)
+	body, inline, err := p.statementSuite(token.End)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := p.consume(token.End, "expected 'end' after for block"); err != nil {
-		return nil, err
+	if !inline {
+		if _, err := p.consume(token.End, "expected 'end' after for block"); err != nil {
+			return nil, err
+		}
 	}
 	return &ast.ForStmt{Targets: targets, Iterable: iterable, Condition: condition, Body: body}, nil
+}
+
+func (p *Parser) loopStatement(keyword token.Token) (ast.Stmt, error) {
+	var condition ast.Expr
+	if p.match(token.Colon) {
+		body, inline, err := p.statementSuite(token.End)
+		if err != nil {
+			return nil, err
+		}
+		if !inline {
+			if _, err := p.consume(token.End, "expected 'end' after loop block"); err != nil {
+				return nil, err
+			}
+		}
+		return &ast.LoopStmt{Keyword: keyword, Condition: condition, Body: body}, nil
+	}
+	if p.match(token.Newline) {
+		p.skipNewlines()
+		body, err := p.block(token.End)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.consume(token.End, "expected 'end' after loop block"); err != nil {
+			return nil, err
+		}
+		return &ast.LoopStmt{Keyword: keyword, Body: body}, nil
+	}
+	var err error
+	condition, err = p.expression()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.consume(token.Colon, "expected ':' after loop condition"); err != nil {
+		return nil, err
+	}
+	body, inline, err := p.statementSuite(token.End)
+	if err != nil {
+		return nil, err
+	}
+	if !inline {
+		if _, err := p.consume(token.End, "expected 'end' after loop block"); err != nil {
+			return nil, err
+		}
+	}
+	return &ast.LoopStmt{Keyword: keyword, Condition: condition, Body: body}, nil
+}
+
+func (p *Parser) doLoopStatement(keyword token.Token) (ast.Stmt, error) {
+	if _, err := p.consume(token.Colon, "expected ':' after do"); err != nil {
+		return nil, err
+	}
+	body := &ast.BlockStmt{}
+	if p.match(token.Newline) {
+		p.skipNewlines()
+		for !p.isAtEnd() && !p.checkDoLoopTail() {
+			stmt, err := p.declaration()
+			if err != nil {
+				return nil, err
+			}
+			body.Statements = append(body.Statements, stmt)
+			p.skipNewlines()
+		}
+	} else {
+		stmt, err := p.declaration()
+		if err != nil {
+			return nil, err
+		}
+		body.Statements = append(body.Statements, stmt)
+	}
+	if _, err := p.consume(token.LoopKw, "expected 'loop' after do block"); err != nil {
+		return nil, err
+	}
+	condition, err := p.expression()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.LoopStmt{Keyword: keyword, Condition: condition, Body: body, PostCondition: true}, nil
+}
+
+func (p *Parser) checkDoLoopTail() bool {
+	if !p.check(token.LoopKw) {
+		return false
+	}
+	for i := p.cur + 1; i < len(p.tokens); i++ {
+		switch p.tokens[i].Type {
+		case token.Newline, token.EOF:
+			return true
+		case token.Colon:
+			return false
+		}
+	}
+	return true
 }
 
 func (p *Parser) expressionStatement() (ast.Stmt, error) {
@@ -1527,19 +1821,60 @@ func (p *Parser) equality() (ast.Expr, error) {
 }
 
 func (p *Parser) comparison() (ast.Expr, error) {
-	expr, err := p.term()
+	expr, err := p.rangeExpr()
 	if err != nil {
 		return nil, err
 	}
+	for p.match(token.Instanceof) {
+		target, err := p.parseTypeRef("expected type after 'instanceof'")
+		if err != nil {
+			return nil, err
+		}
+		var binding *token.Token
+		if p.check(token.Identifier) && !p.checkNext(token.Dot) && !p.checkNext(token.LeftParen) && !p.checkNext(token.LeftBracket) {
+			name, err := p.consume(token.Identifier, "expected binding name")
+			if err != nil {
+				return nil, err
+			}
+			binding = &name
+		}
+		expr = &ast.InstanceOfExpr{Expr: expr, Target: target, Binding: binding}
+	}
 	for p.match(token.Greater, token.GreaterEqual, token.Less, token.LessEqual, token.In) {
 		op := p.previous()
-		right, err := p.term()
+		right, err := p.rangeExpr()
 		if err != nil {
 			return nil, err
 		}
 		expr = &ast.BinaryExpr{Left: expr, Operator: op, Right: right}
 	}
 	return expr, nil
+}
+
+func (p *Parser) rangeExpr() (ast.Expr, error) {
+	expr, err := p.term()
+	if err != nil {
+		return nil, err
+	}
+	if !p.allowRangeShortcut {
+		return expr, nil
+	}
+	if !p.match(token.Ellipsis) {
+		return expr, nil
+	}
+	op := p.previous()
+	right, err := p.term()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.CallExpr{
+		Callee: &ast.VariableExpr{Name: token.Token{Type: token.Identifier, Lexeme: "range", Line: op.Line, Column: op.Column}},
+		Paren:  token.Token{Type: token.LeftParen, Lexeme: "(", Line: op.Line, Column: op.Column},
+		Arguments: []ast.Expr{
+			expr,
+			right,
+		},
+	}, nil
 }
 
 func (p *Parser) term() (ast.Expr, error) {
@@ -1559,13 +1894,29 @@ func (p *Parser) term() (ast.Expr, error) {
 }
 
 func (p *Parser) factor() (ast.Expr, error) {
-	expr, err := p.unary()
+	expr, err := p.power()
 	if err != nil {
 		return nil, err
 	}
 	for p.match(token.Star, token.Slash, token.Percent) {
 		op := p.previous()
-		right, err := p.unary()
+		right, err := p.power()
+		if err != nil {
+			return nil, err
+		}
+		expr = &ast.BinaryExpr{Left: expr, Operator: op, Right: right}
+	}
+	return expr, nil
+}
+
+func (p *Parser) power() (ast.Expr, error) {
+	expr, err := p.unary()
+	if err != nil {
+		return nil, err
+	}
+	if p.match(token.StarStar, token.Caret) {
+		op := p.previous()
+		right, err := p.power()
 		if err != nil {
 			return nil, err
 		}
@@ -1692,7 +2043,7 @@ func (p *Parser) canStartUnaryAt(index int) bool {
 		return false
 	}
 	switch p.tokens[index].Type {
-	case token.Bang, token.Minus, token.False, token.True, token.Nil, token.IntNumber, token.FloatNumber, token.Char, token.String, token.LeftBracket, token.LeftBrace, token.Identifier, token.New, token.This, token.Super, token.LeftParen:
+	case token.Bang, token.Minus, token.False, token.True, token.Nil, token.IntNumber, token.FloatNumber, token.Char, token.String, token.LeftBracket, token.LeftBrace, token.Identifier, token.New, token.This, token.Super, token.LeftParen, token.ThreadKw:
 		return true
 	default:
 		return false
@@ -1713,15 +2064,27 @@ func (p *Parser) call() (ast.Expr, error) {
 		return nil, err
 	}
 	for {
+		if typeArgs, matched, err := p.tryParseCallTypeArgs(); err != nil {
+			return nil, err
+		} else if matched {
+			if _, err := p.consume(token.LeftParen, "expected '(' after generic type arguments"); err != nil {
+				return nil, err
+			}
+			expr, err = p.finishCall(expr, typeArgs)
+			if err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if p.match(token.LeftParen) {
-			expr, err = p.finishCall(expr)
+			expr, err = p.finishCall(expr, nil)
 			if err != nil {
 				return nil, err
 			}
 			continue
 		}
 		if p.match(token.Dot) {
-			name, err := p.consume(token.Identifier, "expected property name after '.'")
+			name, err := p.consumeName("expected property name after '.'")
 			if err != nil {
 				return nil, err
 			}
@@ -1730,7 +2093,10 @@ func (p *Parser) call() (ast.Expr, error) {
 		}
 		if p.match(token.LeftBracket) {
 			bracket := p.previous()
+			allowRangeShortcut := p.allowRangeShortcut
+			p.allowRangeShortcut = false
 			index, err := p.expression()
+			p.allowRangeShortcut = allowRangeShortcut
 			if err != nil {
 				return nil, err
 			}
@@ -1756,13 +2122,42 @@ func (p *Parser) call() (ast.Expr, error) {
 	return expr, nil
 }
 
-func (p *Parser) finishCall(callee ast.Expr) (ast.Expr, error) {
+func (p *Parser) tryParseCallTypeArgs() ([]*ast.TypeRef, bool, error) {
+	if !p.check(token.Less) {
+		return nil, false, nil
+	}
+	save := p.cur
+	p.advance()
+	args := make([]*ast.TypeRef, 0, 2)
+	for {
+		arg, err := p.parseTypeRef("expected generic type argument")
+		if err != nil {
+			p.cur = save
+			return nil, false, nil
+		}
+		args = append(args, arg)
+		if !p.match(token.Comma) {
+			break
+		}
+	}
+	if _, err := p.consume(token.Greater, "expected '>' after generic type arguments"); err != nil {
+		p.cur = save
+		return nil, false, nil
+	}
+	if !p.check(token.LeftParen) {
+		p.cur = save
+		return nil, false, nil
+	}
+	return args, true, nil
+}
+
+func (p *Parser) finishCall(callee ast.Expr, typeArgs []*ast.TypeRef) (ast.Expr, error) {
 	paren := p.previous()
 	args, err := p.argumentList()
 	if err != nil {
 		return nil, err
 	}
-	return &ast.CallExpr{Callee: callee, Paren: paren, Arguments: args}, nil
+	return &ast.CallExpr{Callee: callee, TypeArgs: typeArgs, Paren: paren, Arguments: args}, nil
 }
 
 func (p *Parser) argumentList() ([]ast.Expr, error) {
@@ -1796,14 +2191,14 @@ func (p *Parser) primary() (ast.Expr, error) {
 		return &ast.LiteralExpr{Value: nil}, nil
 	}
 	if p.match(token.IntNumber) {
-		value, err := strconv.ParseInt(p.previous().Lexeme, 10, 64)
+		value, err := strconv.ParseInt(normalizeNumericLexeme(p.previous().Lexeme), 10, 64)
 		if err != nil {
 			return nil, err
 		}
 		return &ast.LiteralExpr{Value: value}, nil
 	}
 	if p.match(token.FloatNumber) {
-		value, err := strconv.ParseFloat(p.previous().Lexeme, 64)
+		value, err := strconv.ParseFloat(normalizeNumericLexeme(p.previous().Lexeme), 64)
 		if err != nil {
 			return nil, err
 		}
@@ -1820,9 +2215,52 @@ func (p *Parser) primary() (ast.Expr, error) {
 		return &ast.LiteralExpr{Value: p.previous().Lexeme}, nil
 	}
 	if p.match(token.LeftBracket) {
-		elements := make([]ast.Expr, 0)
-		if !p.check(token.RightBracket) {
+		if p.check(token.RightBracket) {
+			p.advance()
+			return &ast.ArrayExpr{Elements: []ast.Expr{}}, nil
+		}
+
+		// Look ahead to check if it's a comprehension: [ expr for ... ]
+		// We use or() specifically to avoid over-consuming 'for' if it's reachable via high-level expression rules.
+		first, err := p.or()
+		if err != nil {
+			return nil, err
+		}
+
+		if p.match(token.For) {
+			// List comprehension: [ expr for var in iterable ]
+			varName, err := p.consume(token.Identifier, "expected variable name after 'for'")
+			if err != nil {
+				return nil, err
+			}
+
+			if _, err := p.consume(token.In, "expected 'in' after variable name"); err != nil {
+				return nil, err
+			}
+
+			iterable, err := p.expression()
+			if err != nil {
+				return nil, err
+			}
+
+			if _, err := p.consume(token.RightBracket, "expected ']' after comprehension"); err != nil {
+				return nil, err
+			}
+
+			return &ast.ArrayComprehensionExpr{
+				Value:    first,
+				Var:      varName,
+				Iterable: iterable,
+			}, nil
+		}
+
+		// Normal array: [ e1, e2, ... ]
+		elements := []ast.Expr{first}
+		if p.match(token.Comma) {
 			for {
+				if p.check(token.RightBracket) {
+					break
+				}
 				element, err := p.expression()
 				if err != nil {
 					return nil, err
@@ -1876,76 +2314,79 @@ func (p *Parser) primary() (ast.Expr, error) {
 		return &ast.ThisExpr{Keyword: p.previous()}, nil
 	}
 	if p.match(token.New) {
-	// parse type reference (could be primitive/array/etc)
-	typeRef, err := p.parseTypeRef("expected type after 'new'")
-	if err != nil {
-		return nil, err
-	}
-	// optional size bracket: new T[expr] or new T[]
-	var sizeExpr ast.Expr
-	if p.match(token.LeftBracket) {
-		if !p.check(token.RightBracket) {
-			expr, err := p.expression()
-			if err != nil {
+		// parse type reference (could be primitive/array/etc)
+		typeRef, err := p.parseTypeRef("expected type after 'new'")
+		if err != nil {
+			return nil, err
+		}
+		// optional size bracket: new T[expr] or new T[]
+		var sizeExpr ast.Expr
+		if p.match(token.LeftBracket) {
+			if !p.check(token.RightBracket) {
+				expr, err := p.expression()
+				if err != nil {
+					return nil, err
+				}
+				sizeExpr = expr
+			}
+			if _, err := p.consume(token.RightBracket, "expected ']' after array size"); err != nil {
 				return nil, err
 			}
-			sizeExpr = expr
 		}
-		if _, err := p.consume(token.RightBracket, "expected ']' after array size"); err != nil {
-			return nil, err
-		}
-	}
-	// optional initializer
-	var initElems []ast.Expr
-	var braceTok token.Token
-	if p.match(token.LeftBrace) {
-		braceTok = p.previous()
-		if !p.check(token.RightBrace) {
-			for {
-				elem, err := p.expression()
-				if err != nil {
-					return nil, err
-				}
-				initElems = append(initElems, elem)
-				if !p.match(token.Comma) {
-					break
+		// optional initializer
+		var initElems []ast.Expr
+		var braceTok token.Token
+		if p.match(token.LeftBrace) {
+			braceTok = p.previous()
+			if !p.check(token.RightBrace) {
+				for {
+					elem, err := p.expression()
+					if err != nil {
+						return nil, err
+					}
+					initElems = append(initElems, elem)
+					if !p.match(token.Comma) {
+						break
+					}
 				}
 			}
-		}
-		if _, err := p.consume(token.RightBrace, "expected '}' after array initializer"); err != nil {
-			return nil, err
-		}
-	}
-	// if there was any array-specific syntax, use ArrayNewExpr
-	if sizeExpr != nil || braceTok.Type == token.LeftBrace {
-		return &ast.ArrayNewExpr{Type: typeRef, Size: sizeExpr, Brace: braceTok, Initializer: initElems}, nil
-	}
-	// otherwise treat as normal class new
-	if classNameToken := typeRef.Name; classNameToken.Type == token.Identifier && len(typeRef.Args) == 0 && len(typeRef.Union) == 0 {
-		if _, err := p.consume(token.LeftParen, "expected '(' after class name"); err != nil {
-			return nil, err
-		}
-		paren := p.previous()
-		args := make([]ast.Expr, 0)
-		if !p.check(token.RightParen) {
-			for {
-				arg, err := p.expression()
-				if err != nil {
-					return nil, err
-				}
-				args = append(args, arg)
-				if !p.match(token.Comma) {
-					break
-				}
+			if _, err := p.consume(token.RightBrace, "expected '}' after array initializer"); err != nil {
+				return nil, err
 			}
 		}
-		if _, err := p.consume(token.RightParen, "expected ')' after arguments"); err != nil {
-			return nil, err
+		// if there was any array-specific syntax, use ArrayNewExpr
+		if sizeExpr != nil || braceTok.Type == token.LeftBrace {
+			return &ast.ArrayNewExpr{Type: typeRef, Size: sizeExpr, Brace: braceTok, Initializer: initElems}, nil
 		}
-		return &ast.NewExpr{Class: classNameToken, Paren: paren, Arguments: args}, nil
+		// otherwise treat as normal class new
+		if classNameToken := typeRef.Name; classNameToken.Type == token.Identifier && len(typeRef.Args) == 0 && len(typeRef.Union) == 0 {
+			if _, err := p.consume(token.LeftParen, "expected '(' after class name"); err != nil {
+				return nil, err
+			}
+			paren := p.previous()
+			args := make([]ast.Expr, 0)
+			if !p.check(token.RightParen) {
+				for {
+					arg, err := p.expression()
+					if err != nil {
+						return nil, err
+					}
+					args = append(args, arg)
+					if !p.match(token.Comma) {
+						break
+					}
+				}
+			}
+			if _, err := p.consume(token.RightParen, "expected ')' after arguments"); err != nil {
+				return nil, err
+			}
+			return &ast.NewExpr{Class: classNameToken, Paren: paren, Arguments: args}, nil
+		}
+		return nil, fmt.Errorf("invalid 'new' expression")
 	}
-	return nil, fmt.Errorf("invalid 'new' expression")
-}
+	if p.match(token.ThreadKw) {
+		return p.threadSpawnExpression(p.previous())
+	}
 	if p.match(token.Super) {
 		return &ast.SuperExpr{Keyword: p.previous()}, nil
 	}
@@ -2003,6 +2444,36 @@ func (p *Parser) primary() (ast.Expr, error) {
 	}
 	current := p.peek()
 	return nil, fmt.Errorf("line %d:%d: expected expression, got %s", current.Line, current.Column, current.Type)
+}
+
+func normalizeNumericLexeme(lexeme string) string {
+	return strings.ReplaceAll(lexeme, "_", "")
+}
+
+func (p *Parser) threadSpawnExpression(threadToken token.Token) (ast.Expr, error) {
+	spawnToken, err := p.consume(token.SpawnKw, "expected 'spawn' after 'thread'")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.consume(token.Colon, "expected ':' after 'thread spawn'"); err != nil {
+		return nil, err
+	}
+	p.skipNewlines()
+	body, err := p.block(token.End)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.consume(token.End, "expected 'end' after thread body"); err != nil {
+		return nil, err
+	}
+	lambda := &ast.LambdaExpr{Params: nil, Block: body}
+	threadClass := &ast.VariableExpr{Name: token.Token{Type: token.Identifier, Lexeme: "Thread", Line: threadToken.Line, Column: threadToken.Column}}
+	spawnName := token.Token{Type: token.Identifier, Lexeme: "startThread", Line: spawnToken.Line, Column: spawnToken.Column}
+	return &ast.CallExpr{
+		Callee:    &ast.GetExpr{Object: threadClass, Name: spawnName},
+		Paren:     token.Token{Type: token.LeftParen, Lexeme: "(", Line: spawnToken.Line, Column: spawnToken.Column},
+		Arguments: []ast.Expr{lambda},
+	}, nil
 }
 
 func (p *Parser) isLambdaStart() bool {
@@ -2076,6 +2547,14 @@ func (p *Parser) match(types ...token.Type) bool {
 
 func (p *Parser) consume(kind token.Type, message string) (token.Token, error) {
 	if p.check(kind) {
+		return p.advance(), nil
+	}
+	current := p.peek()
+	return token.Token{}, fmt.Errorf("line %d:%d: %s", current.Line, current.Column, message)
+}
+
+func (p *Parser) consumeName(message string) (token.Token, error) {
+	if p.check(token.Identifier) || p.check(token.Catch) || p.check(token.Try) || p.check(token.Throw) || p.check(token.TypeKw) || p.check(token.Instanceof) {
 		return p.advance(), nil
 	}
 	current := p.peek()

@@ -1,0 +1,21 @@
+var started = Sys.time()
+var size = 50
+var visited = [false for i in range(size)]
+
+def dfs(node: int) -> void:
+    if node >= size:
+        return
+    end
+    if visited[node]:
+        return
+    end
+    visited[node] = true
+    dfs(node + 1)
+    dfs(node + 2)
+end
+
+dfs(0)
+var ended = Sys.time()
+println(5)
+println("TIME_PF")
+println(ended - started)

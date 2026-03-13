@@ -1,0 +1,15 @@
+var capacity = 100000
+var arr = new int[capacity]
+for i in range(0, capacity):
+    arr[i] = i
+end
+var started = Sys.time()
+var s = 0
+for i in range(0, capacity):
+    var idx = (i * 137) % capacity
+    s = s + arr[idx]
+end
+var ended = Sys.time()
+println(s)
+println("TIME_PF")
+println(ended - started)

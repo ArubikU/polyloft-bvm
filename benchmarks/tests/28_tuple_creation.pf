@@ -1,0 +1,12 @@
+var started = Sys.time()
+var s = 0
+for i in range(0, 1000000):
+    var t = new int[2]
+    t[0] = i
+    t[1] = i + 1
+    s = s + t[0]
+end
+var ended = Sys.time()
+println(s)
+println("TIME_PF")
+println(ended - started)

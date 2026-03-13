@@ -1,0 +1,17 @@
+def fact(n: int) -> int:
+    var res = 1
+    for i in range(1, n + 1):
+        res = res * i
+    end
+    return res
+end
+
+var started = Sys.time()
+var s = 0
+for i in range(0, 100000):
+    s = s + fact(10)
+end
+var ended = Sys.time()
+println(s)
+println("TIME_PF")
+println(ended - started)

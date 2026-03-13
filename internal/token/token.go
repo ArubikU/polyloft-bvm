@@ -32,10 +32,12 @@ const (
 	Minus        Type = "-"
 	MinusEqual   Type = "-="
 	Star         Type = "*"
+	StarStar     Type = "**"
 	StarEqual    Type = "*="
 	Slash        Type = "/"
 	SlashEqual   Type = "/="
 	Percent      Type = "%"
+	Caret        Type = "^"
 	Bang         Type = "!"
 	Equal        Type = "="
 	EqualEqual   Type = "=="
@@ -53,6 +55,7 @@ const (
 	Final      Type = "final"
 	Enum       Type = "enum"
 	Def        Type = "def"
+	Native     Type = "native"
 	Import     Type = "import"
 	Record     Type = "record"
 	Abstract   Type = "abstract"
@@ -70,18 +73,29 @@ const (
 	Super      Type = "super"
 	If         Type = "if"
 	Else       Type = "else"
+	Elif       Type = "elif"
 	Switch     Type = "switch"
 	Case       Type = "case"
 	Default    Type = "default"
 	End        Type = "end"
 	Return     Type = "return"
+	Try        Type = "try"
+	Catch      Type = "catch"
+	Throw      Type = "throw"
 	For        Type = "for"
+	LoopKw     Type = "loop"
+	DoKw       Type = "do"
+	BreakKw    Type = "break"
+	ContinueKw Type = "continue"
 	In         Type = "in"
 	TypeKw     Type = "type"
 	Where      Type = "where"
+	Instanceof Type = "instanceof"
 	True       Type = "true"
 	False      Type = "false"
 	Nil        Type = "nil"
+	ThreadKw   Type = "thread"
+	SpawnKw    Type = "spawn"
 	Ellipsis   Type = "..."
 )
 
@@ -92,6 +106,7 @@ var keywords = map[string]Type{
 	"final":      Final,
 	"enum":       Enum,
 	"def":        Def,
+	"native":     Native,
 	"import":     Import,
 	"record":     Record,
 	"abstract":   Abstract,
@@ -112,18 +127,29 @@ var keywords = map[string]Type{
 	"super":      Super,
 	"if":         If,
 	"else":       Else,
+	"elif":       Elif,
 	"switch":     Switch,
 	"case":       Case,
 	"default":    Default,
 	"end":        End,
 	"return":     Return,
+	"try":        Try,
+	"catch":      Catch,
+	"throw":      Throw,
 	"for":        For,
+	"loop":       LoopKw,
+	"do":         DoKw,
+	"break":      BreakKw,
+	"continue":   ContinueKw,
 	"in":         In,
 	"type":       TypeKw,
 	"where":      Where,
+	"instanceof": Instanceof,
 	"true":       True,
 	"false":      False,
 	"nil":        Nil,
+	"thread":     ThreadKw,
+	"spawn":      SpawnKw,
 }
 
 type Token struct {

@@ -3,27 +3,41 @@
 ## Prerequisites
 
 - Go installed locally
-- a `.pf` source file
+- a `.pf` source file or a Polyloft project directory
 
-## Run a program
+## Run Your First Program
 
-From the repository root:
+From the `polyloft-bvm` repository root:
 
 ```sh
 go run ./cmd/polyloft-bvm run ./testdata/programs/demo.pf
 ```
 
-This command performs the full pipeline:
+This command performs the full source pipeline:
 
 1. parse source
-2. resolve embedded and user imports
+2. resolve user imports and embedded stdlib modules
 3. type-check the program
 4. compile to bytecode
 5. execute on the VM
 
-## Dump bytecode
+## Compile Artifacts
 
-To inspect the generated chunk instead of running it:
+Compile a single file to a `.pfbc` module:
+
+```sh
+go run ./cmd/polyloft-bvm compile ./testdata/programs/demo.pf
+```
+
+Compile a project directory to a `.pfx` bundle:
+
+```sh
+go run ./cmd/polyloft-bvm compile ./complex_project
+```
+
+## Dump Bytecode
+
+To inspect disassembly instead of executing the program:
 
 ```sh
 go run ./cmd/polyloft-bvm dump ./testdata/programs/demo.pf
@@ -32,11 +46,12 @@ go run ./cmd/polyloft-bvm dump ./testdata/programs/demo.pf
 This is useful when working on:
 
 - instruction selection
-- fast paths for arrays and maps
-- specialized numeric operations
-- import and global-slot behavior
+- fast numeric paths
+- global-slot allocation
+- imports and bundled modules
+- exception handlers and control-flow lowering
 
-## Run tests
+## Run Tests
 
 Run the full suite:
 
@@ -44,10 +59,10 @@ Run the full suite:
 go test ./...
 ```
 
-Run a focused stdlib/import regression:
+Run a focused regression:
 
 ```sh
-go test -run TestEmbeddedStdlibWrappersAndMapsExposeObjectApis ./...
+go test -run TestExceptionsAndAnnotationsExample ./...
 ```
 
 ## Your First Program
@@ -69,6 +84,12 @@ println(label.repeat(2).toString())
 
 let store = HashMap.from({"lang": "polyloft"})
 println(store.get("lang"))
+
+try:
+    println(10 / 0)
+catch (err: ValueError):
+    println(err.message)
+end
 ```
 
 Run it with:
@@ -77,8 +98,9 @@ Run it with:
 go run ./cmd/polyloft-bvm run ./path/to/file.pf
 ```
 
-## Current CLI limitations
+## Current Scope
 
-- only `run` and `dump` are available
-- there is no standalone package manager in this repo
-- stdlib coverage is intentionally partial and driven by tested features
+- the CLI supports `run`, `dump` and `compile`
+- bundles and compiled modules are supported
+- diagnostics are implementation-focused and runtime-aware
+- stdlib coverage is partial by design and driven by tests

@@ -1,18 +1,23 @@
 # Polyloft BVM Quick Reference
 
-Complete cheat sheet for the `polyloft-bvm` feature slice that is currently implemented.
+Complete cheat sheet for the `polyloft-bvm` language and runtime surface that is currently implemented.
 
 ## CLI
 
 ```sh
 go run ./cmd/polyloft-bvm run ./file.pf
+go run ./cmd/polyloft-bvm check ./file.pf
+go run ./cmd/polyloft-bvm run ./project-dir
+go run ./cmd/polyloft-bvm runline "println(1 + 1)"
 go run ./cmd/polyloft-bvm dump ./file.pf
+go run ./cmd/polyloft-bvm compile ./file.pf
+go run ./cmd/polyloft-bvm types stdlib
 go test ./...
 ```
 
 ## Scalar Types
 
-Primitive scalars used by the checker today:
+Primitive scalar types used by the checker today:
 
 - `int`
 - `float`
@@ -37,13 +42,13 @@ let nothing: nil = nil
 
 ```pf
 let rawText: string = "hello"
-let arr = [1, 2, 3]             // array
+let arr = [1, 2, 3]           // array
 let table = {"a": 1, "b": 2} // map
-let pair = (1, "x")            // tuple
-let seq = range(0, 5)           // Range
+let pair = (1, "x")          // tuple
+let seq = range(0, 5)         // Range
 
-println(rawText[0])             // char
-println(rawText[1...3])         // string
+println(rawText[0])           // char
+println(rawText[1...3])       // string
 ```
 
 ## Type Aliases and Unions
@@ -52,7 +57,6 @@ println(rawText[1...3])         // string
 type Scalar = number | string
 
 let values: array<Scalar> = ["a", 1]  # or Scalar[] (both equivalent)
-# new-array examples
 let arr: int[] = new int[3]{0,1,2}
 println(values[0])
 println(values[1])
@@ -83,19 +87,49 @@ Nominal matrix used by BVM today:
 ```pf
 println("hello")
 println(len([1, 2, 3]))
+println(sqrt(81))
 println(delete({"a": 1}, "a"))
 println(keys({"a": 1, "b": 2})[0])
 println(values({"a": 1, "b": 2})[0])
 println(hash("polyloft"))
 ```
 
+## Runtime Modules
+
+```pf
+println(Sys.time())
+Io.write_file("./demo.txt", "hello")
+println(Io.read_file("./demo.txt"))
+println(Json.stringify({"ok": true}))
+```
+
+Available runtime-backed modules:
+
+- `Sys`
+- `Http`
+- `Json`
+- `Io`
+- `Concurrent`
+
+These are the low-level global modules. When you want typed wrapper classes, import the embedded facades instead:
+
+```pf
+import polyloft.json { Json }
+import polyloft.io { IO }
+import polyloft.concurrent { Thread, CompletableFuture, Channel }
+```
+
 ## Embedded Imports
 
 ```pf
 import polyloft.common { Integer, String, Boolean, CharArray, Bytes }
+import polyloft.http { Http, HttpServer }
+import polyloft.json { Json }
+import polyloft.io { IO }
+import polyloft.concurrent { Thread, CompletableFuture, Channel }
 import polyloft.maps { Map, HashMap, SetMap }
-import polyloft.collections { Set, HashSet }
-import polyloft.function { Predicate, Supplier }
+import polyloft.collections { List, Deque, Set, ArrayList, ArrayDeque, HashSet }
+import polyloft.function { Predicate, Supplier, Runnable }
 ```
 
 ## Wrapper Objects
@@ -104,6 +138,7 @@ import polyloft.function { Predicate, Supplier }
 let count = Integer(-5)
 println(count.abs().negate().intValue())
 println(count.signum())
+println(Float(9.0).sqrt().unwrap())
 
 let text = String("Polyloft")
 println(text.charAt(0))
@@ -131,6 +166,11 @@ println(store.containsKey(true))
 let tags: Set = HashSet.from(["go", "vm", "go"])
 println(tags.contains("go"))
 println(tags.asArray())
+
+let queue: Deque<string> = ArrayDeque()
+queue.addLast("a")
+queue.addFirst("b")
+println(queue.removeFirst())
 ```
 
 ## Functional Interfaces
@@ -138,9 +178,11 @@ println(tags.asArray())
 ```pf
 let starts: Predicate<string> = (value: string) => value[0] == "p"
 let maker: Supplier<string> = () => "polyloft"
+let done: Runnable = () => println("done")
 
 println(starts.test("poly"))
 println(maker.get())
+done.run()
 ```
 
 ## Enums
@@ -157,6 +199,58 @@ println(Color.valueOf("RED").ordinal)
 println(Color.size())
 ```
 
+## Exceptions
+
+```pf
+try:
+    throw "boom"
+catch err:
+    println(err)
+end
+
+try:
+    println(10 / 0)
+catch (err: ValueError):
+    println(err.message)
+end
+```
+
+Built-in exception classes available in the runtime:
+
+- `Exception`
+- `RuntimeError`
+- `NameError`
+- `TypeError`
+- `ValueError`
+- `ArityError`
+- `IndexError`
+- `KeyError`
+- `IOException`
+- `FileNotFoundException`
+- `NetworkError`
+- `TimeoutError`
+
+## Annotations
+
+```pf
+abstract class Shape:
+    abstract def area() -> number
+end
+
+class Square extends Shape:
+    @Override
+    def area() -> number:
+        return 4
+    end
+end
+```
+
+Current method annotations recognized by the checker/compiler:
+
+- `@Override`
+- `@Equals`
+- `@Hash`
+
 ## Current Rules
 
 ```pf
@@ -172,5 +266,5 @@ end
 
 ## Current Limits
 
-- CLI support is limited to `run` and `dump`.
+- Package-manager and registry commands are not part of `polyloft-bvm`.
 - Embedded stdlib coverage is intentionally small and test-driven.

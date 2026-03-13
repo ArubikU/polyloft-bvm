@@ -1,0 +1,72 @@
+import polyloft.maps.contracts { SetLike }
+
+public class SetMap<T> implements SetLike<T>:
+	var entries: map<string, T>
+
+	SetMap():
+		this.entries = {}
+	end
+
+	static def from(items: array<T>) -> SetMap<T>:
+		let values = SetMap()
+		for item in items:
+			values.add(item)
+		end
+		return values
+	end
+
+	def unwrap() -> map<string, T>:
+		return this.entries
+	end
+
+	def size() -> int:
+		return len(this.entries)
+	end
+
+	def isEmpty() -> bool:
+		return this.size() == 0
+	end
+
+	def contains(key: T) -> bool:
+		let hashed = hash(key)
+		for candidate in this.entries:
+			if candidate == hashed:
+				return true
+			end
+		end
+		return false
+	end
+
+	def __contains(key: T) -> bool:
+		return this.contains(key)
+	end
+
+	def add(key: T) -> SetMap<T>:
+		this.entries[hash(key)] = key
+		return this
+	end
+
+	def addAll(items: array<T>) -> SetMap<T>:
+		for item in items:
+			this.add(item)
+		end
+		return this
+	end
+
+	def clear() -> SetMap<T>:
+		this.entries = {}
+		return this
+	end
+
+	def delete(key: T) -> bool:
+		return delete(this.entries, hash(key))
+	end
+
+	def asArray() -> array<T>:
+		return this.values()
+	end
+
+	def values() -> array<T>:
+		return values(this.entries)
+	end
+end

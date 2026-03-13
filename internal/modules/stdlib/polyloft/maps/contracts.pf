@@ -1,0 +1,25 @@
+public interface MapLike<K, V>:
+	size() -> int
+	isEmpty() -> bool
+	containsKey(key: K) -> bool
+	__contains(key: K) -> bool
+	containsValue(expected: V) -> bool
+	get(key: K) -> V
+	getOrDefault(key: K, fallback: V) -> V
+	delete(key: K) -> bool
+	keys() -> array<K>
+	values() -> array<V>
+end
+
+public interface SetLike<T>:
+	size() -> int
+	isEmpty() -> bool
+	contains(key: T) -> bool
+	__contains(key: T) -> bool
+	add(key: T) -> SetLike<T>
+	addAll(items: array<T>) -> SetLike<T>
+	clear() -> SetLike<T>
+	delete(key: T) -> bool
+	asArray() -> array<T>
+	values() -> array<T>
+end

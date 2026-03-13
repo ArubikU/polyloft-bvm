@@ -3,7 +3,7 @@
 `polyloft.function` provides generic single-abstract-method interfaces for lambda-oriented code.
 
 ```pf
-import polyloft.function { Predicate, Consumer, Supplier, Function, BiFunction, UnaryOperator, BinaryOperator }
+import polyloft.function { Predicate, Consumer, Supplier, Runnable, Function, BiFunction, UnaryOperator, BinaryOperator }
 ```
 
 ## Interfaces
@@ -19,6 +19,10 @@ import polyloft.function { Predicate, Consumer, Supplier, Function, BiFunction, 
 ### Supplier<T>
 
 - `get() -> T`
+
+### Runnable
+
+- `run() -> void`
 
 ### Function<T, R>
 
@@ -48,13 +52,19 @@ Iterable<? extends number>
 ## Example
 
 ```pf
+import polyloft.function { Predicate, Supplier, Runnable }
+
 let starts: Predicate<string> = (value: string) => value[0] == "p"
 let maker: Supplier<string> = () => "polyloft"
+let done: Runnable = () => println("done")
 
 println(starts.test("poly"))
 println(maker.get())
+done.run()
 ```
 
-## Status
+## Notes
 
-The module imports, inherited functional interfaces, and contextual lambda typing now work together for the tested generic cases.
+- These interfaces are intended for contextual lambda typing and single-abstract-method contracts.
+- Imported functional interfaces, inherited functional interfaces, and tested generic lambda cases currently work together in the BVM checker.
+- `Runnable` is used directly by `polyloft.concurrent` for `finally(...)` callbacks.

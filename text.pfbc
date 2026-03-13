@@ -1,8 +1,0 @@
-== <script> ==
-0000 L5   CLOSURE       0 (&{main 0 []  []  3 0 [] map[] 0xc000253a90})
-0003 L5   DEFINE_GLOBAL_SLOT9
-0005 L21  CONSTANT      1 (&{main 0 []  []  3 0 [] map[] 0xc000253a90})
-0008 L21  CALL          0
-0010 L0   POP           
-0011 L0   NIL           
-0012 L0   RETURN        

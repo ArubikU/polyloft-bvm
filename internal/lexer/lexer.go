@@ -84,13 +84,17 @@ func (lx *Lexer) scanTokens() error {
 				lx.addToken(token.Minus, startLine, startCol)
 			}
 		case '*':
-			if lx.match('=') {
+			if lx.match('*') {
+				lx.addToken(token.StarStar, startLine, startCol)
+			} else if lx.match('=') {
 				lx.addToken(token.StarEqual, startLine, startCol)
 			} else {
 				lx.addToken(token.Star, startLine, startCol)
 			}
 		case '%':
 			lx.addToken(token.Percent, startLine, startCol)
+		case '^':
+			lx.addToken(token.Caret, startLine, startCol)
 		case '/':
 			if lx.match('/') {
 				for !lx.isAtEnd() && lx.peek() != '\n' {
@@ -180,26 +184,56 @@ func (lx *Lexer) scanTokens() error {
 }
 
 func (lx *Lexer) scanString(line, col int) error {
-	for !lx.isAtEnd() && lx.peek() != '"' {
-		// allow escaped quotes to avoid terminating the string
-		if lx.peek() == '\\' && lx.peekNext() == '"' {
-			lx.advance()
+	// Track brace depth so we can allow `"` inside `#{ }` interpolation blocks.
+	interpDepth := 0 // number of unclosed interpolation braces we're inside
+	for !lx.isAtEnd() {
+		ch := lx.peek()
+		// Inside an interpolation block, count { and } to track depth.
+		if interpDepth > 0 {
+			if ch == '{' {
+				interpDepth++
+				lx.advance()
+				continue
+			}
+			if ch == '}' {
+				interpDepth--
+				lx.advance()
+				continue
+			}
+			// While inside #{}, allow any character including '"' — just advance.
 			lx.advance()
 			continue
 		}
-		if lx.peek() == '\n' {
+		// Outside interpolation blocks:
+		if ch == '"' {
+			break // end of string
+		}
+		if ch == '\n' {
 			return fmt.Errorf("line %d:%d: unterminated string", line, col)
+		}
+		// Detect start of `#{` interpolation block.
+		if ch == '#' && lx.peekNext() == '{' {
+			lx.advance() // consume '#'
+			lx.advance() // consume '{'
+			interpDepth++
+			continue
+		}
+		// Escaped quote
+		if ch == '\\' && lx.peekNext() == '"' {
+			lx.advance()
+			lx.advance()
+			continue
 		}
 		lx.advance()
 	}
 	if lx.isAtEnd() {
 		return fmt.Errorf("line %d:%d: unterminated string", line, col)
 	}
-	lx.advance() // closing quote
+	lx.advance() // consume closing '"'
 
 	raw := string(lx.source[lx.start+1 : lx.cur-1])
 
-	// Unescape the string
+	// Unescape escape sequences (but leave #{...} untouched for the VM).
 	var b strings.Builder
 	for i := 0; i < len(raw); i++ {
 		if raw[i] == '\\' && i+1 < len(raw) {
@@ -274,18 +308,19 @@ func (lx *Lexer) scanChar(line, col int) error {
 
 func (lx *Lexer) scanNumber(line, col int) error {
 	isFloat := false
-	for unicode.IsDigit(lx.peek()) {
-		lx.advance()
+	if err := lx.consumeNumberDigits(line, col, false); err != nil {
+		return err
 	}
-	if lx.peek() == '.' && unicode.IsDigit(lx.peekNext()) {
+	if lx.peek() == '.' && isNumberDigitStart(lx.peekNext()) {
 		isFloat = true
 		lx.advance()
-		for unicode.IsDigit(lx.peek()) {
-			lx.advance()
+		if err := lx.consumeNumberDigits(line, col, true); err != nil {
+			return err
 		}
 	}
 	literal := string(lx.source[lx.start:lx.cur])
-	if _, err := strconv.ParseFloat(literal, 64); err != nil {
+	normalized := normalizeNumberLiteral(literal)
+	if _, err := strconv.ParseFloat(normalized, 64); err != nil {
 		return fmt.Errorf("line %d:%d: invalid number %q", line, col, literal)
 	}
 	tokenType := token.IntNumber
@@ -294,6 +329,40 @@ func (lx *Lexer) scanNumber(line, col int) error {
 	}
 	lx.items = append(lx.items, token.Token{Type: tokenType, Lexeme: literal, Line: line, Column: col})
 	return nil
+}
+
+func (lx *Lexer) consumeNumberDigits(line, col int, requireLeadingDigit bool) error {
+	if requireLeadingDigit && !unicode.IsDigit(lx.peek()) {
+		return fmt.Errorf("line %d:%d: invalid number %q", line, col, string(lx.source[lx.start:lx.cur]))
+	}
+	for {
+		if unicode.IsDigit(lx.peek()) {
+			lx.advance()
+			continue
+		}
+		if lx.peek() == '_' {
+			if !unicode.IsDigit(lx.peekNext()) {
+				literal := string(lx.source[lx.start : lx.cur+1])
+				return fmt.Errorf("line %d:%d: invalid number %q", line, col, literal)
+			}
+			lx.advance()
+			continue
+		}
+		break
+	}
+	if lx.source[lx.cur-1] == '_' {
+		literal := string(lx.source[lx.start:lx.cur])
+		return fmt.Errorf("line %d:%d: invalid number %q", line, col, literal)
+	}
+	return nil
+}
+
+func isNumberDigitStart(ch rune) bool {
+	return unicode.IsDigit(ch)
+}
+
+func normalizeNumberLiteral(literal string) string {
+	return strings.ReplaceAll(literal, "_", "")
 }
 
 func (lx *Lexer) scanIdentifier(line, col int) {

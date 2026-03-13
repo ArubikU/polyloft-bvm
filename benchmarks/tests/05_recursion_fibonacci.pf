@@ -1,0 +1,13 @@
+def fib(n: int) -> int:
+    if n <= 1:
+        return n
+    end
+    return fib(n - 1) + fib(n - 2)
+end
+
+var started = Sys.time()
+var res = fib(35)
+var ended = Sys.time()
+println(res)
+println("TIME_PF")
+println(ended - started)

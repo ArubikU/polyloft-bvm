@@ -1,10 +1,10 @@
 # Types and Objects
 
-This page covers the types, classes and object model that `polyloft-bvm` supports today.
+This page documents the type system and object model implemented by polyloft-bvm. It focuses on the current checker and runtime behavior, including the places where native runtime values and nominal interfaces intentionally differ.
 
-## Primitive and built-in type names
+## Type Names
 
-Primitive scalar names used by the checker:
+Primitive scalar type names accepted by the checker include:
 
 - `int`
 - `float`
@@ -14,7 +14,7 @@ Primitive scalar names used by the checker:
 - `nil`
 - `void`
 
-Runtime-native built-in value kinds:
+Native runtime value families include:
 
 - `string`
 - `array`
@@ -23,28 +23,26 @@ Runtime-native built-in value kinds:
 - `Range`
 - `any`
 
-Current source compatibility notes:
+Compatibility notes:
 
 - `string` and `String` both resolve to the native text type in annotations
-- object-style helper methods live on `polyloft.common.String`
-- string indexing returns `char`
+- object-style text helpers live in `polyloft.common.String`
+- indexing native strings returns `char`
 
-## Numeric types
+## Numeric Types
 
-`int` and `float` are now distinct primitive numeric types in the BVM.
+polyloft-bvm distinguishes `int` and `float`.
 
-Current numeric rules:
+Current rules:
 
-- integer literals like `1` infer as `int`
-- decimal literals like `1.5` infer as `float`
-- `number` remains the broad numeric supertype for compatibility
+- integer literals infer as `int`
+- decimal literals infer as `float`
+- `number` remains the broad numeric compatibility type
 - `int` is assignable to `float`
-- `float` is not assignable to `int` without an explicit cast
-- casts currently support `(int)` and `(float)`
-- `+`, `-`, `*`, `%` keep `int` only when both operands are `int`
+- `float` requires an explicit cast before assignment to `int`
+- `(int)` and `(float)` casts are supported
+- `+`, `-`, `*`, and `%` remain `int` only when both operands are `int`
 - `/` produces `float`
-
-Example:
 
 ```pf
 let whole: int = 1
@@ -54,19 +52,15 @@ let narrowed: int = (int) frac
 let mixed: float = whole + frac
 ```
 
-## Text and char model
+## Text and Char
 
-The current BVM text model distinguishes `char` from text values.
+The BVM text model distinguishes scalar characters from string values.
 
-Current behavior:
-
-- `char` is its own scalar type
-- indexing a string returns `char`
-- slicing a string returns string text
-- `char` and string values are comparable in the current checker and VM rules
-- the imported `polyloft.common.Char` and `polyloft.common.String` classes are wrappers, not replacements for the native value kinds
-
-Example:
+- `char` is a separate scalar type
+- string indexing returns `char`
+- string slicing returns `string`
+- `char` and one-character strings compare successfully in common checker and VM cases
+- `polyloft.common.Char` and `polyloft.common.String` are wrappers over native values
 
 ```pf
 let text: string = "Polyloft"
@@ -77,20 +71,16 @@ println(text[1...3])
 println(String(text).charAt(0))
 ```
 
-## Union types and aliases
+## Union Types and Aliases
 
-The checker now supports unions and static type aliases.
-
-Current behavior:
+Unions and static aliases are supported.
 
 - unions use `|`
 - aliases use `type Name = ...`
-- aliases are compile-time only and do not produce runtime values
-- array and map literals preserve mixed element types as unions instead of collapsing straight to `any`
-- function and method annotations carry the structural type string into bytecode metadata so the VM can enforce common cases such as `array<number | string>`
-- arrays may also be written with Java‑style `T[]` syntax; both forms are equivalent and nest (e.g. `int[][]` ↔ `array<array<int>>`)
-
-Example:
+- aliases are compile-time only and do not create runtime values
+- mixed array and map literals preserve union element types when possible
+- structural type strings are preserved in bytecode metadata for common runtime checks
+- arrays may be written as `array<T>` or `T[]`
 
 ```pf
 type Scalar = number | string
@@ -104,7 +94,7 @@ end
 println(sizeOf(values))
 ```
 
-Invalid assignments are rejected:
+Invalid assignments remain type errors.
 
 ```pf
 let broken: array<number> = ["a"]
@@ -112,20 +102,17 @@ let broken: array<number> = ["a"]
 
 ## Classes
 
-Supported class features include:
+The current class model supports:
 
 - fields
 - constructors
 - instance methods
-- static methods and static fields
-- access modifiers: `public`, `private`, `protected`
-- inheritance via `<`
-- interface implementation via `implements`
+- static fields and methods
+- `public`, `private`, and `protected`
+- inheritance with `<`
+- interface implementation with `implements`
 - abstract classes
 - sealed classes
-- enums with singleton values and static helpers
-
-Example:
 
 ```pf
 class Counter:
@@ -148,16 +135,12 @@ end
 
 ## Records
 
-Records are supported as a compact immutable form.
-
-Current BVM behavior:
+Records are supported as compact immutable data types.
 
 - fields are generated from the parameter list
 - a constructor is generated automatically
 - fields are immutable
-- custom constructors are rejected
-
-Example:
+- custom constructors are not currently supported
 
 ```pf
 record Point(x: number, y: number)
@@ -172,19 +155,14 @@ println(point.sum())
 
 ## Enums
 
-Enums are supported as optimized singleton object sets.
+Enums are implemented as singleton instance sets with generated helpers.
 
-Current BVM behavior:
-
-- enum values are created once and stored as static singleton members
-- every enum value exposes `name` and `ordinal`
-- `valueOf`, `values`, `names` and `size` are generated automatically
+- each enum value exposes `name` and `ordinal`
+- each enum type exposes `valueOf`, `values`, `names`, and `size`
 - enum instances are frozen after construction
-- enum constructors currently require compile-time constant arguments
-- enum constructor bodies are currently limited to direct `this.field = expr` assignments with compile-time evaluable expressions
+- constructor arguments must currently be compile-time constants
+- constructor bodies are limited to direct `this.field = expr` assignments with compile-time-evaluable expressions
 - `final enum` syntax is accepted
-
-Example:
 
 ```pf
 enum Color
@@ -198,32 +176,13 @@ println(Color.valueOf("RED").ordinal)
 println(Color.size())
 ```
 
-Example with constructor:
-
-```pf
-enum Planet
-    MERCURY(3.7)
-    EARTH(9.8)
-
-    var gravity: number
-
-    Planet(g: number):
-        this.gravity = g
-    end
-
-    def weight(mass: number) -> number:
-        return mass * this.gravity
-    end
-end
-
-println(Planet.EARTH.weight(75))
-```
+For more detail, see [enums.md](enums.md).
 
 ## Interfaces
 
-Interfaces are supported, including declarative methods and functional dispatch scenarios used in tests.
+Interfaces are supported for declarations, implementation checks, and the functional-dispatch scenarios exercised in the test suite.
 
-Built-in protocol interfaces are also available:
+Built-in protocol interfaces include:
 
 - `Iterable`
 - `Unstructured`
@@ -231,30 +190,23 @@ Built-in protocol interfaces are also available:
 - `Indexable`
 - `Collection`
 
-See [builtin-interfaces.md](builtin-interfaces.md) for the exact BVM matrix and protocol method names.
-
-Example:
-
 ```pf
 interface Worker:
     run(task: string) -> string
 end
 ```
 
-## Wrapper objects and unboxing
+See [builtin-interfaces.md](builtin-interfaces.md) for the protocol method matrix and native type behavior.
 
-`polyloft-bvm` distinguishes between primitive syntax and wrapper objects from `polyloft.common`.
+## Wrappers and Unboxing
 
-Current supported behavior:
+polyloft-bvm keeps primitive syntax and wrapper objects separate.
 
-- wrappers expose object-style methods
-- numeric wrappers unbox in numeric operators
-- `Boolean` unboxes in conditions and logical operators
-- native string indexing and slicing remain on raw text values
-- imported methods and static factories preserve return members for chaining
-- common wrappers now expose extra helper methods such as string search/repeat, boolean combinators, numeric sign helpers, and array-like searches on `CharArray` and `Bytes`
-
-Example:
+- wrappers from `polyloft.common` expose object-style methods
+- numeric wrappers unbox in arithmetic
+- `Boolean` unboxes in conditionals and logical operators
+- native string indexing and slicing remain available on raw strings
+- wrapper methods and factories preserve chainable return values
 
 ```pf
 import polyloft.common { Integer, Boolean, String }
@@ -264,16 +216,16 @@ println(Boolean(true).negate().booleanValue())
 println(String("Polyloft").substring(1, 4).concat("!").toString())
 ```
 
-## Collections
+## Native Collections and Facades
 
-Runtime-native collections:
+Native collection kinds include:
 
 - `array`
 - `map`
 - `tuple`
 - `Range`
 
-Nominal interface membership is intentionally narrower than native syntax support.
+Nominal interface membership is intentionally narrower than the native syntax surface.
 
 Current tested behavior:
 
@@ -283,17 +235,11 @@ Current tested behavior:
 - `tuple` is nominal `Unstructured` and `Sliceable`
 - `string` is nominal `Sliceable`
 
-Native syntax that stays available even without nominal interface membership:
+Native syntax that remains available even without nominal interface membership includes:
 
 - `for item in array`
 - `for key in map`
 - `text[index]`
 - `tuple[index]`
 
-Library object facades:
-
-- `polyloft.maps.Map`
-- `polyloft.maps.HashMap`
-- `polyloft.maps.SetMap`
-
-These facades are documented further in [../stdlib.md](../stdlib.md).
+For object-style facades over maps and sets, see [../stdlib/maps.md](../stdlib/maps.md).

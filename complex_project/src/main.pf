@@ -1,21 +1,76 @@
 import math
 import utils
-import polyloft.common
+import polyloft.common { String, Integer }
+import polyloft.collections { ArrayList, HashSet }
+import polyloft.maps { HashMap, SetMap }
+import polyloft.function { Function }
+import polyloft.json { Json }
+import polyloft.http { Http }
+import polyloft.concurrent { Channel, async }
+import polyloft.io { IO }
 
 def main():
     println("Complex Project Starting...")
     utils.Utils.greet("Polyloft User")
-    
+
     let sum = math.Math.add(10, 20)
     println("10 + 20 = " + sum)
-    
+
     let prod = math.Math.multiply(5, 6)
     println("5 * 6 = " + prod)
 
-    // Stdlib usage
-    let s = polyloft.common.String("Stdlib String Wrapper")
-    println("Stdlib String: " + s.toString())
-    println("Length: " + s.length())
+    let wrapped = Integer(7).max(12)
+    println("Common.wrap=" + wrapped.unwrap())
+    println("Common.text=" + String("Polyloft").length())
+
+    let names = ArrayList()
+    for item in ["poly", "loft"]: names.add(item)
+    let tags = HashSet.from(["vm", "vm", "bvm"])
+    println("Collections.size=" + (names.size() + tags.size()))
+    let scores = HashMap<string,int>()
+    scores.put("answer", 42)
+    let unique = SetMap.from(["x", "y", "x"])
+    println("Maps.answer=" + (scores.get("answer") + unique.size()))
+    
+    let triple: Function<number, number> = (value: number) => value * 3
+    println("Function.mul=" + triple.apply(7))
+
+    let payload = Json.parse(Json.stringify({"name": "Polyloft", "count": names.size()}))
+    println("Json.name=" + payload["name"])
+
+    let server = Http.createServer()
+    println("Http.ready=" + (server != nil))
+
+    let channel = Channel(0)
+    let worker = thread spawn:
+        channel.send("thread-message")
+    end
+    println("Concurrent.thread=" + channel.receive())
+    worker.join()
+    let future = async(() => 5 + 7)
+    println("Concurrent.future=" + future.get())
+
+    let aliasTarget = [1, 2, 3]
+    switch aliasTarget:
+        case (items: Array):
+            println("Switch.alias=array")
+        default:
+            println("Switch.alias=other")
+    end
+
+    let tempDir = "complex_project/.tmp"
+    let tempPath = tempDir + "/smoke.txt"
+    IO.mkdir(tempDir)
+    IO.writeFile(tempPath, "polyloft-io-ok")
+    println("IO.exists=" + IO.exists(tempPath))
+    println("IO.file=" + IO.readFile(tempPath))
+    IO.appendFile(tempPath, "-data")
+    println("IO.append=" + IO.readFile(tempPath))
+    let entries = IO.readDir(tempDir)
+    println("IO.dir=" + len(entries))
+    let info = IO.getFileInfo(tempPath)
+    if info["isDir"] == false: println("IO.info=file")
+    IO.delete(tempPath)
 end
 
 main()

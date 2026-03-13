@@ -1,0 +1,82 @@
+import polyloft.maps.contracts { MapLike }
+import polyloft.maps.entry { Entry }
+import polyloft.collections.arraylist { ArrayList }
+
+public class Map<V> implements MapLike<string, V>:
+	var storage: map<string, V>
+
+	Map():
+		this.storage = {}
+	end
+
+	static def from(entries: map<string, V>) -> Map<V>:
+		let view = Map()
+		view.storage = entries
+		return view
+	end
+
+	def unwrap() -> map<string, V>:
+		return this.storage
+	end
+
+	def size() -> int:
+		return len(this.storage)
+	end
+
+	def isEmpty() -> bool:
+		return this.size() == 0
+	end
+
+	def containsKey(key: string) -> bool:
+		for candidate in this.storage:
+			if candidate == key:
+				return true
+			end
+		end
+		return false
+	end
+
+	def __contains(key: string) -> bool:
+		return this.containsKey(key)
+	end
+
+	def containsValue(expected: V) -> bool:
+		for key, value in this.storage:
+			if value == expected:
+				return true
+			end
+		end
+		return false
+	end
+
+	def get(key: string) -> V:
+		return this.storage[key]
+	end
+
+	def getOrDefault(key: string, fallback: V) -> V:
+		if this.containsKey(key):
+			return this.storage[key]
+		end
+		return fallback
+	end
+
+	def delete(key: string) -> bool:
+		return delete(this.storage, key)
+	end
+
+	def keys() -> array<string>:
+		return keys(this.storage)
+	end
+
+	def values() -> array<V>:
+		return values(this.storage)
+	end
+
+	def entries() -> array<Entry<string, V>>:
+		let result = ArrayList<Entry<string, V>>()
+		for key, value in this.storage:
+			result.add(Entry(key, value))
+		end
+		return result.asArray()
+	end
+end

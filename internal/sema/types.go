@@ -1,10 +1,17 @@
 package sema
 
-import "github.com/ArubikU/polyloft-bvm/internal/runtime"
+import (
+	"fmt"
+	"reflect"
+
+	"github.com/ArubikU/polyloft-bvm/internal/runtime"
+)
 
 type Type struct {
 	Name                  string
 	Callable              *CallableType
+	CallOverloads         []*CallableType
+	ConstructorOverloads  []*CallableType
 	ConstructorVisibility string
 	Module                *runtime.ModuleSpec
 	Members               map[string]Type
@@ -24,9 +31,10 @@ type Type struct {
 }
 
 type CallableType struct {
-	Params   []Type
-	Return   Type
-	Variadic bool
+	Params     []Type
+	Return     Type
+	Variadic   bool
+	Overloaded bool
 }
 
 func callableMember(params []Type, ret Type) Type {
@@ -95,14 +103,36 @@ func typeDisplayName(t Type) string {
 			}
 		}
 	}
+	if t.Callable != nil {
+		params := make([]string, len(t.Callable.Params))
+		for i, param := range t.Callable.Params {
+			params[i] = typeDisplayName(param)
+		}
+		return "Function(" + joinSerializedTypeNames(params, ", ") + ") -> " + typeDisplayName(t.Callable.Return)
+	}
 	if len(t.Args) > 0 {
 		parts := make([]string, len(t.Args))
 		for i, arg := range t.Args {
 			parts[i] = typeDisplayName(arg)
 		}
-		return t.Name + "<" + joinTypeNames(parts) + ">"
+		return t.Name + "<" + joinSerializedTypeNames(parts, ", ") + ">"
 	}
 	return t.Name
+}
+
+func joinSerializedTypeNames(parts []string, sep string) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	joined := parts[0]
+	for i := 1; i < len(parts); i++ {
+		joined += sep + parts[i]
+	}
+	return joined
+}
+
+func DisplayName(t Type) string {
+	return typeDisplayName(t)
 }
 
 func UnionOf(options ...Type) Type {
@@ -138,59 +168,140 @@ func UnionOf(options ...Type) Type {
 }
 
 func substituteType(t Type, mapping map[string]Type) Type {
+	return substituteTypeWithSeen(t, mapping, map[string]*Type{})
+}
+
+func substituteTypeWithSeen(t Type, mapping map[string]Type, seen map[string]*Type) Type {
 	if t.IsTypeParam {
 		if resolved, ok := mapping[t.Name]; ok {
 			return resolved
 		}
 	}
+	if key, ok := substituteTypeKey(t); ok {
+		if cached, found := seen[key]; found {
+			return *cached
+		}
+		placeholder := t
+		seen[key] = &placeholder
+		defer func() {
+			*seen[key] = placeholder
+		}()
+	}
 	if t.BoundType != nil {
-		bound := substituteType(*t.BoundType, mapping)
+		bound := substituteTypeWithSeen(*t.BoundType, mapping, seen)
 		t.BoundType = &bound
 	}
 	if len(t.Bounds) > 0 {
 		bounds := make([]Type, len(t.Bounds))
 		for i, bound := range t.Bounds {
-			bounds[i] = substituteType(bound, mapping)
+			bounds[i] = substituteTypeWithSeen(bound, mapping, seen)
 		}
 		t.Bounds = bounds
 	}
 	if len(t.Union) > 0 {
 		options := make([]Type, len(t.Union))
 		for i, option := range t.Union {
-			options[i] = substituteType(option, mapping)
+			options[i] = substituteTypeWithSeen(option, mapping, seen)
 		}
 		return UnionOf(options...)
 	}
 	if len(t.Args) > 0 {
 		args := make([]Type, len(t.Args))
 		for i, arg := range t.Args {
-			args[i] = substituteType(arg, mapping)
+			args[i] = substituteTypeWithSeen(arg, mapping, seen)
 		}
 		t.Args = args
 	}
 	if len(t.Tuple) > 0 {
 		tuple := make([]Type, len(t.Tuple))
 		for i, element := range t.Tuple {
-			tuple[i] = substituteType(element, mapping)
+			tuple[i] = substituteTypeWithSeen(element, mapping, seen)
 		}
 		t.Tuple = tuple
 	}
 	if t.Callable != nil {
 		params := make([]Type, len(t.Callable.Params))
 		for i, param := range t.Callable.Params {
-			params[i] = substituteType(param, mapping)
+			params[i] = substituteTypeWithSeen(param, mapping, seen)
 		}
-		ret := substituteType(t.Callable.Return, mapping)
-		t.Callable = &CallableType{Params: params, Return: ret, Variadic: t.Callable.Variadic}
+		ret := substituteTypeWithSeen(t.Callable.Return, mapping, seen)
+		t.Callable = &CallableType{Params: params, Return: ret, Variadic: t.Callable.Variadic, Overloaded: t.Callable.Overloaded}
+	}
+	if len(t.CallOverloads) > 0 {
+		overloads := make([]*CallableType, len(t.CallOverloads))
+		for i, overload := range t.CallOverloads {
+			if overload == nil {
+				continue
+			}
+			params := make([]Type, len(overload.Params))
+			for j, param := range overload.Params {
+				params[j] = substituteTypeWithSeen(param, mapping, seen)
+			}
+			ret := substituteTypeWithSeen(overload.Return, mapping, seen)
+			overloads[i] = &CallableType{Params: params, Return: ret, Variadic: overload.Variadic, Overloaded: overload.Overloaded}
+		}
+		t.CallOverloads = overloads
+	}
+	if len(t.ConstructorOverloads) > 0 {
+		overloads := make([]*CallableType, len(t.ConstructorOverloads))
+		for i, overload := range t.ConstructorOverloads {
+			if overload == nil {
+				continue
+			}
+			params := make([]Type, len(overload.Params))
+			for j, param := range overload.Params {
+				params[j] = substituteTypeWithSeen(param, mapping, seen)
+			}
+			ret := substituteTypeWithSeen(overload.Return, mapping, seen)
+			overloads[i] = &CallableType{Params: params, Return: ret, Variadic: overload.Variadic, Overloaded: overload.Overloaded}
+		}
+		t.ConstructorOverloads = overloads
 	}
 	if len(t.Members) > 0 {
 		members := make(map[string]Type, len(t.Members))
 		for name, member := range t.Members {
-			members[name] = substituteType(member, mapping)
+			members[name] = substituteTypeWithSeen(member, mapping, seen)
 		}
 		t.Members = members
 	}
 	return t
+}
+
+func substituteTypeKey(t Type) (string, bool) {
+	parts := ""
+	if t.Callable != nil {
+		parts += fmt.Sprintf("callable:%x;", reflect.ValueOf(t.Callable).Pointer())
+	}
+	if len(t.CallOverloads) > 0 {
+		parts += fmt.Sprintf("callOverloads:%d;", len(t.CallOverloads))
+		for _, overload := range t.CallOverloads {
+			if overload == nil {
+				parts += "0;"
+				continue
+			}
+			parts += fmt.Sprintf("%x;", reflect.ValueOf(overload).Pointer())
+		}
+	}
+	if len(t.ConstructorOverloads) > 0 {
+		parts += fmt.Sprintf("ctors:%d;", len(t.ConstructorOverloads))
+		for _, overload := range t.ConstructorOverloads {
+			if overload == nil {
+				parts += "0;"
+				continue
+			}
+			parts += fmt.Sprintf("%x;", reflect.ValueOf(overload).Pointer())
+		}
+	}
+	if len(t.Members) > 0 {
+		parts += fmt.Sprintf("members:%x;", reflect.ValueOf(t.Members).Pointer())
+	}
+	if t.BoundType != nil {
+		parts += fmt.Sprintf("bound:%p;", t.BoundType)
+	}
+	if parts == "" {
+		return "", false
+	}
+	return fmt.Sprintf("name:%s;args:%d;typeParam:%t;wild:%s;%s", t.Name, len(t.Args), t.IsTypeParam, t.WildcardKind, parts), true
 }
 
 func genericArgMatches(target Type, source Type) bool {
@@ -583,7 +694,7 @@ func (t Type) IsAssignableFrom(other Type) bool {
 
 func isNumericCompatibleType(name string) bool {
 	switch name {
-	case runtime.TypeInt, runtime.TypeFloat, runtime.TypeNumber, "Integer", "Double":
+	case runtime.TypeInt, runtime.TypeFloat, runtime.TypeNumber, "Integer", "Float", "Double":
 		return true
 	default:
 		return false
@@ -610,7 +721,7 @@ func isBooleanCompatibleType(name string) bool {
 
 func isTextComparableType(name string) bool {
 	switch name {
-	case runtime.TypeChar, runtime.TypeString:
+	case runtime.TypeChar, runtime.TypeString, "Char":
 		return true
 	default:
 		return false

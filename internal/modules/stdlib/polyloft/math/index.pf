@@ -1,0 +1,70 @@
+native def abs(value: number) -> number
+native def floor(value: number) -> number
+native def ceil(value: number) -> number
+native def round(value: number) -> number
+native def sqrt(value: number) -> number
+native def pow(base: number, exponent: number) -> number
+native def sin(value: number) -> number
+native def cos(value: number) -> number
+native def tan(value: number) -> number
+native def min(left: number, right: number) -> number
+native def max(left: number, right: number) -> number
+native def clamp(value: number, minValue: number, maxValue: number) -> number
+native def random() -> number
+
+public class Math:
+	static let PI: number = 3.141592653589793
+	static let E: number = 2.718281828459045
+
+	static def abs(value: number) -> number:
+		return abs(value)
+	end
+
+	static def floor(value: number) -> number:
+		return floor(value)
+	end
+
+	static def ceil(value: number) -> number:
+		return ceil(value)
+	end
+
+	static def round(value: number) -> number:
+		return round(value)
+	end
+
+	static def sqrt(value: number) -> number:
+		return sqrt(value)
+	end
+
+	static def pow(base: number, exponent: number) -> number:
+		return pow(base, exponent)
+	end
+
+	static def sin(value: number) -> number:
+		return sin(value)
+	end
+
+	static def cos(value: number) -> number:
+		return cos(value)
+	end
+
+	static def tan(value: number) -> number:
+		return tan(value)
+	end
+
+	static def min(left: number, right: number) -> number:
+		return min(left, right)
+	end
+
+	static def max(left: number, right: number) -> number:
+		return max(left, right)
+	end
+
+	static def clamp(value: number, minValue: number, maxValue: number) -> number:
+		return clamp(value, minValue, maxValue)
+	end
+
+	static def random() -> number:
+		return random()
+	end
+end

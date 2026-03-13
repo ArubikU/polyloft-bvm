@@ -1,0 +1,25 @@
+def collatz(n: number) -> int:
+    var steps = 0
+    loop n > 1:
+        if n % 2 == 0:
+            n = (int)(n / 2)
+        else:
+            n = 3 * n + 1
+        end
+        steps = steps + 1
+    end
+    return steps
+end
+
+var started = Sys.time()
+var max_steps = 0
+for i in range(1, 100000):
+    var steps = collatz(i)
+    if steps > max_steps:
+        max_steps = steps
+    end
+end
+var ended = Sys.time()
+println(max_steps)
+println("TIME_PF")
+println(ended - started)

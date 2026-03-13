@@ -1,0 +1,40 @@
+// Test 1: final field - must reject write from outside
+class WithFinal:
+    final MAX: int = 100
+    final name: string = "foo"
+
+    WithFinal():
+        // Allowed: write in constructor
+        this.MAX = 100
+        this.name = "hello"
+    end
+end
+
+let wf = new WithFinal()
+println(wf.MAX)       // expect: 100
+println(wf.name)      // expect: hello
+
+// Test 2: const field - reject from outside, allow from inside
+class WithConst:
+    const counter: int
+    const label: string
+
+    WithConst():
+        this.counter = 0
+        this.label = "init"
+    end
+
+    def set_counter(v: int) -> void:
+        this.counter = v
+    end
+
+    def append_label(s: string) -> void:
+        this.label = this.label + s
+    end
+end
+
+let wc = new WithConst()
+wc.set_counter(42)
+println(wc.counter)    // expect: 42
+wc.append_label("_done")
+println(wc.label)      // expect: init_done

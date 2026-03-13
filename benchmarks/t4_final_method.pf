@@ -1,0 +1,12 @@
+// Test 4: BLOCKED - final mutation from inside a regular method
+class G:
+    final z: int = 7
+    G(): this.z = 7 end
+    def reset() -> void:
+        this.z = 0
+    end
+end
+let g = new G()
+println(g.z)
+g.reset()
+println("should not reach reset value")

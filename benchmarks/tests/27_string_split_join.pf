@@ -1,0 +1,16 @@
+var started = Sys.time()
+var s = 0
+for i in range(0, 100000):
+    var parts = new string[3]
+    parts[0] = "a"
+    parts[1] = "b"
+    parts[2] = "c"
+    var joined = parts[0] + "," + parts[1] + "," + parts[2]
+    if joined == "a,b,c":
+        s = s + 1
+    end
+end
+var ended = Sys.time()
+println(s)
+println("TIME_PF")
+println(ended - started)

@@ -1,0 +1,38 @@
+class ValidationError:
+    let message: String
+
+    ValidationError(message: String):
+        this.message = message
+    end
+end
+
+abstract class Worker:
+    abstract def run() -> String
+end
+
+class DemoWorker extends Worker:
+    @Override
+    def run() -> String:
+        return "ready"
+    end
+end
+
+println(DemoWorker().run())
+
+try:
+    throw "boom"
+catch err:
+    println(err)
+end
+
+try:
+    throw new ValidationError("invalid payload")
+catch (err: ValidationError):
+    println(err.message)
+end
+
+try:
+    println(10 / 0)
+catch (err: ValueError):
+    println(err.message)
+end

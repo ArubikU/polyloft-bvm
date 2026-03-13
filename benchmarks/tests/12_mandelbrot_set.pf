@@ -1,0 +1,33 @@
+def mandelbrot() -> int:
+    var s = 0
+    var w = 50
+    var h = 50
+    for y in range(0, h):
+        for x in range(0, w):
+            var zr = 0.0
+            var zi = 0.0
+            var cr = (x / w) * 4.0 - 2.0
+            var ci = (y / h) * 4.0 - 2.0
+            var i = 0
+            loop i < 1000:
+                var zr2 = zr * zr
+                var zi2 = zi * zi
+                if zr2 + zi2 > 4.0:
+                    break
+                end
+                zi = 2.0 * zr * zi + ci
+                zr = zr2 - zi2 + cr
+                i = i + 1
+            end
+            s = s + i
+        end
+    end
+    return s
+end
+
+var started = Sys.time()
+var res = mandelbrot()
+var ended = Sys.time()
+println(res)
+println("TIME_PF")
+println(ended - started)

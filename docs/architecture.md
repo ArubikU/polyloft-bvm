@@ -13,7 +13,9 @@ The current execution path is:
 5. compile AST to bytecode
 6. execute bytecode on the VM
 
-The CLI entry point is in `cmd/polyloft-bvm/main.go` and currently exposes only `run` and `dump`.
+The CLI entry point is in `cmd/polyloft-bvm/main.go` and currently exposes `run`, `check`, `dump`, `compile`, `runline`, and `types`.
+
+`runline` is the inline-source path used by editor tooling: it can execute or just validate source text without requiring a temporary file on disk.
 
 ## Package map
 
@@ -50,6 +52,7 @@ The main parser entry point is `internal/parser/parser.go`.
 `internal/modules/loader.go` is responsible for:
 
 - parsing imported files
+- parsing inline source buffers for `runline` and editor-driven checks
 - resolving project roots and package candidates
 - loading embedded `polyloft.*` stdlib modules
 - type-checking imported modules
@@ -77,6 +80,14 @@ This spec layer is what makes imported members discoverable to the semantic chec
 ## Semantic checking
 
 `internal/sema` validates the current program against the registry and imported specs.
+
+## Tooling surfaces
+
+`internal/modules/project.go` now centralizes the high-level entry points used by the CLI and editor tooling:
+
+- `CompileSource` and `CheckSource` for file and project targets
+- `CompileInlineSource` and `CheckInlineSource` for inline code snippets
+- bundle/type manifest generation for `.pfx` outputs and external tooling
 
 Current responsibilities include:
 

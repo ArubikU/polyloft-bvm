@@ -1,0 +1,21 @@
+class Counter:
+    val: int
+
+    Counter():
+        this.val = 0
+    end
+
+    def inc() -> void:
+        this.val = this.val + 1
+    end
+end
+
+var started = Sys.time()
+var c = new Counter()
+for i in range(0, 1000000):
+    c.inc()
+end
+var ended = Sys.time()
+println(c.val)
+println("TIME_PF")
+println(ended - started)

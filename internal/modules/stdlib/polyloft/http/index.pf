@@ -1,0 +1,326 @@
+/**
+ * polyloft.http - Http Client and Server facade
+ * Wraps `polyloft.http.native` Go bindings.
+ */
+import polyloft.json
+import polyloft.function { Function }
+
+// Native function bindings
+native def client_request(method: String, url: String, body: String, headers: map, timeout: int) -> map
+native def server_listen(port: int, callback: Function<map, map>)
+
+public interface HttpHandler:
+    handle(request: HttpServerRequest, response: HttpServerResponse) -> void
+end
+
+public interface HttpErrorHandler:
+    handle(message: String, request: HttpServerRequest, response: HttpServerResponse) -> void
+end
+
+public class HttpHeaders:
+    var _values: map<string, String>
+
+    HttpHeaders():
+        this._values = {}
+    end
+
+    HttpHeaders(values: map<string, String>):
+        this._values = values
+    end
+
+    static def from(values: map<string, String>) -> HttpHeaders:
+        return HttpHeaders(values)
+    end
+
+    def get(name: String) -> String:
+        return this._values[name]
+    end
+
+    def set(name: String, value: String) -> HttpHeaders:
+        this._values[name] = value
+        return this
+    end
+
+    def contains(name: String) -> bool:
+        return name in this._values
+    end
+
+    def delete(name: String) -> bool:
+        return delete(this._values, name)
+    end
+
+    def asMap() -> map<string, String>:
+        return this._values
+    end
+
+    def keys() -> array<string>:
+        return keys(this._values)
+    end
+
+    def values() -> array<String>:
+        return values(this._values)
+    end
+
+    def isEmpty() -> bool:
+        return len(this._values) == 0
+    end
+end
+
+public class HttpClientResponse:
+    let statusCode: int
+    let body: String
+    let headers: HttpHeaders
+
+    HttpClientResponse(statusCode: int, body: String, headers: HttpHeaders):
+        this.statusCode = statusCode
+        this.body = body
+        this.headers = headers
+    end
+
+    static def fromRaw(raw: map) -> HttpClientResponse:
+        return HttpClientResponse(raw["status"], raw["body"], HttpHeaders.from(raw["headers"]))
+    end
+
+    def isSuccess() -> bool:
+        return this.statusCode >= 200 && this.statusCode < 300
+    end
+
+    def isClientError() -> bool:
+        return this.statusCode >= 400 && this.statusCode < 500
+    end
+
+    def isServerError() -> bool:
+        return this.statusCode >= 500
+    end
+	
+    def json() -> any:
+        return Json.parse(this.body)
+    end
+end
+
+public class HttpServerRequest:
+    let method: String
+    let path: String
+    let body: String
+    let headers: HttpHeaders
+
+    HttpServerRequest(method: String, path: String, body: String, headers: HttpHeaders):
+        this.method = method
+        this.path = path
+        this.body = body
+        this.headers = headers
+    end
+
+    static def fromRaw(raw: map) -> HttpServerRequest:
+        return HttpServerRequest(raw["method"], raw["path"], raw["body"], HttpHeaders.from(raw["headers"]))
+    end
+
+    def json() -> any:
+        if this.body == "":
+            return nil
+        end
+        return Json.parse(this.body)
+    end
+end
+
+public class Http:
+    static def get(url: String) -> HttpClientResponse:
+        let emptyHeaders = HttpHeaders({})
+        return Http.request("GET", url, "", 10000, emptyHeaders)
+    end
+
+    static def get(url: String, timeoutSecs: int) -> HttpClientResponse:
+        let emptyHeaders = HttpHeaders({})
+        return Http.request("GET", url, "", timeoutSecs * 1000, emptyHeaders)
+    end
+
+    static def post(url: String, data: any) -> HttpClientResponse:
+        let emptyHeaders = HttpHeaders({})
+        let body = Json.stringify(data)
+        return Http.request("POST", url, body, 10000, emptyHeaders)
+    end
+
+    static def post(url: String, data: any, timeoutSecs: int) -> HttpClientResponse:
+        let emptyHeaders = HttpHeaders({})
+        let body = Json.stringify(data)
+        return Http.request("POST", url, body, timeoutSecs * 1000, emptyHeaders)
+    end
+
+    static def put(url: String, data: any) -> HttpClientResponse:
+        let emptyHeaders = HttpHeaders({})
+        let body = Json.stringify(data)
+        return Http.request("PUT", url, body, 10000, emptyHeaders)
+    end
+
+    static def put(url: String, data: any, timeoutSecs: int) -> HttpClientResponse:
+        let emptyHeaders = HttpHeaders({})
+        let body = Json.stringify(data)
+        return Http.request("PUT", url, body, timeoutSecs * 1000, emptyHeaders)
+    end
+
+    static def delete(url: String) -> HttpClientResponse:
+        let emptyHeaders = HttpHeaders({})
+        return Http.request("DELETE", url, "", 10000, emptyHeaders)
+    end
+
+    static def delete(url: String, timeoutSecs: int) -> HttpClientResponse:
+        let emptyHeaders = HttpHeaders({})
+        return Http.request("DELETE", url, "", timeoutSecs * 1000, emptyHeaders)
+    end
+
+    static def request(method: String, url: String, body: any, timeoutMillis: int, headers: HttpHeaders) -> HttpClientResponse:
+        let bodyString = ""
+        if (body != nil):
+            bodyString = "#{body}"
+        end
+        return HttpClientResponse.fromRaw(client_request(method, url, bodyString, headers.asMap(), timeoutMillis))
+    end
+
+    static def createServer() -> HttpServer:
+        return HttpServer()
+    end
+end
+
+public class HttpServerResponse:
+    var _statusCode: int = 200
+    var _headers: HttpHeaders = HttpHeaders({})
+    var _body: String = ""
+
+    def status(code: int) -> HttpServerResponse:
+        this._statusCode = code
+        return this
+    end
+
+    def header(name: String, value: String) -> HttpServerResponse:
+        this._headers.set(name, value)
+        return this
+    end
+
+    def json(data: any) -> HttpServerResponse:
+        this.header("Content-Type", "application/json")
+        this._body = Json.stringify(data)
+        return this
+    end
+
+    def send(content: String) -> HttpServerResponse:
+        this._body = content
+        return this
+    end
+
+    def html(content: String) -> HttpServerResponse:
+        this.header("Content-Type", "text/html")
+        this._body = content
+        return this
+    end
+
+    def ok(data: any) -> HttpServerResponse:
+        this.status(200)
+        return this.json(data)
+    end
+
+    def created(data: any) -> HttpServerResponse:
+        this.status(201)
+        return this.json(data)
+    end
+
+    def noContent() -> HttpServerResponse:
+        this.status(204)
+        return this
+    end
+
+    def notFound() -> HttpServerResponse:
+        return this.notFound("Resource not found")
+    end
+
+    def notFound(message: String) -> HttpServerResponse:
+        this.status(404)
+        return this.json({ "error": message })
+    end
+
+    def error(code: int, message: String) -> HttpServerResponse:
+        this.status(code)
+        return this.json({ "error": message })
+    end
+
+	def toRaw() -> map<string, any>:
+		let raw = {}
+		raw["status"] = this._statusCode
+		raw["headers"] = this._headers.asMap()
+		raw["body"] = this._body
+		return raw
+	end
+end
+
+public class HttpServer:
+    var _routes: map<string, HttpHandler> = {}
+    var _errorHandler: HttpErrorHandler
+
+    def config(options: map) -> void:
+    end
+
+    def use(middleware: any) -> void:
+    end
+
+    def get(path: String, handler: HttpHandler) -> void:
+        this._routes["GET:" + path] = handler
+    end
+
+    def post(path: String, handler: HttpHandler) -> void:
+        this._routes["POST:" + path] = handler
+    end
+
+    def put(path: String, handler: HttpHandler) -> void:
+        this._routes["PUT:" + path] = handler
+    end
+
+    def delete(path: String, handler: HttpHandler) -> void:
+        this._routes["DELETE:" + path] = handler
+    end
+
+    def onError(handler: HttpErrorHandler) -> void:
+        this._errorHandler = handler
+    end
+
+    def log(message: String, level: String) -> void:
+        println("[#{level}] #{message}")
+    end
+
+    def _invokeHandler(h: HttpHandler, req: HttpServerRequest, res: HttpServerResponse) -> void:
+        h.handle(req, res)
+    end
+
+    def _invokeErr(h: HttpErrorHandler, msg: String, req: HttpServerRequest, res: HttpServerResponse) -> void:
+        h.handle(msg, req, res)
+    end
+
+    def _handleRequest(reqMap: map) -> map:
+        let req = HttpServerRequest.fromRaw(reqMap)
+        let method = req.method
+        let path = req.path
+        let handlerKey = "#{method}:#{path}"
+        let handler = this._routes[handlerKey]
+
+        let res = HttpServerResponse()
+
+        if (handler != nil):
+            this._invokeHandler(handler, req, res)
+        else:
+            let errFn = this._errorHandler
+            if (errFn != nil):
+                this._invokeErr(errFn, "Route Not Found", req, res)
+            else:
+                res.notFound()
+            end
+        end
+
+        return res.toRaw()
+    end
+
+    def listen(port: int) -> void:
+        println("Starting Http server on port #{port}...")
+        def callback(req: map) -> map:
+            return this._handleRequest(req)
+        end
+        server_listen(port, callback)
+    end
+end

@@ -1,0 +1,9 @@
+var started = Sys.time()
+var i = 0
+loop i < 10000000:
+    i = i + 1
+end
+var ended = Sys.time()
+println(i)
+println("TIME_PF")
+println(ended - started)

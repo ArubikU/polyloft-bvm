@@ -1,0 +1,27 @@
+class Animal:
+    def speak() -> string:
+        return "animal"
+    end
+end
+class Dog extends Animal:
+    def speak() -> string:
+        return "woof"
+    end
+end
+
+var started = Sys.time()
+var a = new Animal()
+var d = new Dog()
+var s = 0
+for i in range(0, 500000):
+    if a.speak() == "animal":
+        s = s + 1
+    end
+    if d.speak() == "woof":
+        s = s + 1
+    end
+end
+var ended = Sys.time()
+println(s)
+println("TIME_PF")
+println(ended - started)

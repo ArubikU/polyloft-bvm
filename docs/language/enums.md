@@ -1,12 +1,10 @@
 # Enums
 
-This page documents the enum support that exists today in `polyloft-bvm`.
+This page documents the enum model implemented by polyloft-bvm. Enums are compiled as singleton instance sets with generated helpers, rather than as a dynamic map of names to values.
 
-The implementation is intentionally optimized around singleton enum values, similar to a compact class-based model rather than a dynamic map of names.
+## Declaring Enums
 
-## Supported Syntax
-
-Basic enum:
+Basic enum syntax:
 
 ```pf
 enum Color
@@ -25,7 +23,7 @@ final enum Mode
 end
 ```
 
-## Built-in Enum Members
+## Generated Members
 
 Every enum value exposes:
 
@@ -38,8 +36,6 @@ Every enum type exposes:
 - `values()`
 - `names()`
 - `size()`
-
-Example:
 
 ```pf
 enum Status
@@ -55,11 +51,9 @@ println(Status.size())
 println(Status.valueOf("DONE").name)
 ```
 
-## Enum Constructors
+## Enum Constructors and Methods
 
-Enums can declare fields, a constructor, and instance methods.
-
-Example:
+Enums may declare fields, a constructor, and instance methods.
 
 ```pf
 enum Planet
@@ -82,28 +76,25 @@ println(Planet.MARS.gravity)
 println(Planet.EARTH.weight(75))
 ```
 
-## Current BVM Constraints
+## Current Constraints
 
-The current implementation is intentionally strict so enum instances can be built ahead of execution and reused efficiently.
+The current implementation is intentionally strict so enum instances can be created once and reused efficiently.
 
-- enum values are singleton instances created during compilation/runtime setup of the class object
-- enum constructor arguments must be compile-time constants
-- enum constructor bodies are currently limited to direct assignments to `this.field`
+- enum values are singleton instances stored as static members on the generated class object
+- constructor arguments must be compile-time constants
+- constructor bodies are currently limited to direct `this.field = expr` assignments
 - those assigned expressions must also be compile-time evaluable
 - enum instances are frozen after construction
-- enum construction through `new` is not part of the supported surface
+- constructing enum values with `new` is not part of the supported surface
 
-## Notes on Optimization
+## Notes
 
-Current optimization-oriented behavior:
-
-- enum constants are stored as static singleton members on the generated class object
-- equality between enum values works by singleton identity
-- helper methods such as `valueOf`, `values`, `names`, and `size` are attached once per enum type
-- `final` aliases that reference enum values can also be inlined when the initializer is compile-time resolvable
+- Equality between enum values works by singleton identity.
+- Helper methods such as `valueOf`, `values`, `names`, and `size` are generated once per enum type.
+- `final` aliases that reference enum values may be inlined when the initializer is compile-time resolvable.
 
 ## Related Pages
 
-- [Basics](basics.md)
-- [Types and Objects](types-and-objects.md)
+- [basics.md](basics.md)
+- [types-and-objects.md](types-and-objects.md)
 - [../QUICK_REFERENCE.md](../QUICK_REFERENCE.md)

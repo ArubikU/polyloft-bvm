@@ -1,0 +1,15 @@
+var started = Sys.time()
+var s = {}
+for i in range(0, 10000):
+    s["k" + i] = true
+end
+var count = 0
+for i in range(0, 20000):
+    if s["k" + i]:
+        count = count + 1
+    end
+end
+var ended = Sys.time()
+println(count)
+println("TIME_PF")
+println(ended - started)

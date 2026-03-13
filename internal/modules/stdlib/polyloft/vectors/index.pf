@@ -1,0 +1,176 @@
+public interface Vec2Like:
+	xValue() -> number
+	yValue() -> number
+end
+
+public interface Vec3Like:
+	xValue() -> number
+	yValue() -> number
+	zValue() -> number
+end
+
+public class Vec2 implements Vec2Like:
+	let x: number
+	let y: number
+
+	Vec2(x: number, y: number):
+		this.x = x
+		this.y = y
+	end
+
+	static def zero() -> Vec2:
+		return Vec2(0, 0)
+	end
+
+	def xValue() -> number:
+		return this.x
+	end
+
+	def yValue() -> number:
+		return this.y
+	end
+
+	def __add(other: Vec2Like) -> Vec2:
+		return Vec2(this.x + other.xValue(), this.y + other.yValue())
+	end
+
+	def __sub(other: Vec2Like) -> Vec2:
+		return Vec2(this.x - other.xValue(), this.y - other.yValue())
+	end
+
+	def __mul(scale: number) -> Vec2:
+		return Vec2(this.x * scale, this.y * scale)
+	end
+
+	def __rmul(scale: number) -> Vec2:
+		return this * scale
+	end
+
+	def __div(scale: number) -> Vec2:
+		return Vec2(this.x / scale, this.y / scale)
+	end
+
+	def __neg() -> Vec2:
+		return Vec2(-this.x, -this.y)
+	end
+
+	def __eq(other: Vec2Like) -> bool:
+		return this.x == other.xValue() && this.y == other.yValue()
+	end
+
+	def __hash() -> any:
+		return [this.x, this.y]
+	end
+
+	def dot(other: Vec2Like) -> number:
+		return this.x * other.xValue() + this.y * other.yValue()
+	end
+
+	def lengthSquared() -> number:
+		return this.dot(this)
+	end
+
+	def length() -> number:
+		return sqrt(this.lengthSquared())
+	end
+
+	def normalized() -> Vec2:
+		let magnitude = this.length()
+		if magnitude == 0:
+			return Vec2.zero()
+		end
+		return this / magnitude
+	end
+
+	def toString() -> string:
+		return "Vec2(" + this.x + ", " + this.y + ")"
+	end
+end
+
+public class Vec3 implements Vec3Like:
+	let x: number
+	let y: number
+	let z: number
+
+	Vec3(x: number, y: number, z: number):
+		this.x = x
+		this.y = y
+		this.z = z
+	end
+
+	static def zero() -> Vec3:
+		return Vec3(0, 0, 0)
+	end
+
+	def xValue() -> number:
+		return this.x
+	end
+
+	def yValue() -> number:
+		return this.y
+	end
+
+	def zValue() -> number:
+		return this.z
+	end
+
+	def __add(other: Vec3Like) -> Vec3:
+		return Vec3(this.x + other.xValue(), this.y + other.yValue(), this.z + other.zValue())
+	end
+
+	def __sub(other: Vec3Like) -> Vec3:
+		return Vec3(this.x - other.xValue(), this.y - other.yValue(), this.z - other.zValue())
+	end
+
+	def __mul(scale: number) -> Vec3:
+		return Vec3(this.x * scale, this.y * scale, this.z * scale)
+	end
+
+	def __rmul(scale: number) -> Vec3:
+		return this * scale
+	end
+
+	def __div(scale: number) -> Vec3:
+		return Vec3(this.x / scale, this.y / scale, this.z / scale)
+	end
+
+	def __neg() -> Vec3:
+		return Vec3(-this.x, -this.y, -this.z)
+	end
+
+	def __eq(other: Vec3Like) -> bool:
+		return this.x == other.xValue() && this.y == other.yValue() && this.z == other.zValue()
+	end
+
+	def __hash() -> any:
+		return [this.x, this.y, this.z]
+	end
+
+	def dot(other: Vec3Like) -> number:
+		return this.x * other.xValue() + this.y * other.yValue() + this.z * other.zValue()
+	end
+
+	def cross(other: Vec3Like) -> Vec3:
+		return Vec3(this.y * other.zValue() - this.z * other.yValue(), this.z * other.xValue() - this.x * other.zValue(), this.x * other.yValue() - this.y * other.xValue())
+	end
+
+	def lengthSquared() -> number:
+		return this.dot(this)
+	end
+
+	def length() -> number:
+		return sqrt(this.lengthSquared())
+	end
+
+	def normalized() -> Vec3:
+		let magnitude = this.length()
+		if magnitude == 0:
+			return Vec3.zero()
+		end
+		return this / magnitude
+	end
+
+	def toString() -> string:
+		return "Vec3(" + this.x + ", " + this.y + ", " + this.z + ")"
+	end
+end

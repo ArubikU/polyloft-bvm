@@ -1,6 +1,8 @@
 # Built-in Interfaces
 
-`polyloft-bvm` now exposes the core protocol-style interfaces used by the language surface:
+polyloft-bvm exposes a small set of built-in protocol interfaces that are understood directly by the checker and, in some cases, by the VM syntax layer.
+
+The built-in interfaces are:
 
 - `Iterable`
 - `Unstructured`
@@ -8,16 +10,14 @@
 - `Indexable`
 - `Collection`
 
-These interfaces matter in two different ways:
+These interfaces are used in two different ways:
 
-- nominal typing: you can annotate parameters and variables with them
-- protocol dispatch: some of them also drive syntax such as `for`, destructuring, `[]` and slices on user-defined classes
+- nominal typing, where variables and parameters are annotated with an interface name
+- protocol dispatch, where special method names enable syntax such as `for`, destructuring, indexing, and slicing on user-defined classes
 
-## Protocol methods
+## Protocol Methods
 
 ### Iterable
-
-Required methods:
 
 ```pf
 interface Iterable:
@@ -26,11 +26,9 @@ interface Iterable:
 end
 ```
 
-If a class provides these methods, BVM uses them for `for item in value:`.
+When a class provides this protocol, the VM can use it for `for item in value:` iteration.
 
 ### Unstructured
-
-Required methods:
 
 ```pf
 interface Unstructured:
@@ -39,11 +37,9 @@ interface Unstructured:
 end
 ```
 
-If a class provides these methods, BVM uses them for destructuring.
+When a class provides this protocol, the VM can use it for destructuring.
 
 ### Indexable
-
-Required methods:
 
 ```pf
 interface Indexable:
@@ -53,13 +49,9 @@ interface Indexable:
 end
 ```
 
-If a class provides `__get` and `__set`, BVM uses them for `value[index]` and `value[index] = other`.
-
-If a class also provides `__contains`, BVM uses it for `needle in value`.
+When a class provides `__get` and `__set`, the VM can route `value[index]` and `value[index] = other` through those methods. If it also provides `__contains`, the VM can route `needle in value` through that method.
 
 ### Sliceable
-
-Required methods:
 
 ```pf
 interface Sliceable:
@@ -67,11 +59,9 @@ interface Sliceable:
 end
 ```
 
-If a class provides `__slice`, BVM uses it for `value[start...finish]`.
+When a class provides `__slice`, the VM can route `value[start...finish]` through that method.
 
 ### Collection
-
-Required methods:
 
 ```pf
 interface Collection:
@@ -85,33 +75,31 @@ interface Collection:
 end
 ```
 
-`Collection` is currently a nominal API contract. It does not add VM syntax by itself, but it is available for typing and interface validation.
+`Collection` is a nominal API contract in the current BVM. It does not by itself add special VM syntax.
 
-## Native type matrix
+## Native Type Matrix
 
-The BVM intentionally separates native syntax support from nominal interface membership.
+Native syntax support and nominal interface membership are intentionally not identical.
 
-Current tested matrix:
+Current tested behavior:
 
-- `Range`: implements `Iterable`
-- `array`: implements `Indexable` and `Sliceable`
-- `map`: implements `Indexable`
-- `tuple`: implements `Unstructured` and `Sliceable`
-- `string`: implements `Sliceable`
+- `Range` implements `Iterable`
+- `array` implements `Indexable` and `Sliceable`
+- `map` implements `Indexable`
+- `tuple` implements `Unstructured` and `Sliceable`
+- `string` implements `Sliceable`
 
 Containment support:
 
-- `array`, `map` and `string` support `needle in value` natively
-- user-defined classes can support `in` by implementing `__contains`
+- `array`, `map`, and `string` support `needle in value` natively
+- user-defined classes can support `in` through `__contains`
 
-Important non-equivalences:
+Important differences:
 
-- `array` can still be used in `for` loops, but it is not assignable to `Iterable`
-- `string` supports native indexing syntax, but it is not modeled as nominal `Indexable`
-- `tuple` supports native indexing syntax, but it is not modeled as nominal `Indexable`
-- `map` can still be iterated natively in `for`, but that native loop support is separate from the nominal `Iterable` interface
-
-This mirrors the design goal that syntax convenience and interface contracts are related but not identical.
+- `array` can be iterated natively in `for`, but it is not modeled as nominal `Iterable`
+- `string` supports native indexing, but it is not modeled as nominal `Indexable`
+- `tuple` supports native indexing, but it is not modeled as nominal `Indexable`
+- `map` supports native `for` iteration, but that loop behavior is separate from nominal `Iterable`
 
 ## Example
 
@@ -158,17 +146,17 @@ class Buffer implements Iterable, Unstructured, Indexable, Sliceable:
 end
 ```
 
-## Import-facing collection routes
+## Related Library Contracts
 
-Core protocol names such as `Iterable` and `Collection` are builtins, so they do not require imports.
+Built-in protocol names such as `Iterable` and `Collection` do not require imports.
 
-Collection-family contracts intended for library imports live under `polyloft.collections`:
+Library-facing collection contracts live under `polyloft.collections`:
 
 ```pf
 import polyloft.collections { List, Deque, Set, HashSet }
 ```
 
-This keeps protocol syntax and library surface separate:
+This separation is intentional:
 
-- builtins define what the checker and VM understand directly
+- built-ins define the interfaces that the checker and VM understand directly
 - `polyloft.collections` defines the public library namespace for collection-oriented APIs

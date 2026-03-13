@@ -2,19 +2,17 @@ package modules
 
 import (
 	"archive/zip"
-	"encoding/binary"
-	"encoding/gob"
-	"encoding/json"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/ArubikU/polyloft-bvm/internal/ast"
 	"github.com/ArubikU/polyloft-bvm/internal/bytecode"
+	"github.com/ArubikU/polyloft-bvm/internal/classfile"
 	"github.com/ArubikU/polyloft-bvm/internal/compiler"
+	"github.com/ArubikU/polyloft-bvm/internal/diagnostic"
 	"github.com/ArubikU/polyloft-bvm/internal/lexer"
 	"github.com/ArubikU/polyloft-bvm/internal/parser"
 	bvmruntime "github.com/ArubikU/polyloft-bvm/internal/runtime"
@@ -25,16 +23,21 @@ import (
 )
 
 type ExportMetadata struct {
-	Value      value.Value
-	Spec       bvmruntime.Spec
-	Visibility ast.Visibility
+	Value          value.Value
+	Spec           bvmruntime.Spec
+	Visibility     ast.Visibility
+	IsNative       bool
+	TextInsertKind string
+	TextInsert     string
 }
 
 type LoadedModule struct {
 	Path     string
 	Dir      string
+	Source   string
 	Function *bytecode.Function
 	Exports  map[string]ExportMetadata
+	Imports  []string
 }
 
 type Loader struct {
@@ -65,7 +68,20 @@ func Prepare(path string, stdout io.Writer) (*ast.Program, *bvmruntime.Registry,
 }
 
 func (l *Loader) Prepare(absPath string) (*ast.Program, *bvmruntime.Registry, error) {
-	program, err := l.parseFile(absPath)
+	program, _, err := l.parseFile(absPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	registry := bvmruntime.NewRegistry()
+	bvmruntime.InstallCoreGlobals(registry, l.Stdout)
+	if err := l.loadImportsIntoRegistry(program, absPath, registry); err != nil {
+		return nil, nil, err
+	}
+	return program, registry, nil
+}
+
+func (l *Loader) PrepareSource(absPath string, source string) (*ast.Program, *bvmruntime.Registry, error) {
+	program, _, err := l.parseSource(absPath, source)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -80,19 +96,6 @@ func (l *Loader) Prepare(absPath string) (*ast.Program, *bvmruntime.Registry, er
 func (l *Loader) PrepareFromBundle(entryPoint string) (*bytecode.Function, *bvmruntime.Registry, error) {
 	registry := bvmruntime.NewRegistry()
 	bvmruntime.InstallCoreGlobals(registry, l.Stdout)
-
-	// Load centralized project metadata if it exists
-	for _, f := range l.Archive {
-		if f.Name == "project.metadata" {
-			rc, err := f.Open()
-			if err == nil {
-				dec := gob.NewDecoder(rc)
-				dec.Decode(&l.ProjectMeta)
-				rc.Close()
-			}
-			break
-		}
-	}
 
 	// We'll use a single VM for all module initializations
 	machine := vm.NewWithRegistry(l.Stdout, registry)
@@ -215,49 +218,70 @@ func (l *Loader) PrepareFromBundle(entryPoint string) (*bytecode.Function, *bvmr
 		mergeNamespace(registry, rootModule, rootSpec)
 	}
 
-	// 4. Also ensure any explicitly imported stdlib modules are initialized.
-	// When running from a bundle, stdlib might have been excluded (include=false).
-	// We dynamically load and persist embedded stdlib modules if 'polyloft' is absent.
-	if _, ok := registry.Globals()["polyloft"]; !ok {
-		fs.WalkDir(stdlibFS, ".", func(path string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
-				return nil
-			}
-			if strings.HasSuffix(path, ".pf") {
-				modPath := stdlibModulePrefix + path
-				if mod, err := l.loadModule(modPath); err == nil {
-					if _, err := machine.Run(mod.Function); err == nil {
-						// Persist values
-						for name, exp := range mod.Exports {
-							if val, ok := machine.Globals()[name]; ok && val.Kind != value.Nil {
-								exp.Value = val
-								mod.Exports[name] = exp
-								if _, exists := globals[name]; !exists {
-									globals[name] = val
-								}
-							}
-						}
-
-						displayPath := strings.TrimPrefix(path, "stdlib/")
-						displayPath = strings.TrimSuffix(displayPath, ".pf")
-						displayPath = strings.TrimSuffix(displayPath, "/index")
-						rawParts := strings.Split(displayPath, "/")
-						parts := make([]string, 0, len(rawParts))
-						for _, p := range rawParts {
-							if p != "" {
-								parts = append(parts, p)
-							}
-						}
-
-						if len(parts) > 0 {
-							rootModule, rootSpec := l.buildNamespaceModule(parts, mod.Exports)
-							mergeNamespace(registry, rootModule, rootSpec)
-						}
-					}
+	// 4. Initialize only the stdlib modules that bundled modules actually import.
+	initializedStdlib := make(map[string]bool)
+	var initStdlibModule func(string) error
+	initStdlibModule = func(modPath string) error {
+		if initializedStdlib[modPath] {
+			return nil
+		}
+		mod, err := l.loadModule(modPath)
+		if err != nil {
+			return err
+		}
+		for _, imported := range mod.Imports {
+			if IsStdlibModulePath(imported) {
+				if err := initStdlibModule(imported); err != nil {
+					return err
 				}
 			}
-			return nil
-		})
+		}
+		if err := injectStdlibNativeMembers(registry, mod.Path); err != nil {
+			return err
+		}
+		if _, err := machine.Run(mod.Function); err != nil {
+			return err
+		}
+		persistedBySlot := make(map[string]bool)
+		for _, name := range mod.Function.GlobalSlotNames {
+			val, ok := machine.ResolveGlobal(mod.Function, name)
+			if !ok {
+				continue
+			}
+			globals[name] = val
+			persistedBySlot[name] = true
+			if exp, exists := mod.Exports[name]; exists {
+				exp.Value = val
+				mod.Exports[name] = exp
+			}
+		}
+		for name, exp := range mod.Exports {
+			if persistedBySlot[name] || exp.Value.Kind != value.Nil {
+				continue
+			}
+			if val, ok := machine.Globals()[name]; ok && val.Kind != value.Nil {
+				exp.Value = val
+				mod.Exports[name] = exp
+				globals[name] = val
+			}
+		}
+		parts := namespacePartsForModule(modPath)
+		if len(parts) > 0 {
+			rootModule, rootSpec := l.buildNamespaceModule(parts, mod.Exports)
+			mergeNamespace(registry, rootModule, rootSpec)
+		}
+		initializedStdlib[modPath] = true
+		return nil
+	}
+	for _, info := range toInit {
+		for _, imported := range info.mod.Imports {
+			if !IsStdlibModulePath(imported) {
+				continue
+			}
+			if err := initStdlibModule(imported); err != nil {
+				return nil, nil, fmt.Errorf("failed to initialize stdlib module %s: %v", imported, err)
+			}
+		}
 	}
 
 	loaded, err := l.loadModule(entryPoint)
@@ -268,24 +292,40 @@ func (l *Loader) PrepareFromBundle(entryPoint string) (*bytecode.Function, *bvmr
 	return loaded.Function, registry, nil
 }
 
-func (l *Loader) parseFile(path string) (*ast.Program, error) {
+func (l *Loader) parseFile(path string) (*ast.Program, string, error) {
+	source, err := readModuleSource(path)
+	if err != nil {
+		return nil, source, diagnostic.Wrap(err, diagnostic.KindParse, path, source)
+	}
+	return l.parseSource(path, source)
+}
+
+func (l *Loader) parseSource(path string, source string) (*ast.Program, string, error) {
+	tokens, err := lexer.Scan(source)
+	if err != nil {
+		return nil, source, diagnostic.Wrap(err, diagnostic.KindParse, path, source)
+	}
+	program, err := parser.Parse(tokens)
+	if err != nil {
+		return nil, source, diagnostic.Wrap(err, diagnostic.KindParse, path, source)
+	}
+	return program, source, nil
+}
+
+func readModuleSource(path string) (string, error) {
 	var (
-		source []byte
-		err    error
+		data []byte
+		err  error
 	)
 	if IsStdlibModulePath(path) {
-		source, err = stdlibFS.ReadFile(TrimStdlibModulePath(path))
+		data, err = stdlibFS.ReadFile(TrimStdlibModulePath(path))
 	} else {
-		source, err = os.ReadFile(path)
+		data, err = os.ReadFile(path)
 	}
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	tokens, err := lexer.Scan(string(source))
-	if err != nil {
-		return nil, err
-	}
-	return parser.Parse(tokens)
+	return string(data), nil
 }
 
 func (l *Loader) loadImportsIntoRegistry(program *ast.Program, currentPath string, registry *bvmruntime.Registry) error {
@@ -446,21 +486,14 @@ func (l *Loader) loadModule(path string) (*LoadedModule, error) {
 			}
 			defer rc.Close()
 
-			codec := value.NewBinaryCodec()
-			fn, err := bytecode.ReadBinaryFunction(rc, codec)
+			fn, metadata, err := classfile.ReadModule(rc)
 			if err != nil {
 				return nil, err
 			}
 
-			var exports map[string]ExportMetadata
-
-			// Try reading JSON exports from the end of the .pfbc file
-			var exportDataLen uint32
-			if err := binary.Read(rc, binary.LittleEndian, &exportDataLen); err == nil {
-				exportData := make([]byte, exportDataLen)
-				if _, err := io.ReadFull(rc, exportData); err == nil {
-					json.Unmarshal(exportData, &exports)
-				}
+			exports, err := decodeSerializedExports(metadata)
+			if err != nil {
+				return nil, err
 			}
 
 			if exports == nil {
@@ -472,6 +505,7 @@ func (l *Loader) loadModule(path string) (*LoadedModule, error) {
 				Dir:      filepath.Dir(path),
 				Function: fn,
 				Exports:  exports,
+				Imports:  decodeSerializedImports(metadata),
 			}
 			l.Cache[path] = loaded
 			return loaded, nil
@@ -487,7 +521,11 @@ func (l *Loader) loadModule(path string) (*LoadedModule, error) {
 
 	defer delete(l.Loading, path)
 
-	program, err := l.parseFile(path)
+	program, source, err := l.parseFile(path)
+	if err != nil {
+		return nil, err
+	}
+	imports, err := l.collectModuleImports(program, path)
 	if err != nil {
 		return nil, err
 	}
@@ -504,19 +542,111 @@ func (l *Loader) loadModule(path string) (*LoadedModule, error) {
 		return nil, err
 	}
 	machine := vm.NewWithRegistry(l.Stdout, registry)
+	if IsStdlibModulePath(path) {
+		cleanPath := TrimStdlibModulePath(path)
+		parts := strings.Split(cleanPath, "/")
+		if len(parts) >= 3 && parts[0] == "stdlib" && parts[1] == "polyloft" {
+			base := strings.TrimSuffix(parts[2], ".pf")
+			modName := strings.ToUpper(base[:1]) + base[1:]
+			if nativeVal, ok := registry.Globals()[modName]; ok {
+				if nativeMod, ok := nativeVal.AsModule(); ok {
+					for k, v := range nativeMod.Members {
+						machine.Globals()[k] = v
+					}
+				}
+			}
+		}
+	}
+
 	if _, err := machine.Run(fn); err != nil {
 		return nil, err
 	}
-	exports, err := l.CollectExports(program, machine, fn, registry)
+	exports, err := l.CollectExports(program, machine, fn, registry, source)
 	if err != nil {
 		return nil, err
 	}
-	loaded := &LoadedModule{Path: path, Dir: filepath.Dir(path), Function: fn, Exports: exports}
+	if strings.EqualFold(filepath.Base(path), "index.pf") {
+		if err := l.augmentIndexExports(program, path, exports); err != nil {
+			return nil, err
+		}
+	}
+	loaded := &LoadedModule{Path: path, Dir: filepath.Dir(path), Source: source, Function: fn, Exports: exports, Imports: imports}
 	l.Cache[path] = loaded
 	return loaded, nil
 }
 
-func (l *Loader) CollectExports(program *ast.Program, machine *vm.VM, fn *bytecode.Function, registry *bvmruntime.Registry) (map[string]ExportMetadata, error) {
+func (l *Loader) augmentIndexExports(program *ast.Program, currentPath string, exports map[string]ExportMetadata) error {
+	for _, stmt := range program.Statements {
+		importStmt, ok := stmt.(*ast.ImportStmt)
+		if !ok || len(importStmt.Names) == 0 {
+			continue
+		}
+		modulePath, err := l.resolveImport(currentPath, importStmt)
+		if err != nil {
+			return err
+		}
+		loaded, err := l.loadModule(modulePath)
+		if err != nil {
+			return err
+		}
+		allowed := l.visibleExports(loaded, currentPath)
+		for _, name := range importStmt.Names {
+			if _, exists := exports[name.Lexeme]; exists {
+				continue
+			}
+			exported, ok := allowed[name.Lexeme]
+			if !ok {
+				return fmt.Errorf("symbol %s is not accessible from %s", name.Lexeme, strings.Join(pathTokens(importStmt.Path), "."))
+			}
+			exports[name.Lexeme] = exported
+		}
+	}
+	return nil
+}
+
+func (l *Loader) collectModuleImports(program *ast.Program, currentPath string) ([]string, error) {
+	imports := make([]string, 0)
+	seen := make(map[string]bool)
+	for _, stmt := range program.Statements {
+		importStmt, ok := stmt.(*ast.ImportStmt)
+		if !ok {
+			continue
+		}
+		resolved, err := l.resolveImport(currentPath, importStmt)
+		if err != nil {
+			return nil, err
+		}
+		if seen[resolved] {
+			continue
+		}
+		seen[resolved] = true
+		imports = append(imports, resolved)
+	}
+	return imports, nil
+}
+
+func namespacePartsForModule(modPath string) []string {
+	displayPath := strings.TrimPrefix(strings.ReplaceAll(modPath, "\\", "/"), "/")
+	if IsStdlibModulePath(displayPath) {
+		displayPath = TrimStdlibModulePath(displayPath)
+	}
+	displayPath = strings.TrimPrefix(displayPath, "src/")
+	displayPath = strings.TrimPrefix(displayPath, "lib/")
+	displayPath = strings.TrimPrefix(displayPath, "libs/")
+	displayPath = strings.TrimPrefix(displayPath, "stdlib/")
+	displayPath = strings.TrimSuffix(displayPath, ".pf")
+	displayPath = strings.TrimSuffix(displayPath, "/index")
+	rawParts := strings.Split(displayPath, "/")
+	parts := make([]string, 0, len(rawParts))
+	for _, p := range rawParts {
+		if p != "" {
+			parts = append(parts, p)
+		}
+	}
+	return parts
+}
+
+func (l *Loader) CollectExports(program *ast.Program, machine *vm.VM, fn *bytecode.Function, registry *bvmruntime.Registry, source string) (map[string]ExportMetadata, error) {
 	exports := make(map[string]ExportMetadata)
 	builder := newSpecBuilder(program, machine, fn, registry)
 	for _, stmt := range program.Statements {
@@ -563,6 +693,15 @@ func (l *Loader) CollectExports(program *ast.Program, machine *vm.VM, fn *byteco
 				resolved = value.NilValue()
 			}
 			spec := bvmruntime.InferSpec(node.Name.Lexeme, resolved)
+			spec.TypeParams = typeParamNames(node.TypeParams)
+			if spec.Callable == nil {
+				spec.Callable = &bvmruntime.CallableSpec{}
+			}
+			params := make([]string, len(node.Params))
+			for i, param := range node.Params {
+				params[i] = builder.normalizeTypeRef(param.Type)
+			}
+			spec.Callable.Params = params
 			if node.ReturnType != nil && spec.Callable != nil {
 				spec.Callable.Return = builder.normalizeTypeRef(node.ReturnType)
 				if returnSpec, ok := builder.resolveDeclaredTypeSpec(node.ReturnType); ok {
@@ -573,7 +712,14 @@ func (l *Loader) CollectExports(program *ast.Program, machine *vm.VM, fn *byteco
 					}
 				}
 			}
-			exports[node.Name.Lexeme] = ExportMetadata{Value: resolved, Spec: spec, Visibility: node.Visibility}
+			exports[node.Name.Lexeme] = ExportMetadata{
+				Value:          resolved,
+				Spec:           spec,
+				Visibility:     node.Visibility,
+				IsNative:       node.IsNative,
+				TextInsertKind: functionTextInsertKind(node),
+				TextInsert:     functionTextInsert(node, source),
+			}
 		case *ast.ClassStmt:
 			var resolved value.Value
 			if machine != nil {
@@ -589,18 +735,170 @@ func (l *Loader) CollectExports(program *ast.Program, machine *vm.VM, fn *byteco
 			if err != nil {
 				return nil, err
 			}
-			exports[node.Name.Lexeme] = ExportMetadata{Value: resolved, Spec: spec, Visibility: node.Visibility}
+			exports[node.Name.Lexeme] = ExportMetadata{Value: resolved, Spec: spec, Visibility: node.Visibility, TextInsertKind: classTextInsertKind(node), TextInsert: sourceTextInsert(node.Annotations, node.SourceSpan, source)}
 		case *ast.InterfaceStmt:
 			spec, err := builder.interfaceDeclSpec(node)
 			if err != nil {
 				return nil, err
 			}
-			exports[node.Name.Lexeme] = ExportMetadata{Value: value.NilValue(), Spec: spec, Visibility: node.Visibility}
+			exports[node.Name.Lexeme] = ExportMetadata{Value: value.NilValue(), Spec: spec, Visibility: node.Visibility, TextInsertKind: interfaceTextInsertKind(node), TextInsert: sourceTextInsert(node.Annotations, node.SourceSpan, source)}
 		case *ast.TypeAliasStmt:
 			continue
 		}
 	}
 	return exports, nil
+}
+
+func functionTextInsert(fn *ast.FunctionStmt, source string) string {
+	if fn == nil {
+		return ""
+	}
+	if fn.IsNative {
+		return nativeFunctionTextInsert(fn)
+	}
+	return sourceTextInsert(fn.Annotations, fn.SourceSpan, source)
+}
+
+func functionTextInsertKind(fn *ast.FunctionStmt) string {
+	if fn == nil {
+		return ""
+	}
+	if fn.IsNative {
+		return "native_def"
+	}
+	if hasAnnotation(fn.Annotations, "Lintclude") {
+		return "function_source"
+	}
+	return ""
+}
+
+func classTextInsertKind(classStmt *ast.ClassStmt) string {
+	if classStmt == nil || !hasAnnotation(classStmt.Annotations, "Lintclude") {
+		return ""
+	}
+	switch {
+	case classStmt.IsEnum:
+		return "enum_source"
+	case classStmt.IsRecord:
+		return "record_source"
+	default:
+		return "class_source"
+	}
+}
+
+func interfaceTextInsertKind(iface *ast.InterfaceStmt) string {
+	if iface == nil || !hasAnnotation(iface.Annotations, "Lintclude") {
+		return ""
+	}
+	return "interface_source"
+}
+
+func nativeFunctionTextInsert(fn *ast.FunctionStmt) string {
+	if fn == nil || !fn.IsNative {
+		return ""
+	}
+	var builder strings.Builder
+	switch fn.Visibility {
+	case ast.VisibilityPublic:
+		builder.WriteString("public ")
+	case ast.VisibilityProtected:
+		builder.WriteString("protected ")
+	}
+	builder.WriteString("native def ")
+	builder.WriteString(fn.Name.Lexeme)
+	builder.WriteByte('(')
+	for i, param := range fn.Params {
+		if i > 0 {
+			builder.WriteString(", ")
+		}
+		builder.WriteString(param.Name.Lexeme)
+		if param.Type != nil {
+			builder.WriteString(": ")
+			builder.WriteString(typeRefText(param.Type))
+		}
+	}
+	builder.WriteByte(')')
+	if fn.ReturnType != nil {
+		builder.WriteString(" -> ")
+		builder.WriteString(typeRefText(fn.ReturnType))
+	}
+	return builder.String()
+}
+
+func sourceTextInsert(annotations []ast.Annotation, span ast.SourceSpan, source string) string {
+	if !hasAnnotation(annotations, "Lintclude") || span.StartLine <= 0 || span.EndLine < span.StartLine || source == "" {
+		return ""
+	}
+	lines := strings.Split(source, "\n")
+	if len(lines) == 0 || span.StartLine > len(lines) {
+		return ""
+	}
+	end := span.EndLine
+	if end > len(lines) {
+		end = len(lines)
+	}
+	start := expandLeadingCommentBlock(lines, span.StartLine)
+	return strings.TrimRight(strings.Join(lines[start-1:end], "\n"), "\n")
+}
+
+func expandLeadingCommentBlock(lines []string, start int) int {
+	idx := start - 1
+	sawComment := false
+	for idx > 0 {
+		trimmed := strings.TrimSpace(lines[idx-1])
+		switch {
+		case trimmed == "":
+			if !sawComment {
+				return idx + 1
+			}
+			idx--
+		case strings.HasPrefix(trimmed, "//"), strings.HasPrefix(trimmed, "/*"), strings.HasPrefix(trimmed, "*"), strings.HasPrefix(trimmed, "*/"):
+			sawComment = true
+			idx--
+		default:
+			return idx + 1
+		}
+	}
+	return 1
+}
+
+func hasAnnotation(annotations []ast.Annotation, name string) bool {
+	for _, annotation := range annotations {
+		if strings.EqualFold(annotation.Name.Lexeme, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func typeRefText(typeRef *ast.TypeRef) string {
+	if typeRef == nil {
+		return "any"
+	}
+	if len(typeRef.Union) > 0 {
+		parts := make([]string, 0, len(typeRef.Union))
+		for _, option := range typeRef.Union {
+			parts = append(parts, typeRefText(option))
+		}
+		return strings.Join(parts, " | ")
+	}
+	if typeRef.Wildcard {
+		if typeRef.Bound == nil {
+			return "?"
+		}
+		if typeRef.BoundKind == token.Super {
+			return "? super " + typeRefText(typeRef.Bound)
+		}
+		return "? extends " + typeRefText(typeRef.Bound)
+	}
+	if len(typeRef.Args) == 0 {
+		return typeRef.Name.Lexeme
+	}
+	args := make([]string, 0, len(typeRef.Args))
+	for _, arg := range typeRef.Args {
+		args = append(args, typeRefText(arg))
+	}
+	return typeRef.Name.Lexeme + "<" + strings.Join(args, ", ") + ">"
 }
 
 type specBuilder struct {
@@ -668,6 +966,14 @@ func (b *specBuilder) resolveDeclaredTypeSpec(typeRef *ast.TypeRef) (bvmruntime.
 func (l *Loader) bindImport(registry *bvmruntime.Registry, importStmt *ast.ImportStmt, loaded *LoadedModule, importerPath string) error {
 	allowed := l.visibleExports(loaded, importerPath)
 	parts := pathTokens(importStmt.Path)
+	if err := injectStdlibNativeMembers(registry, loaded.Path); err != nil {
+		return err
+	}
+	if IsStdlibModulePath(loaded.Path) {
+		for name, exported := range allowed {
+			registry.DefineWithSpec(name, exported.Value, exported.Spec)
+		}
+	}
 	if len(importStmt.Names) > 0 {
 		for _, name := range importStmt.Names {
 			exported, ok := allowed[name.Lexeme]
@@ -687,6 +993,41 @@ func (l *Loader) bindImport(registry *bvmruntime.Registry, importStmt *ast.Impor
 
 	moduleValue, moduleSpec := l.buildNamespaceModule(parts, allowed)
 	return mergeNamespace(registry, moduleValue, moduleSpec)
+}
+
+func injectStdlibNativeMembers(registry *bvmruntime.Registry, modulePath string) error {
+	if !IsStdlibModulePath(modulePath) {
+		return nil
+	}
+	cleanPath := TrimStdlibModulePath(modulePath)
+	parts := strings.Split(cleanPath, "/")
+	if len(parts) < 3 || parts[0] != "stdlib" || parts[1] != "polyloft" {
+		return nil
+	}
+	base := strings.TrimSuffix(parts[2], ".pf")
+	if base == "" {
+		return nil
+	}
+	moduleName := strings.ToUpper(base[:1]) + base[1:]
+	nativeVal, ok := registry.Globals()[moduleName]
+	if !ok {
+		return nil
+	}
+	nativeMod, ok := nativeVal.AsModule()
+	if !ok {
+		return nil
+	}
+	moduleSpec, _ := registry.Specs()[moduleName]
+	for name, member := range nativeMod.Members {
+		spec := bvmruntime.Spec{Name: name, TypeName: bvmruntime.TypeAny}
+		if moduleSpec.Module != nil {
+			if memberSpec, ok := moduleSpec.Module.Members[name]; ok {
+				spec = memberSpec
+			}
+		}
+		registry.DefineWithSpec(name, member, spec)
+	}
+	return nil
 }
 
 func (l *Loader) visibleExports(loaded *LoadedModule, importerPath string) map[string]ExportMetadata {
@@ -857,11 +1198,49 @@ func substituteSpecTypeParams(spec bvmruntime.Spec, mapping map[string]string) b
 		for i, param := range copySpec.Callable.Params {
 			params[i] = substituteSpecTypeName(param, mapping)
 		}
-		copySpec.Callable = &bvmruntime.CallableSpec{
-			Params:   params,
-			Return:   substituteSpecTypeName(copySpec.Callable.Return, mapping),
-			Variadic: copySpec.Callable.Variadic,
+		callableCopy := &bvmruntime.CallableSpec{
+			Params:     params,
+			Return:     substituteSpecTypeName(copySpec.Callable.Return, mapping),
+			Variadic:   copySpec.Callable.Variadic,
+			Overloaded: copySpec.Callable.Overloaded,
 		}
+		if len(copySpec.Callable.Overloads) > 0 {
+			callableCopy.Overloads = make([]*bvmruntime.CallableSpec, 0, len(copySpec.Callable.Overloads))
+			for _, overload := range copySpec.Callable.Overloads {
+				if overload == nil {
+					continue
+				}
+				overloadParams := make([]string, len(overload.Params))
+				for i, param := range overload.Params {
+					overloadParams[i] = substituteSpecTypeName(param, mapping)
+				}
+				callableCopy.Overloads = append(callableCopy.Overloads, &bvmruntime.CallableSpec{
+					Params:     overloadParams,
+					Return:     substituteSpecTypeName(overload.Return, mapping),
+					Variadic:   overload.Variadic,
+					Overloaded: overload.Overloaded,
+				})
+			}
+		}
+		copySpec.Callable = callableCopy
+	}
+	if len(copySpec.ConstructorOverloads) > 0 {
+		overloads := make([]*bvmruntime.CallableSpec, 0, len(copySpec.ConstructorOverloads))
+		for _, overload := range copySpec.ConstructorOverloads {
+			if overload == nil {
+				continue
+			}
+			params := make([]string, len(overload.Params))
+			for i, param := range overload.Params {
+				params[i] = substituteSpecTypeName(param, mapping)
+			}
+			overloads = append(overloads, &bvmruntime.CallableSpec{
+				Params:   params,
+				Return:   substituteSpecTypeName(overload.Return, mapping),
+				Variadic: overload.Variadic,
+			})
+		}
+		copySpec.ConstructorOverloads = overloads
 	}
 	if len(copySpec.Members) > 0 {
 		members := make(map[string]bvmruntime.Spec, len(copySpec.Members))
@@ -963,12 +1342,76 @@ func (b *specBuilder) classDeclSpec(classStmt *ast.ClassStmt, resolved value.Val
 			}
 		}
 		if method.Static {
+			if existing, ok := spec.Members[method.Name.Lexeme]; ok {
+				memberSpec = mergeCallableSpecOverload(existing, memberSpec)
+			}
 			spec.Members[method.Name.Lexeme] = memberSpec
 			continue
+		}
+		if existing, ok := spec.InstanceMembers[method.Name.Lexeme]; ok {
+			memberSpec = mergeCallableSpecOverload(existing, memberSpec)
 		}
 		spec.InstanceMembers[method.Name.Lexeme] = memberSpec
 	}
 	return spec, nil
+}
+
+func cloneCallableSpec(spec *bvmruntime.CallableSpec) *bvmruntime.CallableSpec {
+	if spec == nil {
+		return nil
+	}
+	copySpec := &bvmruntime.CallableSpec{
+		Params:     append([]string(nil), spec.Params...),
+		Return:     spec.Return,
+		Variadic:   spec.Variadic,
+		Overloaded: spec.Overloaded,
+	}
+	if len(spec.Overloads) > 0 {
+		copySpec.Overloads = make([]*bvmruntime.CallableSpec, 0, len(spec.Overloads))
+		for _, overload := range spec.Overloads {
+			if overload == nil {
+				continue
+			}
+			copySpec.Overloads = append(copySpec.Overloads, &bvmruntime.CallableSpec{
+				Params:     append([]string(nil), overload.Params...),
+				Return:     overload.Return,
+				Variadic:   overload.Variadic,
+				Overloaded: overload.Overloaded,
+			})
+		}
+	}
+	return copySpec
+}
+
+func mergeCallableSpecOverload(existing bvmruntime.Spec, current bvmruntime.Spec) bvmruntime.Spec {
+	if existing.Callable == nil || current.Callable == nil {
+		return current
+	}
+	overloads := make([]*bvmruntime.CallableSpec, 0, 2)
+	if len(existing.Callable.Overloads) > 0 {
+		for _, overload := range existing.Callable.Overloads {
+			if overload == nil {
+				continue
+			}
+			overloads = append(overloads, cloneCallableSpec(overload))
+		}
+	} else {
+		overloads = append(overloads, cloneCallableSpec(existing.Callable))
+	}
+	if len(current.Callable.Overloads) > 0 {
+		for _, overload := range current.Callable.Overloads {
+			if overload == nil {
+				continue
+			}
+			overloads = append(overloads, cloneCallableSpec(overload))
+		}
+	} else {
+		overloads = append(overloads, cloneCallableSpec(current.Callable))
+	}
+	current.Callable = cloneCallableSpec(current.Callable)
+	current.Callable.Overloaded = len(overloads) > 1
+	current.Callable.Overloads = overloads
+	return current
 }
 
 func permitNames(permits []*ast.TypeRef) []string {

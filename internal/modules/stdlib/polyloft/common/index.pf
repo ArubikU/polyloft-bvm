@@ -1,4 +1,8 @@
-public class Integer:
+public interface Hashable:
+	__hash() -> any
+end
+
+public class Integer implements Hashable:
 	let value: int
 
 	Integer(value: int):
@@ -78,6 +82,10 @@ public class Integer:
 		return this.value == other
 	end
 
+	def __hash() -> any:
+		return this.value
+	end
+
 	def toString() -> string:
 		return "" + this.value
 	end
@@ -87,7 +95,7 @@ public class Integer:
 	end
 end
 
-public class Float:
+public class Float implements Hashable:
 	let value: float
 
 	Float(value: float):
@@ -117,6 +125,10 @@ public class Float:
 		return Float(-this.value)
 	end
 
+	def sqrt() -> Float:
+		return Float(sqrt(this.value))
+	end
+
 	def isZero() -> bool:
 		return this.value == 0
 	end
@@ -153,6 +165,10 @@ public class Float:
 		return this.value == other
 	end
 
+	def __hash() -> any:
+		return this.value
+	end
+
 	def toString() -> string:
 		return "" + this.value
 	end
@@ -162,7 +178,7 @@ public class Float:
 	end
 end
 
-public class Double:
+public class Double implements Hashable:
 	let value: float
 
 	Double(value: float):
@@ -192,6 +208,10 @@ public class Double:
 		return Double(-this.value)
 	end
 
+	def sqrt() -> Double:
+		return Double(sqrt(this.value))
+	end
+
 	def isZero() -> bool:
 		return this.value == 0
 	end
@@ -228,6 +248,10 @@ public class Double:
 		return this.value == other
 	end
 
+	def __hash() -> any:
+		return this.value
+	end
+
 	def toString() -> string:
 		return "" + this.value
 	end
@@ -237,7 +261,7 @@ public class Double:
 	end
 end
 
-public class String:
+public class String implements Hashable:
 	let value: string
 
 	String(value: string):
@@ -248,6 +272,10 @@ public class String:
 		return (int) len(this.value)
 	end
 
+	def __length() -> int:
+		return this.length()
+	end
+
 	def isEmpty() -> bool:
 		return len(this.value) == 0
 	end
@@ -256,12 +284,28 @@ public class String:
 		return this.value[index]
 	end
 
+	def __get(index: int) -> char:
+		return this.charAt(index)
+	end
+
 	def substring(start: int, finish: int) -> String:
 		return String(this.value[start...finish])
 	end
 
+	def __slice(start: int, finish: int) -> String:
+		return this.substring(start, finish)
+	end
+
 	def concat(other: any) -> String:
 		return String(this.value + other)
+	end
+
+	def __add(other: any) -> String:
+		return this.concat(other)
+	end
+
+	def __radd(other: any) -> String:
+		return String(other + this.value)
 	end
 
 	def startsWith(prefix: string) -> bool:
@@ -287,6 +331,10 @@ public class String:
 
 	def contains(fragment: string) -> bool:
 		return this.indexOf(fragment) >= 0
+	end
+
+	def __contains(fragment: string) -> bool:
+		return this.contains(fragment)
 	end
 
 	def indexOf(fragment: string) -> int:
@@ -316,8 +364,37 @@ public class String:
 		return this.value == other
 	end
 
+	def __eq(other: any) -> bool:
+		return this.value == other
+	end
+
+	def __hash() -> any:
+		return this.value
+	end
+
 	def toString() -> string:
 		return this.value
+	end
+
+	static def format(template: string, values: array) -> String:
+		let result = ""
+		let cursor = 0
+		let valueIndex = 0
+		loop cursor < len(template):
+			if cursor + 1 < len(template) && template[cursor] == '{' && template[cursor + 1] == '}':
+				if valueIndex < len(values):
+					result = result + values[valueIndex]
+					valueIndex = valueIndex + 1
+				else:
+					result = result + "{}"
+				end
+				cursor = cursor + 2
+				continue
+			end
+			result = result + template[cursor]
+			cursor = cursor + 1
+		end
+		return String(result)
 	end
 
 	def unwrap() -> string:
@@ -325,7 +402,46 @@ public class String:
 	end
 end
 
-public class Boolean:
+public class StringBuilder:
+	var value: string
+
+	StringBuilder(initial: string):
+		this.value = initial
+	end
+
+	def append(part: any) -> StringBuilder:
+		this.value = this.value + part
+		return this
+	end
+
+	def appendLine(part: any) -> StringBuilder:
+		this.value = this.value + part + "\n"
+		return this
+	end
+
+	def clear() -> StringBuilder:
+		this.value = ""
+		return this
+	end
+
+	def length() -> int:
+		return (int) len(this.value)
+	end
+
+	def isEmpty() -> bool:
+		return len(this.value) == 0
+	end
+
+	def toString() -> string:
+		return this.value
+	end
+
+	def build() -> String:
+		return String(this.value)
+	end
+end
+
+public class Boolean implements Hashable:
 	let value: bool
 
 	Boolean(value: bool):
@@ -360,6 +476,10 @@ public class Boolean:
 		return this.value == other
 	end
 
+	def __hash() -> any:
+		return this.value
+	end
+
 	def toString() -> string:
 		if this.value:
 			return "true"
@@ -372,7 +492,7 @@ public class Boolean:
 	end
 end
 
-public class Char:
+public class Char implements Hashable:
 	let value: char
 
 	Char(value: char):
@@ -385,6 +505,10 @@ public class Char:
 
 	def equals(other: char) -> bool:
 		return this.value == other
+	end
+
+	def __hash() -> any:
+		return this.value
 	end
 
 	def toString() -> string:
@@ -407,6 +531,10 @@ public class CharArray:
 		return (int) len(this.data)
 	end
 
+	def __length() -> int:
+		return this.length()
+	end
+
 	def isEmpty() -> bool:
 		return len(this.data) == 0
 	end
@@ -415,8 +543,20 @@ public class CharArray:
 		return this.data[index]
 	end
 
+	def __get(index: int) -> char:
+		return this.get(index)
+	end
+
 	def contains(value: char) -> bool:
 		return this.indexOf(value) >= 0
+	end
+
+	def __contains(value: char) -> bool:
+		return this.contains(value)
+	end
+
+	def __slice(start: int, finish: int) -> CharArray:
+		return CharArray(this.data[start...finish])
 	end
 
 	def indexOf(value: char) -> int:
@@ -441,15 +581,131 @@ public class CharArray:
 	end
 end
 
-public class Bytes:
+public class Bytes implements Hashable:
 	let data: array
 
 	Bytes(data: array):
-		this.data = data
+		this.data = Bytes._normalize(data)
+	end
+
+	static def _normalize(data: array) -> array:
+		let result: int[] = []
+		for i in range(0, len(data)):
+			let value = (int) data[i]
+			if value < 0 || value > 255:
+				throw "Bytes values must be between 0 and 255"
+			end
+			result = result + [value]
+		end
+		return result
+	end
+
+	static def _hexDigit(value: int) -> string:
+		if value < 10:
+			return "" + value
+		end
+		if value == 10:
+			return "a"
+		end
+		if value == 11:
+			return "b"
+		end
+		if value == 12:
+			return "c"
+		end
+		if value == 13:
+			return "d"
+		end
+		if value == 14:
+			return "e"
+		end
+		if value == 15:
+			return "f"
+		end
+		throw "invalid hex digit"
+	end
+
+	static def _hexValue(value: char) -> int:
+		let text = "" + value
+		if text == "0":
+			return 0
+		end
+		if text == "1":
+			return 1
+		end
+		if text == "2":
+			return 2
+		end
+		if text == "3":
+			return 3
+		end
+		if text == "4":
+			return 4
+		end
+		if text == "5":
+			return 5
+		end
+		if text == "6":
+			return 6
+		end
+		if text == "7":
+			return 7
+		end
+		if text == "8":
+			return 8
+		end
+		if text == "9":
+			return 9
+		end
+		if text == "a" || text == "A":
+			return 10
+		end
+		if text == "b" || text == "B":
+			return 11
+		end
+		if text == "c" || text == "C":
+			return 12
+		end
+		if text == "d" || text == "D":
+			return 13
+		end
+		if text == "e" || text == "E":
+			return 14
+		end
+		if text == "f" || text == "F":
+			return 15
+		end
+		throw "Bytes.fromHex expects only hexadecimal digits"
+	end
+
+	static def fromHex(value: string) -> Bytes:
+		let start = 0
+		if len(value) >= 2 && (value[0...1] == "0x" || value[0...1] == "0X"):
+			start = 2
+		end
+		let digits = len(value) - start
+		if digits == 0:
+			return Bytes([])
+		end
+		if digits % 2 != 0:
+			throw "Bytes.fromHex expects an even number of hexadecimal digits"
+		end
+		let result: int[] = []
+		for i in range(0, (int) (digits / 2)):
+			let pairStart = start + (i * 2)
+			let high = Bytes._hexValue(value[pairStart])
+			let low = Bytes._hexValue(value[pairStart + 1])
+			result = result + [(high * 16) + low]
+		end
+		return Bytes(result)
 	end
 
 	def length() -> int:
 		return (int) len(this.data)
+	end
+
+	def __length() -> int:
+		return this.length()
 	end
 
 	def size() -> int:
@@ -464,8 +720,30 @@ public class Bytes:
 		return this.data[index]
 	end
 
+	def __get(index: int) -> int:
+		return this.get(index)
+	end
+
 	def contains(value: int) -> bool:
 		return this.indexOf(value) >= 0
+	end
+
+	def __contains(value: int) -> bool:
+		return this.contains(value)
+	end
+
+	def slice(start: int) -> Bytes:
+		if start < 0 || start > this.length():
+			throw "Bytes.slice index out of range"
+		end
+		if start == this.length():
+			return Bytes([])
+		end
+		return Bytes(this.data[start...this.length() - 1])
+	end
+
+	def __slice(start: int, finish: int) -> Bytes:
+		return Bytes(this.data[start...finish])
 	end
 
 	def indexOf(value: int) -> int:
@@ -477,11 +755,130 @@ public class Bytes:
 		return -1
 	end
 
+	def concat(other: Bytes) -> Bytes:
+		let result: int[] = []
+		for i in range(0, this.length()):
+			result = result + [this.data[i]]
+		end
+		for i in range(0, other.length()):
+			result = result + [other.data[i]]
+		end
+		return Bytes(result)
+	end
+
+	def __add(other: Bytes) -> Bytes:
+		return this.concat(other)
+	end
+
+	def equals(other: any) -> bool:
+		switch other:
+			case (candidate: Bytes):
+				if this.length() != candidate.length():
+					return false
+				end
+				for i in range(0, this.length()):
+					if this.data[i] != candidate.data[i]:
+						return false
+					end
+				end
+				return true
+			default:
+				return false
+		end
+	end
+
+	def __eq(other: any) -> bool:
+		return this.equals(other)
+	end
+
+	def asHex() -> string:
+		let result = ""
+		for value in this.data:
+			let byteValue = (int) value
+			result = result + Bytes._hexDigit((int) (byteValue / 16))
+			result = result + Bytes._hexDigit(byteValue % 16)
+		end
+		return result
+	end
+
+	def __hash() -> any:
+		let result = 17
+		for value in this.data:
+			result = (result * 31) + (int) value
+		end
+		return result
+	end
+
+	def toString() -> string:
+		return this.asHex()
+	end
+
 	def asArray() -> array:
-		return this.data
+		return Bytes._normalize(this.data)
 	end
 
 	def unwrap() -> array:
 		return this.data
+	end
+end
+
+public class Pair<L, R> implements Hashable, Unstructured, Sliceable:
+	let left: L
+	let right: R
+
+	Pair(left: L, right: R):
+		this.left = left
+		this.right = right
+	end
+
+	def first() -> L:
+		return this.left
+	end
+
+	def second() -> R:
+		return this.right
+	end
+
+	def __length() -> int:
+		return 2
+	end
+
+	def __get(index: int) -> L | R:
+		if index == 0:
+			return this.left
+		end
+		if index == 1:
+			return this.right
+		end
+		throw "Pair index out of range"
+	end
+
+	def __pieces() -> int:
+		return 2
+	end
+
+	def __getPiece(index: int) -> L | R:
+		return this.__get(index)
+	end
+
+	def __get_piece(index: int) -> L | R:
+		return this.__get(index)
+	end
+
+	def __slice(start: int, finish: int) -> array<L | R>:
+		let values: array<L | R> = [this.left, this.right]
+		return values[start...finish]
+	end
+
+	def __hash() -> any:
+		return hash([this.left, this.right])
+	end
+
+	def toString() -> string:
+		return "Pair(" + this.left + ", " + this.right + ")"
+	end
+
+	def asArray() -> array<L | R>:
+		return [this.left, this.right]
 	end
 end

@@ -1,0 +1,42 @@
+native def md5(value: String) -> String
+native def sha1(value: String) -> String
+native def sha256(value: String) -> String
+native def sha512(value: String) -> String
+native def base64_encode(value: String) -> String
+native def base64_decode(value: String) -> String
+native def hex_encode(value: String) -> String
+native def hex_decode(value: String) -> String
+
+public class Crypto:
+	static def md5(value: String) -> String:
+		return md5(value)
+	end
+
+	static def sha1(value: String) -> String:
+		return sha1(value)
+	end
+
+	static def sha256(value: String) -> String:
+		return sha256(value)
+	end
+
+	static def sha512(value: String) -> String:
+		return sha512(value)
+	end
+
+	static def base64Encode(value: String) -> String:
+		return base64_encode(value)
+	end
+
+	static def base64Decode(value: String) -> String:
+		return base64_decode(value)
+	end
+
+	static def hexEncode(value: String) -> String:
+		return hex_encode(value)
+	end
+
+	static def hexDecode(value: String) -> String:
+		return hex_decode(value)
+	end
+end

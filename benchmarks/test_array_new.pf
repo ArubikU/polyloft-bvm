@@ -1,0 +1,12 @@
+let a = new int[10]
+println(len(a))
+a[0] = 42
+a[9] = 100
+println(a[0])
+println(a[9])
+
+try:
+    a[10] = 500
+catch (e):
+    println("Caught expected IndexError")
+end

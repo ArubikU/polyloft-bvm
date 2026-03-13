@@ -1,0 +1,11 @@
+var started = Sys.time()
+var matches = 0
+for i in range(0, 10000000):
+    if i % 7 == 0:
+        matches = matches + 1
+    end
+end
+var ended = Sys.time()
+println(matches)
+println("TIME_PF")
+println(ended - started)

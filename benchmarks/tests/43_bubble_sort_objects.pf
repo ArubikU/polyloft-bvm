@@ -1,0 +1,16 @@
+var started = Sys.time()
+var size = 200
+var arr = [size - i for i in range(size)]
+for i in range(0, size):
+    for j in range(0, size - i - 1):
+        if arr[j] > arr[j+1]:
+            var temp = arr[j]
+            arr[j] = arr[j+1]
+            arr[j+1] = temp
+        end
+    end
+end
+var ended = Sys.time()
+println(arr[0])
+println("TIME_PF")
+println(ended - started)

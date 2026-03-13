@@ -1,0 +1,8 @@
+// Test 3: BLOCKED - const mutation from outside
+class C:
+    const y: int
+    C(): this.y = 3 end
+end
+let c = new C()
+c.y = 99
+println("should not reach here")

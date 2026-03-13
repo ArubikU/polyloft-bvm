@@ -1,0 +1,9 @@
+var started = Sys.time()
+var s = ""
+for i in range(0, 2000):
+    s = s + "a"
+end
+var ended = Sys.time()
+println(len(s))
+println("TIME_PF")
+println(ended - started)

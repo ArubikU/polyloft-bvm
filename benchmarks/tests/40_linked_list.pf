@@ -1,0 +1,28 @@
+class Node:
+    val: int
+    next: any
+
+    Node():
+        this.val = 0
+        this.next = nil
+    end
+
+    def set(v: int) -> void:
+        this.val = v
+    end
+end
+
+var started = Sys.time()
+var head = new Node()
+head.set(0)
+var cur = head
+for i in range(1, 10000):
+    var n = new Node()
+    n.set(i)
+    cur.next = n
+    cur = n
+end
+var ended = Sys.time()
+println(cur.val)
+println("TIME_PF")
+println(ended - started)

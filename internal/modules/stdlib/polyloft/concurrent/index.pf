@@ -1,0 +1,134 @@
+import polyloft.function { Supplier, Function, Runnable }
+
+native def thread_new<R>(task: Supplier<R>) -> any
+native def thread_start(nativeThread: any) -> void
+native def thread_join<R>(nativeThread: any) -> R
+native def thread_is_alive(nativeThread: any) -> bool
+
+native def future_new<T>() -> any
+native def future_run_async<T>(task: Supplier<T>) -> any
+native def future_complete<T>(nativeFuture: any, value: T) -> bool
+native def future_get<T>(nativeFuture: any) -> T
+native def future_get_timeout<T>(nativeFuture: any, timeoutMillis: int) -> T
+native def future_is_done(nativeFuture: any) -> bool
+native def future_cancel(nativeFuture: any) -> bool
+native def future_then<T, R>(nativeFuture: any, callback: Function<T, R>) -> any
+native def future_catch<T>(nativeFuture: any, callback: Function<String, T>) -> any
+native def future_finally<T>(nativeFuture: any, callback: Runnable) -> any
+
+native def channel_new<T>(capacity: int) -> any
+native def channel_send<T>(nativeChannel: any, value: T) -> void
+native def channel_receive<T>(nativeChannel: any) -> T
+native def channel_close(nativeChannel: any) -> bool
+native def channel_is_closed(nativeChannel: any) -> bool
+
+public class Thread<R>:
+	var _native: any
+
+	Thread(task: Supplier<R>):
+		this._native = thread_new(task)
+	end
+
+	def start() -> Thread<R>:
+		thread_start(this._native)
+		return this
+	end
+
+	def join() -> R:
+		return thread_join(this._native)
+	end
+
+	def isAlive() -> bool:
+		return thread_is_alive(this._native)
+	end
+
+	static def startThread<R>(task: Supplier<R>) -> Thread<R>:
+		let worker = Thread(task)
+		worker.start()
+		return worker
+	end
+end
+
+public class CompletableFuture<T>:
+	var _native: any
+
+	CompletableFuture():
+		this._native = future_new()
+	end
+
+	CompletableFuture(nativeFuture: any):
+		this._native = nativeFuture
+	end
+
+	def complete(candidate: T) -> bool:
+		return future_complete(this._native, candidate)
+	end
+
+	def get() -> T:
+		return future_get(this._native)
+	end
+
+	def await() -> T:
+		return this.get()
+	end
+
+	def getTimeout(timeoutMillis: int) -> T:
+		return future_get_timeout(this._native, timeoutMillis)
+	end
+
+	def isDone() -> bool:
+		return future_is_done(this._native)
+	end
+
+	def cancel() -> bool:
+		return future_cancel(this._native)
+	end
+
+	def then<R>(callback: Function<T, R>) -> CompletableFuture<R>:
+		return CompletableFuture(future_then(this._native, callback))
+	end
+
+	def catch(callback: Function<String, T>) -> CompletableFuture<T>:
+		return CompletableFuture(future_catch(this._native, callback))
+	end
+
+	def finally(callback: Runnable) -> CompletableFuture<T>:
+		return CompletableFuture(future_finally(this._native, callback))
+	end
+
+	static def supplyAsync<T>(task: Supplier<T>) -> CompletableFuture<T>:
+		return CompletableFuture(future_run_async(task))
+	end
+end
+
+public class Channel<T>:
+	var _native: any
+
+	Channel():
+		this._native = channel_new(0)
+	end
+
+	Channel(capacity: int):
+		this._native = channel_new(capacity)
+	end
+
+	def send(candidate: T) -> void:
+		channel_send(this._native, candidate)
+	end
+
+	def receive() -> T:
+		return channel_receive(this._native)
+	end
+
+	def close() -> bool:
+		return channel_close(this._native)
+	end
+
+	def isClosed() -> bool:
+		return channel_is_closed(this._native)
+	end
+end
+
+public def async<T>(task: Supplier<T>) -> CompletableFuture<T>:
+	return CompletableFuture.supplyAsync(task)
+end

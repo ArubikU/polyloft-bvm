@@ -1,0 +1,19 @@
+/**
+ * polyloft.json - JSON utility class
+ * Wraps the native `stringify` and `parse` global bindings provided
+ * by the Go runtime via `BuildJsonModule()`.
+ */
+
+// Native bindings (resolved by the VM registry at runtime)
+native def stringify(value: any) -> String
+native def parse(json: String) -> any
+
+public class Json:
+    static def stringify(value: any) -> String:
+        return stringify(value)
+    end
+
+    static def parse(json: String) -> any:
+        return parse(json)
+    end
+end

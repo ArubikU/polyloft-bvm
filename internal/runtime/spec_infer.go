@@ -82,25 +82,65 @@ func callableSpec(name string, fn *bytecode.Function) Spec {
 	return Spec{Name: name, TypeName: TypeFunction, Callable: &CallableSpec{Params: params, Return: ret}}
 }
 
+func callableSignature(fn *bytecode.Function, defaultReturn string) *CallableSpec {
+	if fn == nil {
+		return nil
+	}
+	params := make([]string, len(fn.ParamTypes))
+	copy(params, fn.ParamTypes)
+	for i, param := range params {
+		if param == "" {
+			params[i] = TypeAny
+		}
+	}
+	ret := fn.ReturnType
+	if ret == "" {
+		ret = defaultReturn
+	}
+	return &CallableSpec{Params: params, Return: ret}
+}
+
+func callableOverloadSignatures(overloads []*bytecode.Function, defaultReturn string) []*CallableSpec {
+	if len(overloads) == 0 {
+		return nil
+	}
+	result := make([]*CallableSpec, 0, len(overloads))
+	for _, overload := range overloads {
+		signature := callableSignature(overload, defaultReturn)
+		if signature == nil {
+			continue
+		}
+		result = append(result, signature)
+	}
+	if len(result) <= 1 {
+		return nil
+	}
+	for _, signature := range result {
+		signature.Overloaded = true
+	}
+	return result
+}
+
 func classSpec(name string, class *value.Class) Spec {
 	staticMembers := make(map[string]Spec)
 	instanceMembers := make(map[string]Spec)
 	collectClassMembers(class, staticMembers, instanceMembers)
 	constructor := &CallableSpec{Params: []string{}, Return: class.Name}
-	if class.Constructor != nil {
-		params := make([]string, len(class.Constructor.ParamTypes))
-		copy(params, class.Constructor.ParamTypes)
-		for i, param := range params {
-			if param == "" {
-				params[i] = TypeAny
-			}
+	if signature := callableSignature(class.Constructor, class.Name); signature != nil {
+		constructor = signature
+	}
+	constructorOverloads := make([]*CallableSpec, 0, len(class.ConstructorOverloads))
+	for _, overload := range class.ConstructorOverloads {
+		signature := callableSignature(overload, class.Name)
+		if signature != nil {
+			constructorOverloads = append(constructorOverloads, signature)
 		}
-		constructor = &CallableSpec{Params: params, Return: class.Name}
 	}
 	return Spec{
 		Name:                  name,
 		TypeName:              class.Name,
 		Callable:              constructor,
+		ConstructorOverloads:  constructorOverloads,
 		ConstructorVisibility: class.ConstructorVisibility,
 		Members:               staticMembers,
 		InstanceMembers:       instanceMembers,
@@ -136,7 +176,12 @@ func collectClassMembers(class *value.Class, staticMembers map[string]Spec, inst
 		instanceMembers[name] = Spec{Name: class.Name + "." + name, TypeName: typeName}
 	}
 	for name, method := range class.Methods {
-		instanceMembers[name] = callableSpec(class.Name+"."+name, method)
+		spec := callableSpec(class.Name+"."+name, method)
+		if overloads := callableOverloadSignatures(class.MethodOverloads[name], class.Name); len(overloads) > 0 {
+			spec.Callable.Overloaded = true
+			spec.Callable.Overloads = overloads
+		}
+		instanceMembers[name] = spec
 	}
 	for name, field := range class.StaticFields {
 		typeName := field.TypeName
@@ -146,6 +191,11 @@ func collectClassMembers(class *value.Class, staticMembers map[string]Spec, inst
 		staticMembers[name] = Spec{Name: class.Name + "." + name, TypeName: typeName}
 	}
 	for name, method := range class.StaticMethods {
-		staticMembers[name] = callableSpec(class.Name+"."+name, method)
+		spec := callableSpec(class.Name+"."+name, method)
+		if overloads := callableOverloadSignatures(class.StaticMethodOverloads[name], class.Name); len(overloads) > 0 {
+			spec.Callable.Overloaded = true
+			spec.Callable.Overloads = overloads
+		}
+		staticMembers[name] = spec
 	}
 }

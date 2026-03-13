@@ -1,0 +1,53 @@
+import polyloft.collections.contracts { Set }
+
+public class HashSet<T> implements Set<T>:
+	var entries: map<string, T>
+
+	HashSet():
+		this.entries = {}
+	end
+
+	static def from(items: array<T>) -> HashSet<T>:
+		let values = HashSet()
+		for item in items:
+			values.add(item)
+		end
+		return values
+	end
+
+	def size() -> number:
+		return len(this.entries)
+	end
+
+	def isEmpty() -> bool:
+		return this.size() == 0
+	end
+
+	def add(key: T) -> void:
+		this.entries[hash(key)] = key
+	end
+
+	def remove(key: T) -> bool:
+		return delete(this.entries, hash(key))
+	end
+
+	def contains(key: T) -> bool:
+		return hash(key) in this.entries
+	end
+
+	def __contains(key: T) -> bool:
+		return this.contains(key)
+	end
+
+	def clear() -> void:
+		this.entries = {}
+	end
+
+	def asArray() -> array<T>:
+		return values(this.entries)
+	end
+
+	def values() -> array<T>:
+		return values(this.entries)
+	end
+end

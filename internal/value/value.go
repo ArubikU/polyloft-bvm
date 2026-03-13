@@ -3,7 +3,6 @@ package value
 import (
 	"encoding/gob"
 	"fmt"
-	"math"
 	"strconv"
 
 	"github.com/ArubikU/polyloft-bvm/internal/bytecode"
@@ -24,6 +23,7 @@ func init() {
 	gob.Register(&Range{})
 	gob.Register(&Closure{})
 	gob.Register(&BoundMethod{})
+	gob.Register(&BoundStaticMethod{})
 	gob.Register(&SAMWrapper{})
 	gob.Register(&SAMBoundMethod{})
 	gob.Register(&Iterator{})
@@ -76,6 +76,7 @@ type Map struct {
 type FieldDef struct {
 	Default    Value
 	Mutable    bool
+	IsFinal    bool
 	TypeName   string
 	Visibility string
 }
@@ -85,42 +86,79 @@ type Cell struct {
 }
 
 type Class struct {
-	Name                  string
-	Superclass            *Class
-	Implements            map[string]bool
-	Permits               map[string]bool
-	IsAbstract            bool
-	IsEnum                bool
-	IsSealed              bool
-	IsRecord              bool
-	EnumOrder             []string
-	FastConstructor       *FastConstructorPlan
-	FastMethods           []*FastMethodPlan
-	Fields                map[string]FieldDef
-	FieldOrder            []string
-	FieldIndex            map[string]int
-	MethodOrder           []string
-	MethodIndex           map[string]int
-	MethodTable           []*bytecode.Function
-	Methods               map[string]*bytecode.Function
-	Constructor           *bytecode.Function
-	StaticFields          map[string]FieldDef
-	StaticValues          map[string]Value
-	StaticMethods         map[string]*bytecode.Function
+	ClassDecl
+	ClassRuntime
+}
+
+type SpecialMethodSlot uint8
+
+const (
+	SpecialMethodIterableLength SpecialMethodSlot = iota
+	SpecialMethodIterableGet
+	SpecialMethodPieces
+	SpecialMethodGetPiece
+	SpecialMethodIndexGet
+	SpecialMethodIndexSet
+	SpecialMethodContains
+	SpecialMethodSlice
+	SpecialMethodEquals
+	SpecialMethodHash
+)
+
+var specialMethodSlotOrder = []SpecialMethodSlot{
+	SpecialMethodIterableLength,
+	SpecialMethodIterableGet,
+	SpecialMethodPieces,
+	SpecialMethodGetPiece,
+	SpecialMethodIndexGet,
+	SpecialMethodIndexSet,
+	SpecialMethodContains,
+	SpecialMethodSlice,
+	SpecialMethodEquals,
+	SpecialMethodHash,
+}
+
+type ClassDecl struct {
+	Name       string
+	Superclass *Class
+
+	Implements map[string]bool
+	Permits    map[string]bool
+
+	IsAbstract bool
+	IsEnum     bool
+	IsSealed   bool
+	IsRecord   bool
+
+	EnumOrder []string
+
+	Fields       map[string]FieldDef
+	FieldOrder   []string
+	FieldIndex   map[string]int
+	StaticFields map[string]FieldDef
+
 	MethodVisibility      map[string]string
 	StaticVisibility      map[string]string
 	ConstructorVisibility string
 	MethodAnnotations     map[string][]string
-	IterableLength        *bytecode.Function
-	IterableGet           *bytecode.Function
-	PiecesMethod          *bytecode.Function
-	GetPieceMethod        *bytecode.Function
-	IndexGetMethod        *bytecode.Function
-	IndexSetMethod        *bytecode.Function
-	ContainsMethod        *bytecode.Function
-	SliceMethod           *bytecode.Function
-	EqualMethod           *bytecode.Function
-	HashMethod            *bytecode.Function
+}
+
+type ClassRuntime struct {
+	FastConstructor *FastConstructorPlan
+	FastMethods     []*FastMethodPlan
+
+	MethodOrder []string
+	MethodIndex map[string]int
+	MethodTable []*bytecode.Function
+	Methods     map[string]*bytecode.Function
+
+	MethodOverloads       map[string][]*bytecode.Function
+	Constructor           *bytecode.Function
+	ConstructorOverloads  []*bytecode.Function
+	StaticMethods         map[string]*bytecode.Function
+	StaticMethodOverloads map[string][]*bytecode.Function
+	StaticValues          map[string]Value
+	SpecialMethods        map[SpecialMethodSlot]*bytecode.Function
 }
 
 type FastConstructorPlan struct {
@@ -162,8 +200,15 @@ type Instance struct {
 
 type BoundMethod struct {
 	Receiver *Instance
+	Name     string
 	Method   *bytecode.Function
 	Owner    *Class
+}
+
+type BoundStaticMethod struct {
+	Class *Class
+	Name  string
+	Owner *Class
 }
 
 type Closure struct {
@@ -300,6 +345,11 @@ func (v Value) AsBoundMethod() (*BoundMethod, bool) {
 	return method, ok
 }
 
+func (v Value) AsBoundStaticMethod() (*BoundStaticMethod, bool) {
+	method, ok := v.Object.(*BoundStaticMethod)
+	return method, ok
+}
+
 func (v Value) AsSAMWrapper() (*SAMWrapper, bool) {
 	wrapper, ok := v.Object.(*SAMWrapper)
 	return wrapper, ok
@@ -350,10 +400,63 @@ func (c *Class) LookupMethod(name string) (*bytecode.Function, *Class, bool) {
 	if method, ok := c.Methods[name]; ok {
 		return method, c, true
 	}
+	if overloads, ok := c.MethodOverloads[name]; ok {
+		for _, method := range overloads {
+			if method != nil {
+				return method, c, true
+			}
+		}
+	}
 	if c.Superclass != nil {
 		return c.Superclass.LookupMethod(name)
 	}
 	return nil, nil, false
+}
+
+func (c *Class) LookupMethodByArity(name string, argc int) (*bytecode.Function, *Class, bool) {
+	if overloads, ok := c.MethodOverloads[name]; ok {
+		for _, method := range overloads {
+			if method != nil && method.Arity == argc {
+				return method, c, true
+			}
+		}
+	}
+	if method, ok := c.Methods[name]; ok && method != nil && method.Arity == argc {
+		return method, c, true
+	}
+	if c.Superclass != nil {
+		return c.Superclass.LookupMethodByArity(name, argc)
+	}
+	return nil, nil, false
+}
+
+func (c *Class) SetSpecialMethod(slot SpecialMethodSlot, fn *bytecode.Function) {
+	if c.SpecialMethods == nil {
+		c.SpecialMethods = make(map[SpecialMethodSlot]*bytecode.Function)
+	}
+	if fn == nil {
+		delete(c.SpecialMethods, slot)
+		return
+	}
+	c.SpecialMethods[slot] = fn
+}
+
+func (c *Class) DeclaredSpecialMethod(slot SpecialMethodSlot) (*bytecode.Function, bool) {
+	if c == nil || c.SpecialMethods == nil {
+		return nil, false
+	}
+	fn, ok := c.SpecialMethods[slot]
+	return fn, ok && fn != nil
+}
+
+func (c *Class) SpecialMethod(slot SpecialMethodSlot) *bytecode.Function {
+	if fn, ok := c.DeclaredSpecialMethod(slot); ok {
+		return fn
+	}
+	if c != nil && c.Superclass != nil {
+		return c.Superclass.SpecialMethod(slot)
+	}
+	return nil
 }
 
 func (c *Class) LookupMethodSlot(name string) (int, *bytecode.Function, bool) {
@@ -391,10 +494,49 @@ func (c *Class) LookupStatic(name string) (Value, bool) {
 	if method, ok := c.StaticMethods[name]; ok {
 		return ObjectValue(method), true
 	}
+	if overloads, ok := c.StaticMethodOverloads[name]; ok {
+		for _, method := range overloads {
+			if method != nil {
+				return ObjectValue(method), true
+			}
+		}
+	}
 	if c.Superclass != nil {
 		return c.Superclass.LookupStatic(name)
 	}
 	return NilValue(), false
+}
+
+func (c *Class) LookupStaticCallableOwner(name string, argc int) (*Class, Value, bool) {
+	if field, ok := c.StaticValues[name]; ok {
+		return c, field, true
+	}
+	if overloads, ok := c.StaticMethodOverloads[name]; ok {
+		for _, method := range overloads {
+			if method != nil && method.Arity == argc {
+				return c, ObjectValue(method), true
+			}
+		}
+	}
+	if method, ok := c.StaticMethods[name]; ok && method != nil && method.Arity == argc {
+		return c, ObjectValue(method), true
+	}
+	if c.Superclass != nil {
+		return c.Superclass.LookupStaticCallableOwner(name, argc)
+	}
+	return nil, NilValue(), false
+}
+
+func (c *Class) LookupConstructorByArity(argc int) (*bytecode.Function, bool) {
+	for _, ctor := range c.ConstructorOverloads {
+		if ctor != nil && ctor.Arity == argc {
+			return ctor, true
+		}
+	}
+	if c.Constructor != nil && c.Constructor.Arity == argc {
+		return c.Constructor, true
+	}
+	return nil, false
 }
 
 func (c *Class) LookupStaticOwner(name string) (*Class, Value, bool) {
@@ -403,6 +545,13 @@ func (c *Class) LookupStaticOwner(name string) (*Class, Value, bool) {
 	}
 	if method, ok := c.StaticMethods[name]; ok {
 		return c, ObjectValue(method), true
+	}
+	if overloads, ok := c.StaticMethodOverloads[name]; ok {
+		for _, method := range overloads {
+			if method != nil {
+				return c, ObjectValue(method), true
+			}
+		}
 	}
 	if c.Superclass != nil {
 		return c.Superclass.LookupStaticOwner(name)
@@ -515,10 +664,17 @@ func (v Value) String() string {
 	case Nil:
 		return "nil"
 	case Number:
-		if v.NumberKind == NumberInt && math.Trunc(v.Num) == v.Num {
+		if v.NumberKind == NumberInt {
 			return strconv.FormatInt(int64(v.Num), 10)
 		}
-		return fmt.Sprintf("%g", v.Num)
+		// For floats, if it's effectively an integer and fits in reasonable range, show as int
+		if v.Num == float64(int64(v.Num)) {
+			// Check if it's a very large whole number that might still be an int
+			if v.Num > -1e15 && v.Num < 1e15 {
+				return strconv.FormatInt(int64(v.Num), 10)
+			}
+		}
+		return strconv.FormatFloat(v.Num, 'g', -1, 64)
 	case Bool:
 		if v.Bool {
 			return "true"

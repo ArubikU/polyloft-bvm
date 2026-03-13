@@ -1,0 +1,19 @@
+var started = Sys.time()
+var in_circle = 0
+var total = 50000
+var seed = 1234
+for i in range(0, total):
+    seed = (seed * 1103515245 + 12345) % 2147483648
+    var xi = (int)(seed % 1000)
+    var x = xi / 1000.0
+    seed = (seed * 1103515245 + 12345) % 2147483648
+    var yi = (int)(seed % 1000)
+    var y = yi / 1000.0
+    if (x*x + y*y) <= 1.0:
+        in_circle = in_circle + 1
+    end
+end
+var ended = Sys.time()
+println(in_circle)
+println("TIME_PF")
+println(ended - started)

@@ -1,58 +1,104 @@
 # polyloft.maps
 
-`polyloft.maps` exposes object-style views over raw runtime maps and hashed storage.
+`polyloft.maps` exposes object-style wrappers over raw runtime maps and hashed map or set storage.
 
 ```pf
-import polyloft.maps { Map, HashMap, SetMap }
+import polyloft.maps { MapLike, SetLike, Map, HashMap, SetMap }
 ```
+
+## Overview
+
+Use this module when you want:
+
+- object-style helpers over native map values
+- arbitrary-key lookup through VM hashing
+- set-like behavior backed by hashed storage
+
+Internally, these exports are now split across separate stdlib files under `internal/modules/stdlib/polyloft/maps/`, while `polyloft.maps` remains the stable import-facing facade.
+
+## Contracts
+
+### MapLike
+
+Methods:
+
+- `size() -> int`
+- `isEmpty() -> bool`
+- `containsKey(key: K) -> bool`
+- `__contains(key: K) -> bool`
+- `containsValue(expected: V) -> bool`
+- `get(key: K) -> V`
+- `getOrDefault(key: K, fallback: V) -> V`
+- `delete(key: K) -> bool`
+- `keys() -> array<K>`
+- `values() -> array<V>`
+
+### SetLike
+
+Methods:
+
+- `size() -> int`
+- `isEmpty() -> bool`
+- `contains(key: T) -> bool`
+- `__contains(key: T) -> bool`
+- `add(key: T) -> SetLike<T>`
+- `addAll(items: array<T>) -> SetLike<T>`
+- `clear() -> SetLike<T>`
+- `delete(key: T) -> bool`
+- `asArray() -> array<T>`
+- `values() -> array<T>`
 
 ## Map
 
-`Map` is a thin object view over a raw runtime map keyed by strings.
+`Map` is a thin object wrapper over a raw runtime map.
 
 Constructors and factories:
 
 - `Map()`
-- `Map.from(entries: map) -> Map`
+- `Map.from(entries: map<string, V>) -> Map<V>`
 
 Methods:
 
-- `unwrap() -> map`
+- `unwrap() -> map<string, V>`
 - `size() -> int`
 - `isEmpty() -> bool`
 - `containsKey(key: string) -> bool`
-- `containsValue(expected: any) -> bool`
-- `get(key: string) -> any`
-- `getOrDefault(key: string, fallback: any) -> any`
-- `delete(key: string) -> bool`
-- `keys() -> array`
-- `values() -> array`
+- `__contains(key: string) -> bool`
+- `containsValue(expected: V) -> bool`
+- `get(key: string) -> V`
+- `getOrDefault(key: string, fallback: V) -> V`
+- `delete(key: any) -> bool`
+- `keys() -> array<string>`
+- `values() -> array<V>`
+- `entries() -> array<Entry<string, V>>`
 
 ## HashMap
 
-`HashMap` accepts arbitrary keys and stores them by VM hash.
+`HashMap` accepts arbitrary keys and stores them using the VM hash model.
 
 Constructors and factories:
 
 - `HashMap()`
-- `HashMap.from(entries: map) -> HashMap`
+- `HashMap.from(entries: map<K, V>) -> HashMap<K, V>`
 
 Methods:
 
-- `unwrap() -> map`
+- `unwrap() -> map<string, V>`
 - `size() -> int`
 - `isEmpty() -> bool`
 - `containsHash(hashed: string) -> bool`
-- `containsKey(key: any) -> bool`
-- `containsValue(expected: any) -> bool`
-- `get(key: any) -> any`
-- `getOrDefault(key: any, fallback: any) -> any`
-- `put(key: any, value: any) -> HashMap`
-- `putAll(entries: map) -> HashMap`
-- `clear() -> HashMap`
-- `delete(key: any) -> bool`
-- `keys() -> array`
-- `values() -> array`
+- `containsKey(key: K) -> bool`
+- `__contains(key: K) -> bool`
+- `containsValue(expected: V) -> bool`
+- `get(key: K) -> V`
+- `getOrDefault(key: K, fallback: V) -> V`
+- `put(key: K, value: V) -> HashMap<K, V>`
+- `putAll(entries: map<K, V>) -> HashMap<K, V>`
+- `clear() -> HashMap<K, V>`
+- `delete(key: K) -> bool`
+- `keys() -> array<K>`
+- `values() -> array<V>`
+- `entries() -> array<Entry<K, V>>`
 
 ## SetMap
 
@@ -61,23 +107,27 @@ Methods:
 Constructors and factories:
 
 - `SetMap()`
-- `SetMap.from(items: array) -> SetMap`
+- `SetMap.from(items: array<T>) -> SetMap<T>`
 
 Methods:
 
-- `unwrap() -> map`
+- `unwrap() -> map<string, T>`
 - `size() -> int`
 - `isEmpty() -> bool`
-- `contains(key: any) -> bool`
-- `add(key: any) -> SetMap`
-- `addAll(entries: map) -> SetMap`
-- `clear() -> SetMap`
-- `delete(key: any) -> bool`
-- `values() -> array`
+- `contains(key: T) -> bool`
+- `__contains(key: T) -> bool`
+- `add(key: T) -> SetMap<T>`
+- `addAll(items: array<T>) -> SetMap<T>`
+- `clear() -> SetMap<T>`
+- `delete(key: T) -> bool`
+- `asArray() -> array<T>`
+- `values() -> array<T>`
 
 ## Example
 
 ```pf
+import polyloft.maps { Map, HashMap, SetMap }
+
 let view = Map.from({"a": 1, "b": 2})
 println(view.size())
 

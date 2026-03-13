@@ -1,0 +1,19 @@
+class TestFields:
+    public let pub_let: int
+    private var priv_var: int
+    protected const prot_const: int = 42
+    final final_field: int = 99
+
+    TestFields():
+        this.pub_let = 1
+        this.priv_var = 2
+        this.prot_const = 42
+        this.final_field = 99
+    end
+end
+
+let t = new TestFields()
+println(t.pub_let)
+println(t.priv_var)
+println(t.prot_const)
+println(t.final_field)

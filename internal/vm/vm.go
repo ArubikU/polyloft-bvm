@@ -7,31 +7,50 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strings"
+	"sync"
 
 	"github.com/ArubikU/polyloft-bvm/internal/bytecode"
+	"github.com/ArubikU/polyloft-bvm/internal/diagnostic"
+	"github.com/ArubikU/polyloft-bvm/internal/jit"
 	bvmruntime "github.com/ArubikU/polyloft-bvm/internal/runtime"
 	"github.com/ArubikU/polyloft-bvm/internal/value"
 )
 
+type exceptionHandler struct {
+	catchIP    int
+	stackDepth int
+}
+
 type frame struct {
-	fn        *bytecode.Function
-	closure   *value.Closure
-	ip        int
-	locals    []value.Value
-	localRefs map[byte]*value.Cell
-	receiver  *value.Instance
-	init      bool
+	fn            *bytecode.Function
+	closure       *value.Closure
+	ip            int
+	stackBase     int
+	locals        []value.Value
+	localRefs     map[byte]*value.Cell
+	stringBuffers map[byte]*stringAccumulator
+	handlers      []exceptionHandler
+	receiver      *value.Instance
+	init          bool
+}
+
+type stringAccumulator struct {
+	builder strings.Builder
 }
 
 type VM struct {
-	stdout        io.Writer
-	stack         []value.Value
-	frames        []*frame
-	framePool     []*frame
-	globals       map[string]value.Value
-	globalSlots   []value.Value
-	globalDefined []bool
-	builtinArgs   []value.Value
+	stdout          io.Writer
+	stack           []value.Value
+	frames          []*frame
+	framePool       []*frame
+	globals         map[string]value.Value
+	globalSlots     []value.Value
+	globalDefined   []bool
+	builtinArgs     []value.Value
+	globalSlotNames []string
+	callbackMu      sync.Mutex
+	jitEngine       *jit.Engine
 }
 
 func New(stdout io.Writer) *VM {
@@ -45,18 +64,26 @@ func New(stdout io.Writer) *VM {
 }
 
 func NewWithRegistry(stdout io.Writer, registry *bvmruntime.Registry) *VM {
+	return newWithRegistry(stdout, registry, true)
+}
+
+func newWithRegistry(stdout io.Writer, registry *bvmruntime.Registry, setProxy bool) *VM {
 	if stdout == nil {
 		stdout = os.Stdout
 	}
-
-	return &VM{
+	machine := &VM{
 		stdout:      stdout,
 		stack:       make([]value.Value, 0, 256),
 		frames:      make([]*frame, 0, 16),
 		framePool:   make([]*frame, 0, 16),
 		globals:     registry.Globals(),
 		builtinArgs: make([]value.Value, 0, 8),
+		jitEngine:   jit.NewEngine(),
 	}
+	if setProxy {
+		bvmruntime.GlobalVMProxy = machine
+	}
+	return machine
 }
 
 // Globals returns the flat global name->value map used by the VM.
@@ -65,7 +92,56 @@ func (vm *VM) Globals() map[string]value.Value {
 	return vm.globals
 }
 
+// isInsideClassMethod returns true if any frame in the current call stack is a
+// method (or constructor) whose receiver's class matches owner. Used to allow
+// 'const' field writes from inside the class (any method, not just ctor).
+func (vm *VM) isInsideClassMethod(owner *value.Class) bool {
+	for i := len(vm.frames) - 1; i >= 0; i-- {
+		f := vm.frames[i]
+		if f.receiver != nil && f.receiver.Class == owner {
+			return true
+		}
+	}
+	return false
+}
+
+// isInsideClassConstructor returns true if there is a constructor (init) frame
+// in the stack whose receiver belongs to owner. Used for 'final' fields, which
+// may only be written during initial construction.
+func (vm *VM) isInsideClassConstructor(owner *value.Class) bool {
+	for i := len(vm.frames) - 1; i >= 0; i-- {
+		f := vm.frames[i]
+		if f.init && f.receiver != nil && f.receiver.Class == owner {
+			return true
+		}
+	}
+	return false
+}
+
+func (vm *VM) JITStats() jit.Stats {
+	if vm.jitEngine == nil {
+		return jit.Stats{}
+	}
+	return vm.jitEngine.Stats()
+}
+
+func (vm *VM) SetJITWarmupThreshold(threshold int) {
+	if vm.jitEngine == nil {
+		vm.jitEngine = jit.NewEngineWithThreshold(threshold)
+		return
+	}
+	vm.jitEngine.SetWarmupThreshold(threshold)
+}
+
+func (vm *VM) SetJITLogger(w io.Writer) {
+	if vm.jitEngine == nil {
+		vm.jitEngine = jit.NewEngine()
+	}
+	vm.jitEngine.SetLogger(w)
+}
+
 func (vm *VM) Run(fn *bytecode.Function) (value.Value, error) {
+	vm.globalSlotNames = append(vm.globalSlotNames[:0], fn.GlobalSlotNames...)
 	if cap(vm.globalSlots) < fn.GlobalSlotCount {
 		vm.globalSlots = make([]value.Value, fn.GlobalSlotCount)
 		vm.globalDefined = make([]bool, fn.GlobalSlotCount)
@@ -85,11 +161,67 @@ func (vm *VM) Run(fn *bytecode.Function) (value.Value, error) {
 	return vm.executeUntilDepth(0)
 }
 
+func (vm *VM) CallClosure(closure value.Value, args []value.Value) (value.Value, error) {
+	vm.callbackMu.Lock()
+	defer vm.callbackMu.Unlock()
+	return vm.callValue(closure, args)
+}
+
+func (vm *VM) CallClosureIsolated(closure value.Value, args []value.Value) (value.Value, error) {
+	registry := bvmruntime.NewRegistry()
+	for name, candidate := range vm.globals {
+		registry.Define(name, value.DeepCopy(candidate))
+	}
+	for index, name := range vm.globalSlotNames {
+		if index >= len(vm.globalDefined) || !vm.globalDefined[index] {
+			continue
+		}
+		registry.Define(name, value.DeepCopy(vm.globalSlots[index]))
+	}
+	isolated := newWithRegistry(vm.stdout, registry, false)
+	clonedArgs := make([]value.Value, len(args))
+	for i, arg := range args {
+		clonedArgs[i] = value.DeepCopy(arg)
+	}
+	return isolated.callValue(value.DeepCopy(closure), clonedArgs)
+}
+
+func (vm *VM) callValue(callable value.Value, args []value.Value) (value.Value, error) {
+	baseDepth := len(vm.frames)
+	baseStack := len(vm.stack)
+	vm.push(callable)
+	for _, arg := range args {
+		vm.push(arg)
+	}
+	if err := vm.call(len(args)); err != nil {
+		vm.stack = vm.stack[:baseStack]
+		return value.NilValue(), err
+	}
+	result, err := vm.executeUntilDepth(baseDepth)
+	if err != nil {
+		for len(vm.frames) > baseDepth {
+			frame := vm.currentFrame()
+			vm.frames = vm.frames[:len(vm.frames)-1]
+			vm.releaseFrame(frame)
+		}
+		vm.stack = vm.stack[:baseStack]
+		return value.NilValue(), err
+	}
+	if len(vm.stack) > baseStack {
+		vm.stack = vm.stack[:baseStack]
+	}
+	return result, nil
+}
+
 func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 	for len(vm.frames) > baseDepth {
 		frame := vm.currentFrame()
 		if frame.ip >= len(frame.fn.Chunk.Code) {
-			return value.NilValue(), fmt.Errorf("unexpected end of bytecode")
+			if handled, raised := vm.handleRaised(baseDepth, frame, diagnostic.Runtime("RuntimeError", "unexpected end of bytecode", value.NilValue())); handled {
+				continue
+			} else {
+				return value.NilValue(), raised
+			}
 		}
 
 		op := bytecode.Op(frame.fn.Chunk.Code[frame.ip])
@@ -119,7 +251,46 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			vm.push(vm.localGet(frame, slot))
 		case bytecode.OpSetLocal:
 			slot := vm.readByte(frame)
-			vm.localSet(frame, slot, vm.pop())
+			vm.localSet(frame, slot, vm.peek(0))
+		case bytecode.OpAppendLocalString:
+			slot := vm.readByte(frame)
+			vm.appendLocalString(frame, slot, vm.pop())
+		case bytecode.OpAddConstLocalInt:
+			slot := vm.readByte(frame)
+			constant := frame.fn.Chunk.Constants[vm.readUint16(frame)]
+			increment, ok := constant.(int64)
+			if !ok {
+				return value.NilValue(), fmt.Errorf("ADD_CONST_LOCAL_INT expects int constant")
+			}
+			current := vm.localGet(frame, slot)
+			if current.Kind != value.Number || current.NumberKind != value.NumberInt {
+				return value.NilValue(), fmt.Errorf("ADD_CONST_LOCAL_INT expects int local")
+			}
+			vm.localSet(frame, slot, value.IntValue(int64(current.Num)+increment))
+		case bytecode.OpJumpIfLocalLessEqualIntConstFalse:
+			slot := vm.readByte(frame)
+			constant := frame.fn.Chunk.Constants[vm.readUint16(frame)]
+			offset := vm.readUint16(frame)
+			limit, ok := constant.(int64)
+			if !ok {
+				return value.NilValue(), fmt.Errorf("JUMP_IF_LOCAL_LE_INT_CONST_FALSE expects int constant")
+			}
+			current := vm.localGet(frame, slot)
+			if current.Kind != value.Number || current.Num > float64(limit) {
+				frame.ip += int(offset)
+			}
+		case bytecode.OpJumpIfLocalDivisibleByIntConstFalse:
+			slot := vm.readByte(frame)
+			constant := frame.fn.Chunk.Constants[vm.readUint16(frame)]
+			offset := vm.readUint16(frame)
+			divisor, ok := constant.(int64)
+			if !ok || divisor == 0 {
+				return value.NilValue(), fmt.Errorf("JUMP_IF_LOCAL_DIVISIBLE_INT_CONST_FALSE expects non-zero int constant")
+			}
+			current := vm.localGet(frame, slot)
+			if current.Kind != value.Number || current.Num != math.Trunc(current.Num) || int64(current.Num)%divisor != 0 {
+				frame.ip += int(offset)
+			}
 		case bytecode.OpGetCapture:
 			slot := vm.readByte(frame)
 			vm.push(frame.closure.Captures[slot].Value)
@@ -161,7 +332,11 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 		case bytecode.OpEqual:
 			right := vm.pop()
 			left := vm.pop()
-			vm.push(value.BoolValue(vm.valuesEqual(left, right)))
+			equal, err := vm.valuesEqual(left, right)
+			if err != nil {
+				return value.NilValue(), err
+			}
+			vm.push(value.BoolValue(equal))
 		case bytecode.OpMatchType:
 			typeName := frame.fn.Chunk.Constants[vm.readUint16(frame)].(string)
 			candidate := vm.pop()
@@ -180,11 +355,11 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 			vm.push(candidate)
 		case bytecode.OpGreater:
-			if err := vm.binaryCompare(func(a, b float64) bool { return a > b }, func(a, b string) bool { return a > b }); err != nil {
+			if err := vm.binaryCompare(bytecode.OpGreater, func(a, b float64) bool { return a > b }, func(a, b string) bool { return a > b }); err != nil {
 				return value.NilValue(), err
 			}
 		case bytecode.OpLess:
-			if err := vm.binaryCompare(func(a, b float64) bool { return a < b }, func(a, b string) bool { return a < b }); err != nil {
+			if err := vm.binaryCompare(bytecode.OpLess, func(a, b float64) bool { return a < b }, func(a, b string) bool { return a < b }); err != nil {
 				return value.NilValue(), err
 			}
 		case bytecode.OpAdd:
@@ -201,19 +376,29 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				continue
 			}
 			// string/char concatenation
-			if left.Kind == value.String || right.Kind == value.String || left.Kind == value.Char || right.Kind == value.Char {
-				vm.push(value.StringValue(left.String() + right.String()))
-				continue
-			}
-			// array concatenation support
-			if la, ok := left.Object.(*value.Array); ok {
-				if ra, ok2 := right.Object.(*value.Array); ok2 {
-					elems := make([]value.Value, len(la.Elements)+len(ra.Elements))
-					copy(elems, la.Elements)
-					copy(elems[len(la.Elements):], ra.Elements)
-					vm.push(value.ObjectValue(&value.Array{Elements: elems}))
+			if leftText, ok := textualOperand(left); ok {
+				if rightText, ok := textualOperand(right); ok {
+					vm.push(value.StringValue(leftText + rightText))
 					continue
 				}
+			}
+			if left.Kind == value.String || right.Kind == value.String || left.Kind == value.Char || right.Kind == value.Char {
+				leftText, err := vm.StringifyValue(left)
+				if err != nil {
+					return value.NilValue(), err
+				}
+				rightText, err := vm.StringifyValue(right)
+				if err != nil {
+					return value.NilValue(), err
+				}
+				vm.push(value.StringValue(leftText + rightText))
+				continue
+			}
+			if result, ok, err := vm.tryBinaryOperator(left, right, bytecode.OpAdd); err != nil {
+				return value.NilValue(), err
+			} else if ok {
+				vm.push(result)
+				continue
 			}
 			return value.NilValue(), fmt.Errorf("ADD expects numbers or strings")
 		case bytecode.OpSub:
@@ -224,13 +409,33 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if err := vm.binaryNumberOp(bytecode.OpMul, func(a, b float64) float64 { return a * b }); err != nil {
 				return value.NilValue(), err
 			}
+		case bytecode.OpPow:
+			if err := vm.binaryPowOp(bytecode.OpPow); err != nil {
+				return value.NilValue(), err
+			}
 		case bytecode.OpDiv:
 			if err := vm.binaryNumberOp(bytecode.OpDiv, func(a, b float64) float64 { return a / b }); err != nil {
-				return value.NilValue(), err
+				handled, raised := vm.handleRaised(baseDepth, frame, err)
+				if handled {
+					continue
+				}
+				return value.NilValue(), raised
+			}
+		case bytecode.OpModNum:
+			if err := vm.binaryNumberOp(bytecode.OpModNum, func(a, b float64) float64 { return math.Mod(a, b) }); err != nil {
+				if handled, raised := vm.handleRaised(baseDepth, frame, err); handled {
+					continue
+				} else {
+					return value.NilValue(), raised
+				}
 			}
 		case bytecode.OpMod:
 			if err := vm.binaryNumberOp(bytecode.OpMod, func(a, b float64) float64 { return math.Mod(a, b) }); err != nil {
-				return value.NilValue(), err
+				handled, raised := vm.handleRaised(baseDepth, frame, err)
+				if handled {
+					continue
+				}
+				return value.NilValue(), raised
 			}
 		case bytecode.OpNot:
 			operand := vm.pop()
@@ -243,12 +448,31 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			operand := vm.pop()
 			numericValue, ok := vm.numericOperand(operand)
 			if !ok {
+				if result, applied, err := vm.tryUnaryOperator(operand, "__neg"); err != nil {
+					return value.NilValue(), err
+				} else if applied {
+					vm.push(result)
+					continue
+				}
 				return value.NilValue(), fmt.Errorf("NEGATE expects number")
 			}
 			if operand.Kind == value.Number && operand.NumberKind == value.NumberInt {
 				vm.push(value.IntValue(-int64(numericValue)))
 			} else {
 				vm.push(value.FloatValue(-numericValue))
+			}
+		case bytecode.OpPushHandler:
+			offset := vm.readUint16(frame)
+			frame.handlers = append(frame.handlers, exceptionHandler{catchIP: frame.ip + int(offset), stackDepth: len(vm.stack)})
+		case bytecode.OpPopHandler:
+			if len(frame.handlers) > 0 {
+				frame.handlers = frame.handlers[:len(frame.handlers)-1]
+			}
+		case bytecode.OpThrow:
+			if handled, err := vm.handleRaised(baseDepth, frame, vm.explicitThrow(vm.pop())); handled {
+				continue
+			} else {
+				return value.NilValue(), err
 			}
 		case bytecode.OpCastInt:
 			operand := vm.pop()
@@ -294,16 +518,24 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if err := vm.binaryNumberOp(bytecode.OpMulNum, func(a, b float64) float64 { return a * b }); err != nil {
 				return value.NilValue(), err
 			}
-		case bytecode.OpDivNum:
-			if err := vm.binaryNumberOp(bytecode.OpDivNum, func(a, b float64) float64 { return a / b }); err != nil {
+		case bytecode.OpPowNum:
+			if err := vm.binaryPowOp(bytecode.OpPowNum); err != nil {
 				return value.NilValue(), err
 			}
+		case bytecode.OpDivNum:
+			if err := vm.binaryNumberOp(bytecode.OpDivNum, func(a, b float64) float64 { return a / b }); err != nil {
+				handled, raised := vm.handleRaised(baseDepth, frame, err)
+				if handled {
+					continue
+				}
+				return value.NilValue(), raised
+			}
 		case bytecode.OpLessNum:
-			if err := vm.binaryCompare(func(a, b float64) bool { return a < b }, func(a, b string) bool { return a < b }); err != nil {
+			if err := vm.binaryNumericCompareOp(bytecode.OpLessNum); err != nil {
 				return value.NilValue(), err
 			}
 		case bytecode.OpGreaterNum:
-			if err := vm.binaryCompare(func(a, b float64) bool { return a > b }, func(a, b string) bool { return a > b }); err != nil {
+			if err := vm.binaryNumericCompareOp(bytecode.OpGreaterNum); err != nil {
 				return value.NilValue(), err
 			}
 		case bytecode.OpAddLocalMulThisField:
@@ -323,6 +555,21 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				return value.NilValue(), fmt.Errorf("ADD_LOCAL_MUL_THIS_FIELD expects numbers")
 			}
 			vm.localSet(frame, targetSlot, value.NumberValue(target.Num+multiplier.Num*factor.Num))
+		case bytecode.OpAddLocalMulLocal:
+			targetSlot := vm.readByte(frame)
+			leftSlot := vm.readByte(frame)
+			rightSlot := vm.readByte(frame)
+			target := vm.localGet(frame, targetSlot)
+			left := vm.localGet(frame, leftSlot)
+			right := vm.localGet(frame, rightSlot)
+			if target.Kind != value.Number || left.Kind != value.Number || right.Kind != value.Number {
+				return value.NilValue(), fmt.Errorf("ADD_LOCAL_MUL_LOCAL expects numbers")
+			}
+			if target.NumberKind == value.NumberInt && left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
+				vm.localSet(frame, targetSlot, value.IntValue(int64(target.Num)+int64(left.Num)*int64(right.Num)))
+				continue
+			}
+			vm.localSet(frame, targetSlot, value.NumberValue(target.Num+left.Num*right.Num))
 		case bytecode.OpClosure:
 			idx := vm.readUint16(frame)
 			fn := frame.fn.Chunk.Constants[idx].(*bytecode.Function)
@@ -338,19 +585,101 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 		case bytecode.OpCall:
 			argc := int(vm.readByte(frame))
 			if err := vm.call(argc); err != nil {
-				return value.NilValue(), err
+				handled, raised := vm.handleRaised(baseDepth, frame, err)
+				if handled {
+					continue
+				}
+				return value.NilValue(), raised
+			}
+		case bytecode.OpCallConst:
+			callable := vm.constantToValue(frame.fn.Chunk.Constants[vm.readUint16(frame)])
+			argc := int(vm.readByte(frame))
+			if err := vm.callKnownValue(callable, argc); err != nil {
+				handled, raised := vm.handleRaised(baseDepth, frame, err)
+				if handled {
+					continue
+				}
+				return value.NilValue(), raised
+			}
+		case bytecode.OpCallConstLocalSubInt:
+			callable := vm.constantToValue(frame.fn.Chunk.Constants[vm.readUint16(frame)])
+			slot := vm.readByte(frame)
+			constant := frame.fn.Chunk.Constants[vm.readUint16(frame)]
+			subValue, ok := constant.(int64)
+			if !ok {
+				return value.NilValue(), fmt.Errorf("CALL_CONST_LOCAL_SUB_INT expects int constant")
+			}
+			current := vm.localGet(frame, slot)
+			if current.Kind != value.Number || current.Num != math.Trunc(current.Num) {
+				return value.NilValue(), fmt.Errorf("CALL_CONST_LOCAL_SUB_INT expects int local")
+			}
+			if err := vm.callKnownValueWithArgs(callable, value.IntValue(int64(current.Num)-subValue)); err != nil {
+				handled, raised := vm.handleRaised(baseDepth, frame, err)
+				if handled {
+					continue
+				}
+				return value.NilValue(), raised
+			}
+		case bytecode.OpCallSelfLocalSubInt:
+			slot := vm.readByte(frame)
+			constant := frame.fn.Chunk.Constants[vm.readUint16(frame)]
+			subValue, ok := constant.(int64)
+			if !ok {
+				return value.NilValue(), fmt.Errorf("CALL_SELF_LOCAL_SUB_INT expects int constant")
+			}
+			current := vm.localGet(frame, slot)
+			if current.Kind != value.Number || current.Num != math.Trunc(current.Num) {
+				return value.NilValue(), fmt.Errorf("CALL_SELF_LOCAL_SUB_INT expects int local")
+			}
+			if err := vm.callSelfLocalSubInt(frame, int64(current.Num)-subValue); err != nil {
+				handled, raised := vm.handleRaised(baseDepth, frame, err)
+				if handled {
+					continue
+				}
+				return value.NilValue(), raised
+			}
+		case bytecode.OpCallGlobalSlot:
+			slot := int(vm.readByte(frame))
+			argc := int(vm.readByte(frame))
+			if !vm.globalDefined[slot] {
+				return value.NilValue(), fmt.Errorf("undefined global slot %d", slot)
+			}
+			if err := vm.callGlobalSlot(slot, argc); err != nil {
+				handled, raised := vm.handleRaised(baseDepth, frame, err)
+				if handled {
+					continue
+				}
+				return value.NilValue(), raised
 			}
 		case bytecode.OpInvoke:
 			name := frame.fn.Chunk.Constants[vm.readUint16(frame)].(string)
 			argc := int(vm.readByte(frame))
 			if err := vm.invoke(name, argc); err != nil {
-				return value.NilValue(), err
+				handled, raised := vm.handleRaised(baseDepth, frame, err)
+				if handled {
+					continue
+				}
+				return value.NilValue(), raised
 			}
 		case bytecode.OpInvokeMethod:
 			slot := int(vm.readByte(frame))
 			argc := int(vm.readByte(frame))
 			if err := vm.invokeMethodSlot(slot, argc); err != nil {
-				return value.NilValue(), err
+				handled, raised := vm.handleRaised(baseDepth, frame, err)
+				if handled {
+					continue
+				}
+				return value.NilValue(), raised
+			}
+		case bytecode.OpInvokeSuper:
+			name := frame.fn.Chunk.Constants[vm.readUint16(frame)].(string)
+			argc := int(vm.readByte(frame))
+			if err := vm.invokeSuper(name, argc); err != nil {
+				handled, raised := vm.handleRaised(baseDepth, frame, err)
+				if handled {
+					continue
+				}
+				return value.NilValue(), raised
 			}
 		case bytecode.OpRange:
 			argc := int(vm.readByte(frame))
@@ -387,15 +716,17 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			mode := vm.readByte(frame)
 			iterable := vm.pop()
 			if instance, ok := iterable.AsInstance(); ok {
-				if instance.Class.IterableLength != nil && instance.Class.IterableGet != nil {
-					lengthValue, err := vm.invokeInstanceMethod(instance, instance.Class.IterableLength)
+				lengthMethod := instance.Class.SpecialMethod(value.SpecialMethodIterableLength)
+				getMethod := instance.Class.SpecialMethod(value.SpecialMethodIterableGet)
+				if lengthMethod != nil && getMethod != nil {
+					lengthValue, err := vm.invokeInstanceMethod(instance, lengthMethod)
 					if err != nil {
 						return value.NilValue(), err
 					}
 					if lengthValue.Kind != value.Number {
 						return value.NilValue(), fmt.Errorf("%s.__length() must return Number", instance.Class.Name)
 					}
-					vm.localSet(frame, slot, value.ObjectValue(&value.Iterator{Receiver: instance, Index: 0, Length: int(lengthValue.Num), GetFn: instance.Class.IterableGet}))
+					vm.localSet(frame, slot, value.ObjectValue(&value.Iterator{Receiver: instance, Index: 0, Length: int(lengthValue.Num), GetFn: getMethod}))
 					continue
 				}
 			}
@@ -451,7 +782,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 					frame.ip += int(offset)
 					continue
 				}
-				item, err := vm.invokeInstanceMethod(iterator.Receiver, iterator.GetFn, value.NumberValue(float64(iterator.Index)))
+				item, err := vm.invokeInstanceMethod(iterator.Receiver, iterator.GetFn, value.IntValue(int64(iterator.Index)))
 				if err != nil {
 					return value.NilValue(), err
 				}
@@ -507,6 +838,30 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if slot < 0 || slot >= len(instance.Fields) {
 				return value.NilValue(), fmt.Errorf("invalid field slot %d for %s", slot, instance.Class.Name)
 			}
+			// Enforce const/final field immutability
+			if slot < len(instance.Class.FieldOrder) {
+				fieldName := instance.Class.FieldOrder[slot]
+				if fieldDef, ok := instance.Class.Fields[fieldName]; ok && !fieldDef.Mutable {
+					owner, _, _, _ := instance.Class.LookupFieldOwner(fieldName)
+					if owner == nil {
+						owner = instance.Class
+					}
+					if fieldDef.IsFinal {
+						// final fields cannot be set from outside a constructor (they won't appear in external OpSetField)
+						if !vm.isInsideClassConstructor(owner) {
+							return value.NilValue(), fmt.Errorf("TypeError: cannot assign to final field %s.%s", instance.Class.Name, fieldName)
+						}
+						if inner, ok := assigned.AsInstance(); ok {
+							inner.Frozen = true
+						}
+					} else {
+						// const: only writable from inside the class
+						if !vm.isInsideClassMethod(owner) {
+							return value.NilValue(), fmt.Errorf("TypeError: cannot assign to const field %s.%s from outside the class", instance.Class.Name, fieldName)
+						}
+					}
+				}
+			}
 			instance.Fields[slot] = assigned
 		case bytecode.OpSetThisField:
 			slot := int(vm.readByte(frame))
@@ -519,6 +874,26 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 			if slot < 0 || slot >= len(frame.receiver.Fields) {
 				return value.NilValue(), fmt.Errorf("invalid field slot %d for %s", slot, frame.receiver.Class.Name)
+			}
+			// Enforce const/final field immutability for this.field = val
+			if slot < len(frame.receiver.Class.FieldOrder) {
+				fieldName := frame.receiver.Class.FieldOrder[slot]
+				if fieldDef, ok := frame.receiver.Class.Fields[fieldName]; ok && !fieldDef.Mutable {
+					owner, _, _, _ := frame.receiver.Class.LookupFieldOwner(fieldName)
+					if owner == nil {
+						owner = frame.receiver.Class
+					}
+					if fieldDef.IsFinal {
+						// final: only writable from a constructor
+						if !vm.isInsideClassConstructor(owner) {
+							return value.NilValue(), fmt.Errorf("TypeError: cannot assign to final field %s.%s (not in constructor)", frame.receiver.Class.Name, fieldName)
+						}
+						if inner, ok := assigned.AsInstance(); ok {
+							inner.Frozen = true
+						}
+					}
+					// const: always allowed from inside the class (no isInit check needed)
+				}
 			}
 			frame.receiver.Fields[slot] = assigned
 		case bytecode.OpGetProperty:
@@ -544,8 +919,12 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				if !exists {
 					return value.NilValue(), fmt.Errorf("class %s has no static member %s", class.Name, name)
 				}
-				if err := vm.ensureAccess(owner, class.StaticVisibility[name]); err != nil {
+				if err := vm.ensureAccess(owner, owner.StaticVisibility[name]); err != nil {
 					return value.NilValue(), err
+				}
+				if _, ok := member.AsFunction(); ok {
+					vm.push(value.ObjectValue(&value.BoundStaticMethod{Class: class, Name: name, Owner: owner}))
+					continue
 				}
 				vm.push(member)
 				continue
@@ -563,7 +942,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 					if err := vm.ensureAccess(owner, owner.MethodVisibility[name]); err != nil {
 						return value.NilValue(), err
 					}
-					vm.push(value.ObjectValue(&value.BoundMethod{Receiver: instance, Method: method, Owner: owner}))
+					vm.push(value.ObjectValue(&value.BoundMethod{Receiver: instance, Name: name, Method: method, Owner: owner}))
 					continue
 				}
 				return value.NilValue(), fmt.Errorf("instance %s has no member %s", instance.Class.Name, name)
@@ -589,12 +968,39 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				}
 				return value.NilValue(), fmt.Errorf("cannot assign property %s on %s", name, object.String())
 			}
-			if owner, _, fieldDef, exists := instance.Class.LookupFieldOwner(name); exists {
+			if owner, slot, fieldDef, exists := instance.Class.LookupFieldOwner(name); exists {
+				// Visibility check
 				if err := vm.ensureAccess(owner, fieldDef.Visibility); err != nil {
 					return value.NilValue(), err
 				}
-			}
-			if !instance.SetField(name, assigned) {
+				if instance.Frozen {
+					return value.NilValue(), fmt.Errorf("TypeError: cannot assign to field %s.%s — instance is frozen", instance.Class.Name, name)
+				}
+				if !fieldDef.Mutable {
+					if fieldDef.IsFinal {
+						// final: only writable inside the owner's constructor
+						if !vm.isInsideClassConstructor(owner) {
+							return value.NilValue(), fmt.Errorf("TypeError: cannot assign to final field %s.%s", instance.Class.Name, name)
+						}
+					} else {
+						// const: writable from any method of the owner class
+						if !vm.isInsideClassMethod(owner) {
+							return value.NilValue(), fmt.Errorf("TypeError: cannot assign to const field %s.%s from outside the class", instance.Class.Name, name)
+						}
+					}
+					// Authorized — write directly to the slot, bypassing SetField's Mutable guard
+					instance.Fields[slot] = assigned
+					// For final fields holding an object, freeze it for deep immutability
+					if fieldDef.IsFinal {
+						if inner, ok := assigned.AsInstance(); ok {
+							inner.Frozen = true
+						}
+					}
+				} else {
+					// Mutable field — normal path
+					instance.Fields[slot] = assigned
+				}
+			} else {
 				return value.NilValue(), fmt.Errorf("instance %s has no field %s", instance.Class.Name, name)
 			}
 		case bytecode.OpWrapInterface:
@@ -632,8 +1038,10 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			count := int(vm.readByte(frame))
 			source := vm.pop()
 			if instance, ok := source.AsInstance(); ok {
-				if instance.Class.PiecesMethod != nil && instance.Class.GetPieceMethod != nil {
-					pieces, err := vm.invokeInstanceMethod(instance, instance.Class.PiecesMethod)
+				piecesMethod := instance.Class.SpecialMethod(value.SpecialMethodPieces)
+				getPieceMethod := instance.Class.SpecialMethod(value.SpecialMethodGetPiece)
+				if piecesMethod != nil && getPieceMethod != nil {
+					pieces, err := vm.invokeInstanceMethod(instance, piecesMethod)
 					if err != nil {
 						return value.NilValue(), err
 					}
@@ -644,7 +1052,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 						return value.NilValue(), fmt.Errorf("cannot unpack %d values from %s", count, instance.Class.Name)
 					}
 					for i := 0; i < count; i++ {
-						piece, err := vm.invokeInstanceMethod(instance, instance.Class.GetPieceMethod, value.NumberValue(float64(i)))
+						piece, err := vm.invokeInstanceMethod(instance, getPieceMethod, value.NumberValue(float64(i)))
 						if err != nil {
 							return value.NilValue(), err
 						}
@@ -722,8 +1130,8 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				continue
 			}
 			if instance, ok := object.AsInstance(); ok {
-				if instance.Class.IndexGetMethod != nil {
-					result, err := vm.invokeInstanceMethod(instance, instance.Class.IndexGetMethod, index)
+				if indexGetMethod := instance.Class.SpecialMethod(value.SpecialMethodIndexGet); indexGetMethod != nil {
+					result, err := vm.invokeInstanceMethod(instance, indexGetMethod, index)
 					if err != nil {
 						return value.NilValue(), err
 					}
@@ -774,7 +1182,11 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				continue
 			}
 			if array, ok := container.AsArray(); ok {
-				vm.push(value.BoolValue(containsValue(array.Elements, needle, vm.valuesEqual)))
+				contains, err := containsValue(array.Elements, needle, vm.valuesEqual)
+				if err != nil {
+					return value.NilValue(), err
+				}
+				vm.push(value.BoolValue(contains))
 				continue
 			}
 			if m, ok := container.AsMap(); ok {
@@ -785,13 +1197,15 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				vm.push(value.BoolValue(exists))
 				continue
 			}
-			if instance, ok := container.AsInstance(); ok && instance.Class.ContainsMethod != nil {
-				result, err := vm.invokeInstanceMethod(instance, instance.Class.ContainsMethod, needle)
-				if err != nil {
-					return value.NilValue(), err
+			if instance, ok := container.AsInstance(); ok {
+				if containsMethod := instance.Class.SpecialMethod(value.SpecialMethodContains); containsMethod != nil {
+					result, err := vm.invokeInstanceMethod(instance, containsMethod, needle)
+					if err != nil {
+						return value.NilValue(), err
+					}
+					vm.push(result)
+					continue
 				}
-				vm.push(result)
-				continue
 			}
 			return value.NilValue(), fmt.Errorf("value does not support contains")
 		case bytecode.OpContainsArray:
@@ -801,7 +1215,11 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if !ok {
 				return value.NilValue(), fmt.Errorf("CONTAINS_ARRAY expects array")
 			}
-			vm.push(value.BoolValue(containsValue(array.Elements, needle, vm.valuesEqual)))
+			contains, err := containsValue(array.Elements, needle, vm.valuesEqual)
+			if err != nil {
+				return value.NilValue(), err
+			}
+			vm.push(value.BoolValue(contains))
 		case bytecode.OpContainsMap:
 			container := vm.pop()
 			needle := vm.pop()
@@ -862,8 +1280,8 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				continue
 			}
 			if instance, ok := object.AsInstance(); ok {
-				if instance.Class.SliceMethod != nil {
-					result, err := vm.invokeInstanceMethod(instance, instance.Class.SliceMethod, start, end)
+				if sliceMethod := instance.Class.SpecialMethod(value.SpecialMethodSlice); sliceMethod != nil {
+					result, err := vm.invokeInstanceMethod(instance, sliceMethod, start, end)
 					if err != nil {
 						return value.NilValue(), err
 					}
@@ -895,8 +1313,8 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				continue
 			}
 			if instance, ok := object.AsInstance(); ok {
-				if instance.Class.IndexSetMethod != nil {
-					if _, err := vm.invokeInstanceMethod(instance, instance.Class.IndexSetMethod, index, assigned); err != nil {
+				if indexSetMethod := instance.Class.SpecialMethod(value.SpecialMethodIndexSet); indexSetMethod != nil {
+					if _, err := vm.invokeInstanceMethod(instance, indexSetMethod, index, assigned); err != nil {
 						return value.NilValue(), err
 					}
 					continue
@@ -909,6 +1327,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			object := vm.pop()
 			array, ok := object.AsArray()
 			if !ok {
+				fmt.Printf("VM SET_INDEX_ARRAY: obj is %v (type %T), kind is %d\n", object, object, object.Kind)
 				return value.NilValue(), fmt.Errorf("SET_INDEX_ARRAY expects array")
 			}
 			if index.Kind != value.Number {
@@ -925,6 +1344,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			object := vm.pop()
 			m, ok := object.AsMap()
 			if !ok {
+				fmt.Printf("VM SET_INDEX_MAP: obj is %v (type %T), kind is %d\n", object, object, object.Kind)
 				return value.NilValue(), fmt.Errorf("SET_INDEX_MAP expects map")
 			}
 			if index.Kind != value.String {
@@ -937,15 +1357,38 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				instance.Frozen = true
 			}
 			vm.push(frozen)
+		case bytecode.OpSwap:
+			b := vm.pop()
+			a := vm.pop()
+			vm.push(b)
+			vm.push(a)
+		case bytecode.OpSwapTwo:
+			// Swaps top two values with the two values below them
+			// [A, B, C, D] -> [C, D, A, B]
+			d := vm.pop()
+			c := vm.pop()
+			b := vm.pop()
+			a := vm.pop()
+			vm.push(c)
+			vm.push(d)
+			vm.push(a)
+			vm.push(b)
 		case bytecode.OpCallSuper:
 			argc := int(vm.readByte(frame))
 			if err := vm.callSuper(argc); err != nil {
-				return value.NilValue(), err
+				handled, raised := vm.handleRaised(baseDepth, frame, err)
+				if handled {
+					continue
+				}
+				return value.NilValue(), raised
 			}
 		case bytecode.OpReturn:
 			result := vm.pop()
 			if frame.init && frame.receiver != nil {
 				result = value.ObjectValue(frame.receiver)
+			}
+			if len(vm.stack) > frame.stackBase {
+				vm.stack = vm.stack[:frame.stackBase]
 			}
 			vm.frames = vm.frames[:len(vm.frames)-1]
 			vm.releaseFrame(frame)
@@ -968,6 +1411,11 @@ func (vm *VM) invokeInstanceMethod(receiver *value.Instance, fn *bytecode.Functi
 	if fn.Arity != len(args) {
 		return value.NilValue(), fmt.Errorf("%s expects %d args, got %d", fn.Name, fn.Arity, len(args))
 	}
+	if result, ok, err := vm.tryJITCall(fn, receiver, args); err != nil {
+		return value.NilValue(), err
+	} else if ok {
+		return result, nil
+	}
 	baseDepth := len(vm.frames)
 	child := vm.acquireFrame(fn, nil, receiver, false)
 	vm.localSet(child, 0, value.ObjectValue(receiver))
@@ -978,16 +1426,45 @@ func (vm *VM) invokeInstanceMethod(receiver *value.Instance, fn *bytecode.Functi
 	return vm.executeUntilDepth(baseDepth)
 }
 
+// pickOverload selects the function overload that exactly matches argc.
+// Returns nil if no matching overload is found.
+func pickOverload(overloads []*bytecode.Function, argc int) *bytecode.Function {
+	for _, fn := range overloads {
+		if fn != nil && fn.Arity == argc {
+			return fn
+		}
+	}
+	return nil
+}
+
 func (vm *VM) call(argc int) error {
 	callee := vm.peek(argc)
+	if wrapper, ok := callee.AsSAMWrapper(); ok {
+		vm.stack[len(vm.stack)-1-argc] = wrapper.Callable
+		return vm.call(argc)
+	}
 	if bound, ok := callee.AsSAMBoundMethod(); ok {
 		vm.stack[len(vm.stack)-1-argc] = bound.Wrapper.Callable
 		return vm.call(argc)
 	}
 	if bound, ok := callee.AsBoundMethod(); ok {
+		args := vm.peekArgs(argc)
 		fn := bound.Method
+		if bound.Name != "" {
+			if resolved, owner, ok := vm.resolveMethodOverload(bound.Receiver.Class, bound.Name, args); ok {
+				fn = resolved
+				bound.Owner = owner
+			}
+		}
 		if fn.Arity != argc {
 			return fmt.Errorf("%s expects %d args, got %d", fn.Name, fn.Arity, argc)
+		}
+		if result, ok, err := vm.tryJITCall(fn, bound.Receiver, args); err != nil {
+			return err
+		} else if ok {
+			vm.discardCallFromStack(argc)
+			vm.push(result)
+			return nil
 		}
 		child := vm.acquireFrame(fn, nil, bound.Receiver, false)
 		vm.localSet(child, 0, value.ObjectValue(bound.Receiver))
@@ -995,8 +1472,18 @@ func (vm *VM) call(argc int) error {
 			vm.localSet(child, byte(i+1), vm.pop())
 		}
 		vm.pop()
+		child.stackBase = len(vm.stack)
 		vm.frames = append(vm.frames, child)
 		return nil
+	}
+	if bound, ok := callee.AsBoundStaticMethod(); ok {
+		args := vm.peekArgs(argc)
+		fn, _, ok := vm.resolveStaticOverload(bound.Class, bound.Name, args)
+		if !ok || fn == nil {
+			return fmt.Errorf("class %s has no static overload %s/%d", bound.Class.Name, bound.Name, argc)
+		}
+		vm.stack[len(vm.stack)-1-argc] = value.ObjectValue(fn)
+		return vm.call(argc)
 	}
 	if class, ok := callee.AsClass(); ok {
 		if class.IsAbstract {
@@ -1005,7 +1492,11 @@ func (vm *VM) call(argc int) error {
 		if err := vm.ensureAccess(class, class.ConstructorVisibility); err != nil {
 			return err
 		}
-		ctor := class.Constructor
+		args := vm.peekArgs(argc)
+		ctor := vm.selectBestOverload(class.ConstructorOverloads, args)
+		if ctor == nil && class.Constructor != nil && vm.overloadMatches(class.Constructor, args) {
+			ctor = class.Constructor
+		}
 		fastCtor := class.FastConstructor
 		if ctor == nil && argc != 0 {
 			return fmt.Errorf("%s expects 0 args, got %d", class.Name, argc)
@@ -1013,7 +1504,7 @@ func (vm *VM) call(argc int) error {
 		if ctor != nil && ctor.Arity != argc {
 			return fmt.Errorf("%s expects %d args, got %d", class.Name, ctor.Arity, argc)
 		}
-		if fastCtor != nil {
+		if fastCtor != nil && ctor == class.Constructor {
 			if fastCtor.Arity != argc {
 				return fmt.Errorf("%s expects %d args, got %d", class.Name, fastCtor.Arity, argc)
 			}
@@ -1044,6 +1535,7 @@ func (vm *VM) call(argc int) error {
 			vm.localSet(child, byte(i+1), vm.pop())
 		}
 		vm.pop()
+		child.stackBase = len(vm.stack)
 		vm.frames = append(vm.frames, child)
 		return nil
 	}
@@ -1077,11 +1569,20 @@ func (vm *VM) call(argc int) error {
 		if fn.Arity != argc {
 			return fmt.Errorf("%s expects %d args, got %d", fn.Name, fn.Arity, argc)
 		}
+		args := vm.peekArgs(argc)
+		if result, ok, err := vm.tryJITCall(fn, nil, args); err != nil {
+			return err
+		} else if ok {
+			vm.discardCallFromStack(argc)
+			vm.push(result)
+			return nil
+		}
 		child := vm.acquireFrame(fn, closure, nil, false)
 		for i := argc - 1; i >= 0; i-- {
 			vm.localSet(child, byte(i), vm.pop())
 		}
 		vm.pop()
+		child.stackBase = len(vm.stack)
 		vm.frames = append(vm.frames, child)
 		return nil
 	}
@@ -1093,12 +1594,164 @@ func (vm *VM) call(argc int) error {
 	if fn.Arity != argc {
 		return fmt.Errorf("%s expects %d args, got %d", fn.Name, fn.Arity, argc)
 	}
+	args := vm.peekArgs(argc)
+	if result, ok, err := vm.tryJITCall(fn, nil, args); err != nil {
+		return err
+	} else if ok {
+		vm.discardCallFromStack(argc)
+		vm.push(result)
+		return nil
+	}
 
 	child := vm.acquireFrame(fn, nil, nil, false)
 	for i := argc - 1; i >= 0; i-- {
 		vm.localSet(child, byte(i), vm.pop())
 	}
 	vm.pop()
+	child.stackBase = len(vm.stack)
+	vm.frames = append(vm.frames, child)
+	return nil
+}
+
+func (vm *VM) callGlobalSlot(slot int, argc int) error {
+	return vm.callKnownValue(vm.globalSlots[slot], argc)
+}
+
+func (vm *VM) callKnownValueWithArgs(callee value.Value, args ...value.Value) error {
+	for _, arg := range args {
+		vm.push(arg)
+	}
+	return vm.callKnownValue(callee, len(args))
+}
+
+func (vm *VM) callKnownValue(callee value.Value, argc int) error {
+	if wrapper, ok := callee.AsSAMWrapper(); ok {
+		return vm.callKnownValue(wrapper.Callable, argc)
+	}
+	if builtin, ok := callee.AsBuiltin(); ok {
+		if builtin.Arity >= 0 && builtin.Arity != argc {
+			return fmt.Errorf("%s expects %d args, got %d", builtin.Name, builtin.Arity, argc)
+		}
+		args := vm.borrowBuiltinArgs(argc)
+		for i := argc - 1; i >= 0; i-- {
+			args[i] = vm.pop()
+		}
+		var (
+			result value.Value
+			err    error
+		)
+		if builtin.Name == "hash" {
+			result, err = vm.hashValue(args[0])
+		} else {
+			result, err = builtin.Fn(args)
+		}
+		if err != nil {
+			return err
+		}
+		clear(args)
+		vm.push(result)
+		return nil
+	}
+	if closure, ok := callee.AsClosure(); ok {
+		fn := closure.Function
+		if fn.Arity != argc {
+			return fmt.Errorf("%s expects %d args, got %d", fn.Name, fn.Arity, argc)
+		}
+		args := vm.peekArgs(argc)
+		if result, ok, err := vm.tryJITCall(fn, nil, args); err != nil {
+			return err
+		} else if ok {
+			vm.push(result)
+			return nil
+		}
+		child := vm.acquireFrame(fn, closure, nil, false)
+		for i := argc - 1; i >= 0; i-- {
+			vm.localSet(child, byte(i), vm.pop())
+		}
+		child.stackBase = len(vm.stack)
+		vm.frames = append(vm.frames, child)
+		return nil
+	}
+	if fn, ok := callee.AsFunction(); ok {
+		if fn.Arity != argc {
+			return fmt.Errorf("%s expects %d args, got %d", fn.Name, fn.Arity, argc)
+		}
+		args := vm.peekArgs(argc)
+		if result, ok, err := vm.tryJITCall(fn, nil, args); err != nil {
+			return err
+		} else if ok {
+			vm.push(result)
+			return nil
+		}
+		child := vm.acquireFrame(fn, nil, nil, false)
+		for i := argc - 1; i >= 0; i-- {
+			vm.localSet(child, byte(i), vm.pop())
+		}
+		child.stackBase = len(vm.stack)
+		vm.frames = append(vm.frames, child)
+		return nil
+	}
+	if class, ok := callee.AsClass(); ok {
+		if class.IsAbstract {
+			return fmt.Errorf("cannot instantiate abstract class %s", class.Name)
+		}
+		if err := vm.ensureAccess(class, class.ConstructorVisibility); err != nil {
+			return err
+		}
+		args := vm.peekArgs(argc)
+		ctor := vm.selectBestOverload(class.ConstructorOverloads, args)
+		if ctor == nil && class.Constructor != nil && vm.overloadMatches(class.Constructor, args) {
+			ctor = class.Constructor
+		}
+		fastCtor := class.FastConstructor
+		if ctor == nil && argc != 0 {
+			return fmt.Errorf("%s expects 0 args, got %d", class.Name, argc)
+		}
+		if ctor != nil && ctor.Arity != argc {
+			return fmt.Errorf("%s expects %d args, got %d", class.Name, ctor.Arity, argc)
+		}
+		if fastCtor != nil && ctor == class.Constructor {
+			if fastCtor.Arity != argc {
+				return fmt.Errorf("%s expects %d args, got %d", class.Name, fastCtor.Arity, argc)
+			}
+			args := make([]value.Value, argc)
+			for i := argc - 1; i >= 0; i-- {
+				args[i] = vm.pop()
+			}
+			instance := class.NewInstance()
+			for i, slot := range fastCtor.FieldSlots {
+				instance.Fields[slot] = args[fastCtor.ArgIndexes[i]]
+			}
+			vm.push(value.ObjectValue(instance))
+			return nil
+		}
+		instance := class.NewInstance()
+		if ctor == nil {
+			for i := 0; i < argc; i++ {
+				vm.pop()
+			}
+			vm.push(value.ObjectValue(instance))
+			return nil
+		}
+		child := vm.acquireFrame(ctor, nil, instance, true)
+		vm.localSet(child, 0, value.ObjectValue(instance))
+		for i := argc - 1; i >= 0; i-- {
+			vm.localSet(child, byte(i+1), vm.pop())
+		}
+		child.stackBase = len(vm.stack)
+		vm.frames = append(vm.frames, child)
+		return nil
+	}
+	return fmt.Errorf("attempted to call non-callable %s", callee.String())
+}
+
+func (vm *VM) callSelfLocalSubInt(current *frame, arg int64) error {
+	fn := current.fn
+	if fn.Arity != 1 {
+		return fmt.Errorf("%s expects %d args, got %d", fn.Name, fn.Arity, 1)
+	}
+	child := vm.acquireFrame(fn, current.closure, current.receiver, false)
+	vm.localSet(child, 0, value.IntValue(arg))
 	vm.frames = append(vm.frames, child)
 	return nil
 }
@@ -1198,6 +1851,11 @@ func (vm *VM) writeHashValue(hasher io.Writer, v value.Value, seen map[string]bo
 		}
 		seen[key] = true
 		defer delete(seen, key)
+		if result, applied, err := vm.tryHashMethod(obj); err != nil {
+			return err
+		} else if applied {
+			return vm.writeHashValue(hasher, result, seen)
+		}
 		_, _ = io.WriteString(hasher, "instance:")
 		_, _ = io.WriteString(hasher, obj.Class.Name)
 		_, _ = io.WriteString(hasher, "{")
@@ -1255,6 +1913,8 @@ func (vm *VM) matchesType(candidate value.Value, typeName string) bool {
 		}
 	}
 	base, args := parseGenericType(typeName)
+	base = normalizeRuntimeTypeAlias(base)
+	typeName = normalizeRuntimeTypeAlias(typeName)
 	if base != typeName {
 		switch base {
 		case bvmruntime.TypeArray:
@@ -1312,17 +1972,53 @@ func (vm *VM) matchesType(candidate value.Value, typeName string) bool {
 	case bvmruntime.TypeAny:
 		return true
 	case bvmruntime.TypeInt:
-		return candidate.Kind == value.Number && candidate.NumberKind == value.NumberInt
+		if candidate.Kind == value.Number && candidate.NumberKind == value.NumberInt {
+			return true
+		}
+		if instance, ok := candidate.AsInstance(); ok {
+			return instance.Class != nil && rootRuntimeTypeName(instance.Class.Name) == "Integer"
+		}
+		return false
 	case bvmruntime.TypeFloat:
-		return candidate.Kind == value.Number && candidate.NumberKind == value.NumberFloat
+		if candidate.Kind == value.Number && candidate.NumberKind == value.NumberFloat {
+			return true
+		}
+		if instance, ok := candidate.AsInstance(); ok {
+			return instance.Class != nil && (rootRuntimeTypeName(instance.Class.Name) == "Integer" || rootRuntimeTypeName(instance.Class.Name) == "Float" || rootRuntimeTypeName(instance.Class.Name) == "Double")
+		}
+		return false
 	case bvmruntime.TypeNumber:
-		return candidate.Kind == value.Number
+		if candidate.Kind == value.Number {
+			return true
+		}
+		if instance, ok := candidate.AsInstance(); ok {
+			return instance.Class != nil && (rootRuntimeTypeName(instance.Class.Name) == "Integer" || rootRuntimeTypeName(instance.Class.Name) == "Float" || rootRuntimeTypeName(instance.Class.Name) == "Double")
+		}
+		return false
 	case bvmruntime.TypeChar:
-		return candidate.Kind == value.Char
+		if candidate.Kind == value.Char {
+			return true
+		}
+		if instance, ok := candidate.AsInstance(); ok {
+			return instance.Class != nil && rootRuntimeTypeName(instance.Class.Name) == "Char"
+		}
+		return false
 	case bvmruntime.TypeString:
-		return candidate.Kind == value.String
+		if candidate.Kind == value.String || candidate.Kind == value.Char {
+			return true
+		}
+		if instance, ok := candidate.AsInstance(); ok {
+			return instance.Class != nil && rootRuntimeTypeName(instance.Class.Name) == "String"
+		}
+		return false
 	case bvmruntime.TypeBool:
-		return candidate.Kind == value.Bool
+		if candidate.Kind == value.Bool {
+			return true
+		}
+		if instance, ok := candidate.AsInstance(); ok {
+			return instance.Class != nil && rootRuntimeTypeName(instance.Class.Name) == "Boolean"
+		}
+		return false
 	case bvmruntime.TypeNil, bvmruntime.TypeVoid:
 		return candidate.Kind == value.Nil
 	case bvmruntime.TypeArray:
@@ -1344,8 +2040,50 @@ func (vm *VM) matchesType(candidate value.Value, typeName string) bool {
 		if _, ok := candidate.AsClosure(); ok {
 			return true
 		}
-		_, ok := candidate.AsBuiltin()
-		return ok
+		if _, ok := candidate.AsBuiltin(); ok {
+			return true
+		}
+		if wrapper, ok := candidate.AsSAMWrapper(); ok {
+			return wrapper.InterfaceName == bvmruntime.TypeFunction
+		}
+		return false
+	}
+	switch rootRuntimeTypeName(typeName) {
+	case "Integer":
+		if candidate.Kind == value.Number && candidate.NumberKind == value.NumberInt {
+			return true
+		}
+		if instance, ok := candidate.AsInstance(); ok {
+			return instance.Class != nil && rootRuntimeTypeName(instance.Class.Name) == "Integer"
+		}
+		return false
+	case "Float", "Double":
+		if candidate.Kind == value.Number && candidate.NumberKind == value.NumberFloat {
+			return true
+		}
+		if instance, ok := candidate.AsInstance(); ok {
+			return instance.Class != nil && (rootRuntimeTypeName(instance.Class.Name) == "Float" || rootRuntimeTypeName(instance.Class.Name) == "Double")
+		}
+		return false
+	case "Boolean":
+		if candidate.Kind == value.Bool {
+			return true
+		}
+		if instance, ok := candidate.AsInstance(); ok {
+			return instance.Class != nil && rootRuntimeTypeName(instance.Class.Name) == "Boolean"
+		}
+		return false
+	case "Char":
+		if candidate.Kind == value.Char {
+			return true
+		}
+		if instance, ok := candidate.AsInstance(); ok {
+			return instance.Class != nil && rootRuntimeTypeName(instance.Class.Name) == "Char"
+		}
+		return false
+	}
+	if vm.matchesStructuralInterface(candidate, typeName) {
+		return true
 	}
 	if wrapper, ok := candidate.AsSAMWrapper(); ok {
 		return wrapper.InterfaceName == rootRuntimeTypeName(typeName)
@@ -1355,7 +2093,7 @@ func (vm *VM) matchesType(candidate value.Value, typeName string) bool {
 			return true
 		}
 		for current := instance.Class; current != nil; current = current.Superclass {
-			if current.Name == typeName {
+			if current.Name == typeName || rootRuntimeTypeName(current.Name) == rootRuntimeTypeName(typeName) {
 				return true
 			}
 		}
@@ -1470,7 +2208,42 @@ func parseGenericType(typeName string) (string, []string) {
 
 func rootRuntimeTypeName(typeName string) string {
 	base, _ := parseGenericType(typeName)
-	return trimTypeSpace(base)
+	base = trimTypeSpace(base)
+	if dot := strings.LastIndex(base, "."); dot >= 0 && dot+1 < len(base) {
+		base = base[dot+1:]
+	}
+	return normalizeRuntimeTypeAlias(base)
+}
+
+func normalizeRuntimeTypeAlias(typeName string) string {
+	switch trimTypeSpace(typeName) {
+	case "Int":
+		return bvmruntime.TypeInt
+	case "Float":
+		return bvmruntime.TypeFloat
+	case "Number":
+		return bvmruntime.TypeNumber
+	case "Bool":
+		return bvmruntime.TypeBool
+	case "Char":
+		return bvmruntime.TypeChar
+	case "String", "string":
+		return bvmruntime.TypeString
+	case "Array", "array":
+		return bvmruntime.TypeArray
+	case "Map", "map":
+		return bvmruntime.TypeMap
+	case "Tuple", "tuple":
+		return bvmruntime.TypeTuple
+	case "Range", "range":
+		return bvmruntime.TypeRange
+	case "Function":
+		return bvmruntime.TypeFunction
+	case "Any", "any", "":
+		return bvmruntime.TypeAny
+	default:
+		return trimTypeSpace(typeName)
+	}
 }
 
 func valueAsText(candidate value.Value) (string, bool) {
@@ -1478,6 +2251,23 @@ func valueAsText(candidate value.Value) (string, bool) {
 	case value.Char, value.String:
 		return candidate.Str, true
 	default:
+		if instance, ok := candidate.AsInstance(); ok && instance.Class != nil {
+			switch rootRuntimeTypeName(instance.Class.Name) {
+			case "String", "Char":
+				if slot, _, ok := instance.Class.LookupFieldSlot("value"); ok && slot >= 0 && slot < len(instance.Fields) {
+					inner := instance.Fields[slot]
+					if inner.Kind == value.String || inner.Kind == value.Char {
+						return inner.Str, true
+					}
+				}
+				if len(instance.Fields) > 0 {
+					inner := instance.Fields[0]
+					if inner.Kind == value.String || inner.Kind == value.Char {
+						return inner.Str, true
+					}
+				}
+			}
+		}
 		return "", false
 	}
 }
@@ -1519,13 +2309,17 @@ func indexString(haystack string, needle string) int {
 	return -1
 }
 
-func containsValue(items []value.Value, needle value.Value, equals func(value.Value, value.Value) bool) bool {
+func containsValue(items []value.Value, needle value.Value, equals func(value.Value, value.Value) (bool, error)) (bool, error) {
 	for _, item := range items {
-		if equals(item, needle) {
-			return true
+		matched, err := equals(item, needle)
+		if err != nil {
+			return false, err
+		}
+		if matched {
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 func (vm *VM) invoke(name string, argc int) error {
@@ -1539,7 +2333,8 @@ func (vm *VM) invoke(name string, argc int) error {
 		return vm.call(argc)
 	}
 	if instance, ok := receiver.AsInstance(); ok {
-		method, owner, exists := instance.Class.LookupMethod(name)
+		args := vm.peekArgs(argc)
+		method, owner, exists := vm.resolveMethodOverload(instance.Class, name, args)
 		if !exists {
 			return fmt.Errorf("instance %s has no method %s", instance.Class.Name, name)
 		}
@@ -1566,6 +2361,15 @@ func (vm *VM) invoke(name string, argc int) error {
 		return vm.call(argc)
 	}
 	if class, ok := receiver.AsClass(); ok {
+		args := vm.peekArgs(argc)
+		fn, owner, exists := vm.resolveStaticOverload(class, name, args)
+		if exists {
+			if err := vm.ensureAccess(owner, owner.StaticVisibility[name]); err != nil {
+				return err
+			}
+			vm.stack[len(vm.stack)-1-argc] = value.ObjectValue(fn)
+			return vm.call(argc)
+		}
 		owner, member, exists := class.LookupStaticOwner(name)
 		if !exists {
 			return fmt.Errorf("class %s has no static member %s", class.Name, name)
@@ -1664,15 +2468,64 @@ func (vm *VM) callMethod(receiver *value.Instance, fn *bytecode.Function, owner 
 	if fn.Arity != argc {
 		return fmt.Errorf("%s expects %d args, got %d", fn.Name, fn.Arity, argc)
 	}
+	args := vm.peekArgs(argc)
+	if result, ok, err := vm.tryJITCall(fn, receiver, args); err != nil {
+		return err
+	} else if ok {
+		vm.discardCallFromStack(argc)
+		vm.push(result)
+		return nil
+	}
 	child := vm.acquireFrame(fn, nil, receiver, false)
 	vm.localSet(child, 0, value.ObjectValue(receiver))
 	for i := argc - 1; i >= 0; i-- {
 		vm.localSet(child, byte(i+1), vm.pop())
 	}
 	vm.pop()
+	child.stackBase = len(vm.stack)
 	_ = owner
 	vm.frames = append(vm.frames, child)
 	return nil
+}
+
+func (vm *VM) callMethodDirect(receiver *value.Instance, fn *bytecode.Function, owner *value.Class, argc int) error {
+	if fn.Arity != argc {
+		return fmt.Errorf("%s expects %d args, got %d", fn.Name, fn.Arity, argc)
+	}
+	args := vm.peekArgs(argc)
+	if result, ok, err := vm.tryJITCall(fn, receiver, args); err != nil {
+		return err
+	} else if ok {
+		for i := 0; i < argc; i++ {
+			vm.pop()
+		}
+		vm.push(result)
+		return nil
+	}
+	child := vm.acquireFrame(fn, nil, receiver, false)
+	vm.localSet(child, 0, value.ObjectValue(receiver))
+	for i := argc - 1; i >= 0; i-- {
+		vm.localSet(child, byte(i+1), vm.pop())
+	}
+	child.stackBase = len(vm.stack)
+	_ = owner
+	vm.frames = append(vm.frames, child)
+	return nil
+}
+
+func (vm *VM) tryJITCall(fn *bytecode.Function, receiver *value.Instance, args []value.Value) (value.Value, bool, error) {
+	if vm.jitEngine == nil || fn == nil {
+		return value.NilValue(), false, nil
+	}
+	runtime := &jit.RuntimeContext{GlobalSlots: vm.globalSlots, GlobalDefined: vm.globalDefined}
+	return vm.jitEngine.TryExecuteWithContext(fn, receiver, args, runtime)
+}
+
+func (vm *VM) discardCallFromStack(argc int) {
+	for i := 0; i < argc; i++ {
+		vm.pop()
+	}
+	vm.pop()
 }
 
 func (vm *VM) callSuper(argc int) error {
@@ -1684,7 +2537,11 @@ func (vm *VM) callSuper(argc int) error {
 	if superclass == nil {
 		return fmt.Errorf("class %s has no superclass", currentFrame.receiver.Class.Name)
 	}
-	ctor := superclass.Constructor
+	args := vm.peekArgs(argc)
+	ctor := vm.selectBestOverload(superclass.ConstructorOverloads, args)
+	if ctor == nil && superclass.Constructor != nil && vm.overloadMatches(superclass.Constructor, args) {
+		ctor = superclass.Constructor
+	}
 	if ctor == nil {
 		if argc != 0 {
 			return fmt.Errorf("%s expects 0 args, got %d", superclass.Name, argc)
@@ -1700,8 +2557,187 @@ func (vm *VM) callSuper(argc int) error {
 	for i := argc - 1; i >= 0; i-- {
 		vm.localSet(child, byte(i+1), vm.pop())
 	}
+	child.stackBase = len(vm.stack)
 	vm.frames = append(vm.frames, child)
 	return nil
+}
+
+func (vm *VM) invokeSuper(name string, argc int) error {
+	currentFrame := vm.currentFrame()
+	if currentFrame.receiver == nil {
+		return fmt.Errorf("super called outside constructor or method")
+	}
+	owner := vm.lookupClassByName(currentFrame.fn.OwnerClassName)
+	if owner == nil {
+		return fmt.Errorf("super method call requires class-owned frame")
+	}
+	superclass := owner.Superclass
+	if superclass == nil {
+		return fmt.Errorf("class %s has no superclass", owner.Name)
+	}
+	args := vm.peekArgs(argc)
+	method, resolvedOwner, exists := vm.resolveSuperMethodOverload(superclass, name, args)
+	if !exists {
+		return fmt.Errorf("superclass %s has no method %s", superclass.Name, name)
+	}
+	if err := vm.ensureAccess(resolvedOwner, resolvedOwner.MethodVisibility[name]); err != nil {
+		return err
+	}
+	return vm.callMethodDirect(currentFrame.receiver, method, resolvedOwner, argc)
+}
+
+func (vm *VM) peekArgs(argc int) []value.Value {
+	args := make([]value.Value, argc)
+	for i := 0; i < argc; i++ {
+		args[i] = vm.peek(argc - 1 - i)
+	}
+	return args
+}
+
+func (vm *VM) resolveMethodOverload(class *value.Class, name string, args []value.Value) (*bytecode.Function, *value.Class, bool) {
+	if class == nil {
+		return nil, nil, false
+	}
+	if fn := vm.selectBestOverload(class.MethodOverloads[name], args); fn != nil {
+		return fn, class, true
+	}
+	if fn, ok := class.Methods[name]; ok && vm.overloadMatches(fn, args) {
+		return fn, class, true
+	}
+	if class.Superclass != nil {
+		return vm.resolveMethodOverload(class.Superclass, name, args)
+	}
+	return nil, nil, false
+}
+
+func (vm *VM) resolveSuperMethodOverload(class *value.Class, name string, args []value.Value) (*bytecode.Function, *value.Class, bool) {
+	if class == nil {
+		return nil, nil, false
+	}
+	if fn := vm.selectBestDeclaredMethodOverload(class, name, args); fn != nil {
+		return fn, class, true
+	}
+	if class.Superclass != nil {
+		return vm.resolveSuperMethodOverload(class.Superclass, name, args)
+	}
+	return nil, nil, false
+}
+
+func (vm *VM) selectBestDeclaredMethodOverload(class *value.Class, name string, args []value.Value) *bytecode.Function {
+	if class == nil {
+		return nil
+	}
+	var best *bytecode.Function
+	bestScore := -1
+	for _, fn := range class.MethodOverloads[name] {
+		if fn == nil || fn.OwnerClassName != class.Name || !vm.overloadMatches(fn, args) {
+			continue
+		}
+		score := vm.overloadScore(fn, args)
+		if score > bestScore {
+			best = fn
+			bestScore = score
+		}
+	}
+	return best
+}
+
+func (vm *VM) resolveStaticOverload(class *value.Class, name string, args []value.Value) (*bytecode.Function, *value.Class, bool) {
+	if class == nil {
+		return nil, nil, false
+	}
+	if fn := vm.selectBestOverload(class.StaticMethodOverloads[name], args); fn != nil {
+		return fn, class, true
+	}
+	if fn, ok := class.StaticMethods[name]; ok && vm.overloadMatches(fn, args) {
+		return fn, class, true
+	}
+	if class.Superclass != nil {
+		return vm.resolveStaticOverload(class.Superclass, name, args)
+	}
+	return nil, nil, false
+}
+
+func (vm *VM) selectBestOverload(overloads []*bytecode.Function, args []value.Value) *bytecode.Function {
+	var best *bytecode.Function
+	bestScore := -1
+	for _, fn := range overloads {
+		if fn == nil || !vm.overloadMatches(fn, args) {
+			continue
+		}
+		score := vm.overloadScore(fn, args)
+		if score > bestScore {
+			best = fn
+			bestScore = score
+		}
+	}
+	return best
+}
+
+func (vm *VM) overloadMatches(fn *bytecode.Function, args []value.Value) bool {
+	if fn == nil || fn.Arity != len(args) {
+		return false
+	}
+	for i, arg := range args {
+		expected := ""
+		if i < len(fn.ParamTypes) {
+			expected = fn.ParamTypes[i]
+		}
+		expected = normalizeRuntimeTypeAlias(rootRuntimeTypeName(expected))
+		if expected == "" || expected == bvmruntime.TypeAny {
+			continue
+		}
+		if isRuntimeGenericTypeParam(expected) {
+			continue
+		}
+		if !vm.matchesType(arg, expected) {
+			return false
+		}
+	}
+	return true
+}
+
+func (vm *VM) overloadScore(fn *bytecode.Function, args []value.Value) int {
+	score := 0
+	for i, arg := range args {
+		expected := ""
+		if i < len(fn.ParamTypes) {
+			expected = fn.ParamTypes[i]
+		}
+		expected = normalizeRuntimeTypeAlias(rootRuntimeTypeName(expected))
+		if expected == "" || expected == bvmruntime.TypeAny {
+			continue
+		}
+		if isRuntimeGenericTypeParam(expected) {
+			continue
+		}
+		actual := vm.runtimeTypeName(arg)
+		if normalizeRuntimeTypeAlias(rootRuntimeTypeName(actual)) == expected {
+			score += 3
+		} else if vm.matchesType(arg, expected) {
+			score += 1
+		}
+	}
+	return score
+}
+
+func isRuntimeGenericTypeParam(typeName string) bool {
+	trimmed := trimTypeSpace(typeName)
+	if len(trimmed) == 0 || len(trimmed) > 2 {
+		return false
+	}
+	for index, ch := range trimmed {
+		if index == 0 {
+			if ch < 'A' || ch > 'Z' {
+				return false
+			}
+			continue
+		}
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (vm *VM) buildRange(argc int) (*value.Range, error) {
@@ -1847,6 +2883,7 @@ func (vm *VM) acquireFrame(fn *bytecode.Function, closure *value.Closure, receiv
 	child.fn = fn
 	child.closure = closure
 	child.ip = 0
+	child.stackBase = len(vm.stack)
 	child.receiver = receiver
 	child.init = init
 	if child.localRefs == nil {
@@ -1854,6 +2891,12 @@ func (vm *VM) acquireFrame(fn *bytecode.Function, closure *value.Closure, receiv
 	} else {
 		clear(child.localRefs)
 	}
+	if child.stringBuffers == nil {
+		child.stringBuffers = make(map[byte]*stringAccumulator)
+	} else {
+		clear(child.stringBuffers)
+	}
+	child.handlers = child.handlers[:0]
 	if cap(child.locals) < fn.MaxLocals {
 		child.locals = make([]value.Value, fn.MaxLocals)
 	} else {
@@ -1871,6 +2914,8 @@ func (vm *VM) releaseFrame(child *frame) {
 	child.receiver = nil
 	child.init = false
 	clear(child.localRefs)
+	clear(child.stringBuffers)
+	child.handlers = child.handlers[:0]
 	vm.framePool = append(vm.framePool, child)
 }
 
@@ -1931,6 +2976,7 @@ func (vm *VM) constantToValue(item any) value.Value {
 }
 
 func (vm *VM) localGet(frame *frame, slot byte) value.Value {
+	vm.materializeLocalString(frame, slot)
 	if cell, ok := frame.localRefs[slot]; ok {
 		return cell.Value
 	}
@@ -1938,6 +2984,7 @@ func (vm *VM) localGet(frame *frame, slot byte) value.Value {
 }
 
 func (vm *VM) localSet(frame *frame, slot byte, v value.Value) {
+	delete(frame.stringBuffers, slot)
 	if cell, ok := frame.localRefs[slot]; ok {
 		cell.Value = v
 		return
@@ -1945,7 +2992,109 @@ func (vm *VM) localSet(frame *frame, slot byte, v value.Value) {
 	frame.locals[slot] = v
 }
 
+func operatorMethodNames(operator bytecode.Op) (string, string) {
+	switch operator {
+	case bytecode.OpAdd:
+		return "__add", "__radd"
+	case bytecode.OpSub:
+		return "__sub", "__rsub"
+	case bytecode.OpMul:
+		return "__mul", "__rmul"
+	case bytecode.OpDiv:
+		return "__div", "__rdiv"
+	case bytecode.OpMod:
+		return "__mod", "__rmod"
+	case bytecode.OpPow:
+		return "__pow", "__rpow"
+	case bytecode.OpGreater:
+		return "__gt", "__rgt"
+	case bytecode.OpLess:
+		return "__lt", "__rlt"
+	default:
+		return "", ""
+	}
+}
+
+func (vm *VM) invokeNamedInstanceMethod(receiver *value.Instance, methodName string, args ...value.Value) (value.Value, bool, error) {
+	if receiver == nil || receiver.Class == nil || methodName == "" {
+		return value.NilValue(), false, nil
+	}
+	if _, fn, ok := receiver.Class.LookupMethodSlot(methodName); ok && fn.Arity == len(args) && vm.overloadMatches(fn, args) {
+		result, err := vm.invokeInstanceMethod(receiver, fn, args...)
+		if err != nil {
+			return value.NilValue(), true, err
+		}
+		return result, true, nil
+	}
+	fn, _, ok := vm.resolveMethodOverload(receiver.Class, methodName, args)
+	if !ok {
+		return value.NilValue(), false, nil
+	}
+	result, err := vm.invokeInstanceMethod(receiver, fn, args...)
+	if err != nil {
+		return value.NilValue(), true, err
+	}
+	return result, true, nil
+}
+
+func (vm *VM) trySpecialMethod(receiver *value.Instance, slot value.SpecialMethodSlot, fallbackName string, args ...value.Value) (value.Value, bool, error) {
+	if receiver == nil || receiver.Class == nil {
+		return value.NilValue(), false, nil
+	}
+	if fn := receiver.Class.SpecialMethod(slot); fn != nil && fn.Arity == len(args) && vm.overloadMatches(fn, args) {
+		result, err := vm.invokeInstanceMethod(receiver, fn, args...)
+		if err != nil {
+			return value.NilValue(), true, err
+		}
+		return result, true, nil
+	}
+	if fallbackName != "" {
+		return vm.invokeNamedInstanceMethod(receiver, fallbackName, args...)
+	}
+	return value.NilValue(), false, nil
+}
+
+func (vm *VM) tryUnaryOperator(operand value.Value, methodName string) (value.Value, bool, error) {
+	instance, ok := operand.AsInstance()
+	if !ok {
+		return value.NilValue(), false, nil
+	}
+	return vm.invokeNamedInstanceMethod(instance, methodName)
+}
+
+func (vm *VM) tryBinaryOperator(left value.Value, right value.Value, operator bytecode.Op) (value.Value, bool, error) {
+	leftMethod, rightMethod := operatorMethodNames(operator)
+	if instance, ok := left.AsInstance(); ok {
+		if result, applied, err := vm.invokeNamedInstanceMethod(instance, leftMethod, right); applied || err != nil {
+			return result, applied, err
+		}
+	}
+	if instance, ok := right.AsInstance(); ok {
+		if result, applied, err := vm.invokeNamedInstanceMethod(instance, rightMethod, left); applied || err != nil {
+			return result, applied, err
+		}
+	}
+	return value.NilValue(), false, nil
+}
+
+func (vm *VM) tryEqualsMethod(instance *value.Instance, other value.Value) (bool, bool, error) {
+	result, applied, err := vm.trySpecialMethod(instance, value.SpecialMethodEquals, "__eq", other)
+	if err != nil || !applied {
+		return false, applied, err
+	}
+	booleanValue, ok := vm.booleanOperand(result)
+	if !ok {
+		return false, true, fmt.Errorf("__eq must return Bool")
+	}
+	return booleanValue, true, nil
+}
+
+func (vm *VM) tryHashMethod(instance *value.Instance) (value.Value, bool, error) {
+	return vm.trySpecialMethod(instance, value.SpecialMethodHash, "__hash")
+}
+
 func (vm *VM) captureLocal(frame *frame, slot byte) *value.Cell {
+	vm.materializeLocalString(frame, slot)
 	if cell, ok := frame.localRefs[slot]; ok {
 		return cell
 	}
@@ -1954,23 +3103,286 @@ func (vm *VM) captureLocal(frame *frame, slot byte) *value.Cell {
 	return cell
 }
 
+func (vm *VM) appendLocalString(frame *frame, slot byte, suffix value.Value) {
+	accumulator, ok := frame.stringBuffers[slot]
+	if !ok {
+		accumulator = &stringAccumulator{}
+		base := frame.locals[slot]
+		if cell, ok := frame.localRefs[slot]; ok {
+			base = cell.Value
+		}
+		if base.Kind == value.String || base.Kind == value.Char {
+			accumulator.builder.WriteString(base.Str)
+		} else if base.Kind != value.Nil {
+			accumulator.builder.WriteString(base.String())
+		}
+		frame.stringBuffers[slot] = accumulator
+	}
+	accumulator.builder.WriteString(suffix.String())
+}
+
+func (vm *VM) materializeLocalString(frame *frame, slot byte) {
+	accumulator, ok := frame.stringBuffers[slot]
+	if !ok {
+		return
+	}
+	materialized := value.StringValue(string(append([]byte(nil), accumulator.builder.String()...)))
+	if cell, ok := frame.localRefs[slot]; ok {
+		cell.Value = materialized
+	} else {
+		frame.locals[slot] = materialized
+	}
+}
+
 func (vm *VM) binaryNumberOp(operator bytecode.Op, op func(float64, float64) float64) error {
 	right := vm.pop()
 	left := vm.pop()
+	if left.Kind == value.Number && right.Kind == value.Number && left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
+		leftInt := int64(left.Num)
+		rightInt := int64(right.Num)
+		switch operator {
+		case bytecode.OpAdd, bytecode.OpAddNum:
+			vm.push(value.IntValue(leftInt + rightInt))
+			return nil
+		case bytecode.OpSub, bytecode.OpSubNum:
+			vm.push(value.IntValue(leftInt - rightInt))
+			return nil
+		case bytecode.OpMul, bytecode.OpMulNum:
+			vm.push(value.IntValue(leftInt * rightInt))
+			return nil
+		case bytecode.OpMod, bytecode.OpModNum:
+			if rightInt == 0 {
+				return diagnostic.Runtime("ValueError", "division by zero", vm.makeExceptionValue("ValueError", "division by zero"))
+			}
+			vm.push(value.IntValue(leftInt % rightInt))
+			return nil
+		}
+	}
 	leftNum, ok := vm.numericOperand(left)
 	if !ok {
+		if result, applied, err := vm.tryBinaryOperator(left, right, operator); err != nil {
+			return err
+		} else if applied {
+			vm.push(result)
+			return nil
+		}
 		return fmt.Errorf("numeric operation expects numbers")
 	}
 	rightNum, ok := vm.numericOperand(right)
 	if !ok {
+		if result, applied, err := vm.tryBinaryOperator(left, right, operator); err != nil {
+			return err
+		} else if applied {
+			vm.push(result)
+			return nil
+		}
 		return fmt.Errorf("numeric operation expects numbers")
+	}
+	if (operator == bytecode.OpDiv || operator == bytecode.OpDivNum || operator == bytecode.OpMod || operator == bytecode.OpModNum) && rightNum == 0 {
+		return diagnostic.Runtime("ValueError", "division by zero", vm.makeExceptionValue("ValueError", "division by zero"))
 	}
 	vm.push(vm.numericResult(left, right, operator, op(leftNum, rightNum)))
 	return nil
 }
 
+func (vm *VM) binaryPowOp(operator bytecode.Op) error {
+	right := vm.pop()
+	left := vm.pop()
+	if left.Kind == value.Number && right.Kind == value.Number && left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
+		base := int64(left.Num)
+		exponent := int64(right.Num)
+		if exponent >= 0 {
+			if result, ok := powInt64SquareMultiply(base, exponent); ok {
+				vm.push(value.IntValue(result))
+				return nil
+			}
+		}
+	}
+	leftNum, ok := vm.numericOperand(left)
+	if !ok {
+		if result, applied, err := vm.tryBinaryOperator(left, right, operator); err != nil {
+			return err
+		} else if applied {
+			vm.push(result)
+			return nil
+		}
+		return fmt.Errorf("numeric operation expects numbers")
+	}
+	rightNum, ok := vm.numericOperand(right)
+	if !ok {
+		if result, applied, err := vm.tryBinaryOperator(left, right, operator); err != nil {
+			return err
+		} else if applied {
+			vm.push(result)
+			return nil
+		}
+		return fmt.Errorf("numeric operation expects numbers")
+	}
+	vm.push(vm.numericResult(left, right, operator, math.Pow(leftNum, rightNum)))
+	return nil
+}
+
+func (vm *VM) explicitThrow(raised value.Value) error {
+	typeName := vm.runtimeTypeName(raised)
+	if instance, ok := raised.AsInstance(); ok {
+		typeName = instance.Class.Name
+	}
+	return diagnostic.Runtime(typeName, vm.exceptionMessage(raised), raised)
+}
+
+func (vm *VM) handleRaised(baseDepth int, frame *frame, err error) (bool, error) {
+	raised := vm.normalizeRuntimeError(frame, err)
+	for depth := len(vm.frames) - 1; depth >= baseDepth; depth-- {
+		candidate := vm.frames[depth]
+		if len(candidate.handlers) == 0 {
+			continue
+		}
+		handler := candidate.handlers[len(candidate.handlers)-1]
+		candidate.handlers = candidate.handlers[:len(candidate.handlers)-1]
+		for len(vm.frames)-1 > depth {
+			child := vm.frames[len(vm.frames)-1]
+			vm.frames = vm.frames[:len(vm.frames)-1]
+			vm.releaseFrame(child)
+		}
+		if handler.stackDepth < len(vm.stack) {
+			vm.stack = vm.stack[:handler.stackDepth]
+		}
+		candidate.ip = handler.catchIP
+		vm.push(raised.CatchValue())
+		return true, nil
+	}
+	return false, raised
+}
+
+func (vm *VM) normalizeRuntimeError(frame *frame, err error) *diagnostic.Error {
+	if raised, ok := err.(*diagnostic.Error); ok {
+		if raised.Kind == "" {
+			raised.Kind = diagnostic.KindRuntime
+		}
+		if raised.TypeName == "" {
+			raised.TypeName = string(raised.Kind)
+		}
+		if raised.Line == 0 {
+			raised.Line = vm.currentLine(frame)
+		}
+		if len(raised.Stack) == 0 {
+			raised.Stack = vm.stackTrace()
+		}
+		if !raised.HasCatch {
+			raised.Catch = vm.makeExceptionValue(raised.TypeName, raised.Message)
+			raised.HasCatch = true
+		}
+		if raised.Hint == "" {
+			raised.Hint = vm.runtimeHint(raised.Message)
+		}
+		return raised
+	}
+	message := err.Error()
+	raised := diagnostic.Runtime(vm.inferRuntimeErrorType(message), message, value.NilValue())
+	raised.Catch = vm.makeExceptionValue(raised.TypeName, raised.Message)
+	raised.HasCatch = true
+	raised.Line = vm.currentLine(frame)
+	raised.Stack = vm.stackTrace()
+	raised.Hint = vm.runtimeHint(message)
+	return raised
+}
+
+func (vm *VM) currentLine(frame *frame) int {
+	if frame == nil || frame.fn == nil || frame.fn.Chunk == nil || len(frame.fn.Chunk.Lines) == 0 {
+		return 0
+	}
+	index := frame.ip - 1
+	if index < 0 {
+		index = 0
+	}
+	if index >= len(frame.fn.Chunk.Lines) {
+		index = len(frame.fn.Chunk.Lines) - 1
+	}
+	return frame.fn.Chunk.Lines[index]
+}
+
+func (vm *VM) stackTrace() []diagnostic.StackFrame {
+	stack := make([]diagnostic.StackFrame, 0, len(vm.frames))
+	for i := len(vm.frames) - 1; i >= 0; i-- {
+		frame := vm.frames[i]
+		stack = append(stack, diagnostic.StackFrame{Function: frame.fn.Name, Line: vm.currentLine(frame)})
+	}
+	return stack
+}
+
+func (vm *VM) inferRuntimeErrorType(message string) string {
+	switch {
+	case containsString(message, "undefined variable"):
+		return "NameError"
+	case containsString(message, "expects"):
+		return "ArityError"
+	case containsString(message, "index out of range"):
+		return "IndexError"
+	case containsString(message, "cannot cast"):
+		return "TypeError"
+	case containsString(message, "file not found"):
+		return "FileNotFoundException"
+	case containsString(message, "no such file"):
+		return "FileNotFoundException"
+	case containsString(message, "permission denied"):
+		return "IOException"
+	default:
+		return "RuntimeError"
+	}
+}
+
+func (vm *VM) runtimeHint(message string) string {
+	switch {
+	case containsString(message, "undefined variable"):
+		return "declare the variable before using it"
+	case containsString(message, "expects"):
+		return "check the argument count and types at the call site"
+	case containsString(message, "cannot cast"):
+		return "ensure the value really implements or extends the requested type"
+	default:
+		return ""
+	}
+}
+
+func (vm *VM) makeExceptionValue(typeName string, message string) value.Value {
+	global, ok := vm.globals[typeName]
+	if !ok {
+		return value.StringValue(message)
+	}
+	classValue, ok := global.AsClass()
+	if !ok {
+		return value.StringValue(message)
+	}
+	instance := classValue.NewInstance()
+	if slot, _, found := instance.Class.LookupFieldSlot("message"); found && slot < len(instance.Fields) {
+		instance.Fields[slot] = value.StringValue(message)
+	}
+	if slot, _, found := instance.Class.LookupFieldSlot("type"); found && slot < len(instance.Fields) {
+		instance.Fields[slot] = value.StringValue(typeName)
+	}
+	return value.ObjectValue(instance)
+}
+
+func (vm *VM) exceptionMessage(candidate value.Value) string {
+	if candidate.Kind == value.String || candidate.Kind == value.Char {
+		return candidate.Str
+	}
+	if instance, ok := candidate.AsInstance(); ok {
+		if field, ok := instance.GetField("message"); ok {
+			return field.String()
+		}
+	}
+	return candidate.String()
+}
+
 func (vm *VM) numericResult(left value.Value, right value.Value, operator bytecode.Op, result float64) value.Value {
 	if operator == bytecode.OpDiv || operator == bytecode.OpDivNum {
+		return value.FloatValue(result)
+	}
+	if operator == bytecode.OpPow || operator == bytecode.OpPowNum {
+		if left.Kind == value.Number && right.Kind == value.Number && left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt && right.Num >= 0 {
+			return value.IntValue(int64(result))
+		}
 		return value.FloatValue(result)
 	}
 	if left.Kind == value.Number && right.Kind == value.Number && left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
@@ -1979,7 +3391,7 @@ func (vm *VM) numericResult(left value.Value, right value.Value, operator byteco
 	return value.FloatValue(result)
 }
 
-func (vm *VM) binaryCompare(numberOp func(float64, float64) bool, textOp func(string, string) bool) error {
+func (vm *VM) binaryCompare(operator bytecode.Op, numberOp func(float64, float64) bool, textOp func(string, string) bool) error {
 	right := vm.pop()
 	left := vm.pop()
 	if leftText, ok := textualOperand(left); ok {
@@ -1988,16 +3400,110 @@ func (vm *VM) binaryCompare(numberOp func(float64, float64) bool, textOp func(st
 			return nil
 		}
 	}
+	if left.Kind == value.Number && right.Kind == value.Number && left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
+		vm.push(value.BoolValue(numberOp(float64(int64(left.Num)), float64(int64(right.Num)))))
+		return nil
+	}
 	leftNum, ok := vm.numericOperand(left)
 	if !ok {
+		if result, applied, err := vm.tryBinaryOperator(left, right, operator); err != nil {
+			return err
+		} else if applied {
+			booleanValue, ok := vm.booleanOperand(result)
+			if !ok {
+				return fmt.Errorf("comparison operator %s must return Bool", operator.String())
+			}
+			vm.push(value.BoolValue(booleanValue))
+			return nil
+		}
 		return fmt.Errorf("comparison expects numbers or text")
 	}
 	rightNum, ok := vm.numericOperand(right)
 	if !ok {
+		if result, applied, err := vm.tryBinaryOperator(left, right, operator); err != nil {
+			return err
+		} else if applied {
+			booleanValue, ok := vm.booleanOperand(result)
+			if !ok {
+				return fmt.Errorf("comparison operator %s must return Bool", operator.String())
+			}
+			vm.push(value.BoolValue(booleanValue))
+			return nil
+		}
 		return fmt.Errorf("comparison expects numbers or text")
 	}
 	vm.push(value.BoolValue(numberOp(leftNum, rightNum)))
 	return nil
+}
+
+func (vm *VM) binaryNumericCompareOp(operator bytecode.Op) error {
+	right := vm.pop()
+	left := vm.pop()
+	if left.Kind == value.Number && right.Kind == value.Number && left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
+		leftInt := int64(left.Num)
+		rightInt := int64(right.Num)
+		switch operator {
+		case bytecode.OpLessNum:
+			vm.push(value.BoolValue(leftInt < rightInt))
+			return nil
+		case bytecode.OpGreaterNum:
+			vm.push(value.BoolValue(leftInt > rightInt))
+			return nil
+		}
+	}
+	leftNum, ok := vm.numericOperand(left)
+	if !ok {
+		return fmt.Errorf("comparison expects numbers")
+	}
+	rightNum, ok := vm.numericOperand(right)
+	if !ok {
+		return fmt.Errorf("comparison expects numbers")
+	}
+	switch operator {
+	case bytecode.OpLessNum:
+		vm.push(value.BoolValue(leftNum < rightNum))
+	case bytecode.OpGreaterNum:
+		vm.push(value.BoolValue(leftNum > rightNum))
+	default:
+		return fmt.Errorf("unsupported numeric compare opcode %d", operator)
+	}
+	return nil
+}
+
+func powInt64SquareMultiply(base int64, exponent int64) (int64, bool) {
+	result := int64(1)
+	current := base
+	remaining := exponent
+	for remaining > 0 {
+		if remaining&1 == 1 {
+			next, ok := multiplyInt64Checked(result, current)
+			if !ok {
+				return 0, false
+			}
+			result = next
+		}
+		remaining >>= 1
+		if remaining == 0 {
+			break
+		}
+		nextBase, ok := multiplyInt64Checked(current, current)
+		if !ok {
+			return 0, false
+		}
+		current = nextBase
+	}
+	return result, true
+}
+
+func multiplyInt64Checked(left int64, right int64) (int64, bool) {
+	if left == 0 || right == 0 {
+		return 0, true
+	}
+	product := left * right
+	if product/right != left {
+		return 0, false
+	}
+	return product, true
 }
 
 func (vm *VM) numericOperand(candidate value.Value) (float64, bool) {
@@ -2008,7 +3514,7 @@ func (vm *VM) numericOperand(candidate value.Value) (float64, bool) {
 	if !ok || instance.Class == nil {
 		return 0, false
 	}
-	switch instance.Class.Name {
+	switch rootRuntimeTypeName(instance.Class.Name) {
 	case "Integer", "Float", "Double":
 		if slot, _, ok := instance.Class.LookupFieldSlot("value"); ok && slot >= 0 && slot < len(instance.Fields) {
 			inner := instance.Fields[slot]
@@ -2028,7 +3534,7 @@ func (vm *VM) booleanOperand(candidate value.Value) (bool, bool) {
 	if !ok || instance.Class == nil {
 		return false, false
 	}
-	if instance.Class.Name != "Boolean" {
+	if rootRuntimeTypeName(instance.Class.Name) != "Boolean" {
 		return false, false
 	}
 	if slot, _, ok := instance.Class.LookupFieldSlot("value"); ok && slot >= 0 && slot < len(instance.Fields) {
@@ -2040,32 +3546,204 @@ func (vm *VM) booleanOperand(candidate value.Value) (bool, bool) {
 	return false, false
 }
 
-func (vm *VM) valuesEqual(left value.Value, right value.Value) bool {
+func (vm *VM) valuesEqual(left value.Value, right value.Value) (bool, error) {
 	if leftText, ok := textualOperand(left); ok {
 		if rightText, ok := textualOperand(right); ok {
-			return leftText == rightText
+			return leftText == rightText, nil
 		}
 	}
 	if leftNum, ok := vm.numericOperand(left); ok {
 		if rightNum, ok := vm.numericOperand(right); ok {
-			return leftNum == rightNum
+			return leftNum == rightNum, nil
 		}
 	}
 	if leftBool, ok := vm.booleanOperand(left); ok {
 		if rightBool, ok := vm.booleanOperand(right); ok {
-			return leftBool == rightBool
+			return leftBool == rightBool, nil
 		}
 	}
-	return value.Equal(left, right)
+	if instance, ok := left.AsInstance(); ok {
+		if equal, applied, err := vm.tryEqualsMethod(instance, right); err != nil {
+			return false, err
+		} else if applied {
+			return equal, nil
+		}
+	}
+	if instance, ok := right.AsInstance(); ok {
+		if equal, applied, err := vm.tryEqualsMethod(instance, left); err != nil {
+			return false, err
+		} else if applied {
+			return equal, nil
+		}
+	}
+	return value.Equal(left, right), nil
+}
+
+func (vm *VM) wrapPrimitiveValue(targetType string, candidate value.Value) (value.Value, bool, error) {
+	classValue, ok := vm.globals[targetType]
+	if !ok {
+		return value.NilValue(), false, nil
+	}
+	class, ok := classValue.AsClass()
+	if !ok {
+		return value.NilValue(), false, nil
+	}
+	instance := class.NewInstance()
+	slot, _, found := instance.Class.LookupFieldSlot("value")
+	if !found || slot < 0 || slot >= len(instance.Fields) {
+		return value.NilValue(), true, fmt.Errorf("cannot cast %s to %s", vm.runtimeTypeName(candidate), targetType)
+	}
+	switch targetType {
+	case "Integer":
+		numericValue, ok := vm.numericOperand(candidate)
+		if !ok {
+			return value.NilValue(), true, fmt.Errorf("cannot cast %s to %s", vm.runtimeTypeName(candidate), targetType)
+		}
+		instance.Fields[slot] = value.IntValue(int64(numericValue))
+	case "Float", "Double":
+		numericValue, ok := vm.numericOperand(candidate)
+		if !ok {
+			return value.NilValue(), true, fmt.Errorf("cannot cast %s to %s", vm.runtimeTypeName(candidate), targetType)
+		}
+		instance.Fields[slot] = value.FloatValue(numericValue)
+	case "Boolean":
+		booleanValue, ok := vm.booleanOperand(candidate)
+		if !ok {
+			return value.NilValue(), true, fmt.Errorf("cannot cast %s to %s", vm.runtimeTypeName(candidate), targetType)
+		}
+		instance.Fields[slot] = value.BoolValue(booleanValue)
+	case "Char":
+		if candidate.Kind != value.Char {
+			return value.NilValue(), true, fmt.Errorf("cannot cast %s to %s", vm.runtimeTypeName(candidate), targetType)
+		}
+		instance.Fields[slot] = candidate
+	default:
+		return value.NilValue(), false, nil
+	}
+	return value.ObjectValue(instance), true, nil
+}
+
+func (vm *VM) functionalInterfaceSpec(typeName string) (bytecode.InterfaceSpec, bool) {
+	resolvedName := rootRuntimeTypeName(typeName)
+	for index := len(vm.frames) - 1; index >= 0; index-- {
+		frame := vm.frames[index]
+		if frame == nil || frame.fn == nil || len(frame.fn.Interfaces) == 0 {
+			continue
+		}
+		if spec, ok := frame.fn.Interfaces[resolvedName]; ok && spec.FunctionalMethod != "" {
+			return spec, true
+		}
+	}
+	return bytecode.InterfaceSpec{}, false
+}
+
+func (vm *VM) isCallableValue(candidate value.Value) bool {
+	if _, ok := candidate.AsFunction(); ok {
+		return true
+	}
+	if _, ok := candidate.AsClosure(); ok {
+		return true
+	}
+	if _, ok := candidate.AsBuiltin(); ok {
+		return true
+	}
+	if _, ok := candidate.AsBoundMethod(); ok {
+		return true
+	}
+	if _, ok := candidate.AsBoundStaticMethod(); ok {
+		return true
+	}
+	return false
+}
+
+func (vm *VM) matchesStructuralInterface(candidate value.Value, typeName string) bool {
+	switch rootRuntimeTypeName(typeName) {
+	case "Iterable":
+		if _, ok := candidate.AsRange(); ok {
+			return true
+		}
+		if instance, ok := candidate.AsInstance(); ok && instance.Class != nil {
+			return instance.Class.SpecialMethod(value.SpecialMethodIterableLength) != nil && instance.Class.SpecialMethod(value.SpecialMethodIterableGet) != nil
+		}
+	case "Unstructured":
+		if _, ok := candidate.AsTuple(); ok {
+			return true
+		}
+		if instance, ok := candidate.AsInstance(); ok && instance.Class != nil {
+			return instance.Class.SpecialMethod(value.SpecialMethodPieces) != nil && instance.Class.SpecialMethod(value.SpecialMethodGetPiece) != nil
+		}
+	case "Indexable":
+		if candidate.Kind == value.String {
+			return true
+		}
+		if _, ok := candidate.AsArray(); ok {
+			return true
+		}
+		if _, ok := candidate.AsTuple(); ok {
+			return true
+		}
+		if _, ok := candidate.AsMap(); ok {
+			return true
+		}
+		if instance, ok := candidate.AsInstance(); ok && instance.Class != nil {
+			return instance.Class.SpecialMethod(value.SpecialMethodIndexGet) != nil
+		}
+	case "Sliceable":
+		if candidate.Kind == value.String {
+			return true
+		}
+		if _, ok := candidate.AsArray(); ok {
+			return true
+		}
+		if _, ok := candidate.AsTuple(); ok {
+			return true
+		}
+		if instance, ok := candidate.AsInstance(); ok && instance.Class != nil {
+			return instance.Class.SpecialMethod(value.SpecialMethodSlice) != nil
+		}
+	}
+	return false
+}
+
+func (vm *VM) wrapCallableAsInterface(candidate value.Value, typeName string) (value.Value, bool) {
+	resolvedName := rootRuntimeTypeName(typeName)
+	if wrapper, ok := candidate.AsSAMWrapper(); ok {
+		if wrapper.InterfaceName == resolvedName {
+			return candidate, true
+		}
+		return value.NilValue(), false
+	}
+	if !vm.isCallableValue(candidate) {
+		return value.NilValue(), false
+	}
+	spec, ok := vm.functionalInterfaceSpec(resolvedName)
+	if !ok {
+		return value.NilValue(), false
+	}
+	return value.ObjectValue(&value.SAMWrapper{InterfaceName: resolvedName, MethodName: spec.FunctionalMethod, Callable: candidate}), true
 }
 
 func (vm *VM) convertReferenceCast(candidate value.Value, typeName string) (value.Value, bool, error) {
+	if wrapped, ok := vm.wrapCallableAsInterface(candidate, typeName); ok {
+		return wrapped, true, nil
+	}
 	switch rootRuntimeTypeName(typeName) {
 	case bvmruntime.TypeString:
+		if text, ok := valueAsText(candidate); ok {
+			return value.StringValue(text), true, nil
+		}
 		if candidate.Kind == value.Char {
 			return value.StringValue(candidate.Str), true, nil
 		}
 	case bvmruntime.TypeChar:
+		if instance, ok := candidate.AsInstance(); ok && instance.Class != nil && rootRuntimeTypeName(instance.Class.Name) == "Char" {
+			if slot, _, ok := instance.Class.LookupFieldSlot("value"); ok && slot >= 0 && slot < len(instance.Fields) {
+				inner := instance.Fields[slot]
+				if inner.Kind == value.Char {
+					return inner, true, nil
+				}
+			}
+		}
 		if candidate.Kind == value.String {
 			runes := []rune(candidate.Str)
 			if len(runes) != 1 {
@@ -2073,15 +3751,57 @@ func (vm *VM) convertReferenceCast(candidate value.Value, typeName string) (valu
 			}
 			return value.CharValue(runes[0]), true, nil
 		}
+	case "Integer", "Float", "Double", "Boolean", "Char":
+		return vm.wrapPrimitiveValue(rootRuntimeTypeName(typeName), candidate)
 	}
 	return value.NilValue(), false, nil
 }
 
 func textualOperand(candidate value.Value) (string, bool) {
-	switch candidate.Kind {
-	case value.Char, value.String:
-		return candidate.Str, true
-	default:
-		return "", false
+	return valueAsText(candidate)
+}
+
+func (vm *VM) StringifyValue(candidate value.Value) (string, error) {
+	if text, ok := valueAsText(candidate); ok {
+		return text, nil
 	}
+	instance, ok := candidate.AsInstance()
+	if !ok || instance.Class == nil {
+		return candidate.String(), nil
+	}
+	method, _, exists := instance.Class.LookupMethod("toString")
+	if !exists || method == nil || method.Arity != 0 {
+		return candidate.String(), nil
+	}
+	result, err := vm.invokeInstanceMethod(instance, method)
+	if err != nil {
+		return "", err
+	}
+	if result.Kind == candidate.Kind && result.Object == candidate.Object {
+		return candidate.String(), nil
+	}
+	if text, ok := valueAsText(result); ok {
+		return text, nil
+	}
+	return result.String(), nil
+}
+
+func (vm *VM) TypeOfValue(candidate value.Value) string {
+	if classValue, ok := candidate.AsClass(); ok {
+		if classValue.IsEnum {
+			return "Enum " + classValue.Name
+		}
+		return "Class " + classValue.Name
+	}
+	return vm.runtimeTypeName(candidate)
+}
+
+func (vm *VM) InstanceOfValue(candidate value.Value, target value.Value) (bool, error) {
+	if classValue, ok := target.AsClass(); ok {
+		return vm.matchesType(candidate, classValue.Name), nil
+	}
+	if target.Kind == value.String {
+		return vm.matchesType(candidate, target.Str), nil
+	}
+	return false, fmt.Errorf("Sys.instanceof expects a class or string target")
 }

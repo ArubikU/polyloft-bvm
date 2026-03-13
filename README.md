@@ -33,21 +33,40 @@ Java-like behavior currently implemented:
 - imported wrapper methods and static factories can now preserve return members for chaining
 - primitive values are still not treated as instances of wrapper classes
 
+Experimental execution path now available:
+
+- the VM can JIT-lower a small safe subset of arithmetic bytecode functions into an OS-specific instruction stream after a hotness threshold is reached
+- Windows and non-Windows targets currently use distinct backend encodings selected at build time
+- unsupported functions still run through the interpreter with full fallback behavior
+
 ## CLI
 
-The current CLI is intentionally small:
+The current CLI covers execution, validation, disassembly, inline snippets, artifact generation and builtin type manifests:
 
 ```sh
 go run ./cmd/polyloft-bvm run ./testdata/programs/demo.pf
+go run ./cmd/polyloft-bvm run --jit --jit-log ./testdata/programs/demo.pf
+go run ./cmd/polyloft-bvm check ./testdata/programs/demo.pf
 go run ./cmd/polyloft-bvm dump ./testdata/programs/demo.pf
+go run ./cmd/polyloft-bvm compile ./testdata/programs/demo.pf
+go run ./cmd/polyloft-bvm runline "println(40 + 2)"
+go run ./cmd/polyloft-bvm types stdlib
 ```
 
-- `run`: parses, type-checks, compiles and executes a `.pf` file
-- `dump`: emits bytecode disassembly for the compiled file
+- `run`: executes a source file, compiled module, bundle or project
+- `run --jit`: lowers the JIT warmup threshold to `1`
+- `run --jit-threshold <n>`: configures the JIT hotness threshold explicitly
+- `run --jit-log`: emits JIT hot/compile/execute events to `stderr`
+- `check`: parses and type-checks a source file or project without running it
+- `dump`: emits bytecode disassembly for a source file or compiled artifact
+- `compile`: writes `.pfbc` modules or `.pfx` project bundles
+- `runline`: executes inline Polyloft code, with optional `--check`, `--stdin` and `--path`
+- `types`: emits manifest JSON for `primitives`, `runtime` or `stdlib`
 
 ## Documentation
 
 - [docs/README.md](docs/README.md)
+- [docs/CLI.md](docs/CLI.md)
 - [docs/quickstart.md](docs/quickstart.md)
 - [docs/runtime-model.md](docs/runtime-model.md)
 - [docs/language/README.md](docs/language/README.md)

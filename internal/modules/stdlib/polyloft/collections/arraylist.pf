@@ -1,0 +1,66 @@
+import polyloft.collections.contracts { List }
+import polyloft.collections.listnative { list_new, list_size, list_add, list_remove, list_contains, list_clear, list_as_array, list_get, list_set }
+
+public class ArrayList<T> implements List<T>:
+	var nativeHandle: any
+
+	ArrayList():
+		this.nativeHandle = list_new()
+	end
+
+	def size() -> number:
+		return list_size(this.nativeHandle)
+	end
+
+	def isEmpty() -> bool:
+		return list_size(this.nativeHandle) == 0
+	end
+
+	def add(element: T) -> void:
+		list_add<T>(this.nativeHandle, element)
+	end
+
+	def remove(element: T) -> bool:
+		return list_remove<T>(this.nativeHandle, element)
+	end
+
+	def contains(element: T) -> bool:
+		return list_contains<T>(this.nativeHandle, element)
+	end
+
+	def clear() -> void:
+		list_clear(this.nativeHandle)
+	end
+
+	def asArray() -> array<T>:
+		return list_as_array<T>(this.nativeHandle)
+	end
+
+	def __length() -> number:
+		return this.size()
+	end
+
+	def __get(index: int) -> T:
+		return list_get<T>(this.nativeHandle, index)
+	end
+
+	def __set(index: int, value: T) -> void:
+		list_set<T>(this.nativeHandle, index, value)
+	end
+
+	def __contains(element: T) -> bool:
+		return this.contains(element)
+	end
+
+	def __slice(start: int, finish: int) -> array<T>:
+		return this.asArray()[start...finish]
+	end
+
+	def get(index: int) -> T:
+		return list_get<T>(this.nativeHandle, index)
+	end
+
+	def set(index: int, value: T) -> void:
+		list_set<T>(this.nativeHandle, index, value)
+	end
+end

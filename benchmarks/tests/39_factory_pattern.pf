@@ -1,0 +1,25 @@
+class Product:
+    v: int
+
+    Product():
+        this.v = 1
+    end
+end
+
+class Factory:
+    def create() -> Product:
+        return new Product()
+    end
+end
+
+var started = Sys.time()
+var f = new Factory()
+var s = 0
+for i in range(0, 500000):
+    var p = f.create()
+    s = s + p.v
+end
+var ended = Sys.time()
+println(s)
+println("TIME_PF")
+println(ended - started)

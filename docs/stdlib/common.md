@@ -1,10 +1,18 @@
 # polyloft.common
 
-`polyloft.common` contains wrapper and helper classes that sit on top of native runtime values.
+`polyloft.common` provides wrapper and helper classes on top of native runtime values.
 
 ```pf
 import polyloft.common { Integer, Float, Double, String, Boolean, Char, CharArray, Bytes }
 ```
+
+## Overview
+
+This module is useful when you want:
+
+- object-style methods on numbers, booleans, and strings
+- explicit wrappers around `char`, character arrays, or byte-like arrays
+- fluent helper operations that return wrapper instances for chaining
 
 ## Integer
 
@@ -43,6 +51,7 @@ Methods:
 - `doubleValue() -> float`
 - `abs() -> Float`
 - `negate() -> Float`
+- `sqrt() -> Float`
 - `isZero() -> bool`
 - `isPositive() -> bool`
 - `isNegative() -> bool`
@@ -65,6 +74,7 @@ Methods:
 - `intValue() -> int`
 - `abs() -> Double`
 - `negate() -> Double`
+- `sqrt() -> Double`
 - `isZero() -> bool`
 - `isPositive() -> bool`
 - `isNegative() -> bool`
@@ -149,6 +159,10 @@ Constructor:
 
 - `Bytes(data: array)`
 
+Static helpers:
+
+- `Bytes.fromHex(value: string) -> Bytes`
+
 Methods:
 
 - `length() -> int`
@@ -157,11 +171,32 @@ Methods:
 - `get(index: int) -> int`
 - `contains(value: int) -> bool`
 - `indexOf(value: int) -> int`
+- `slice(start: int) -> Bytes`
+- `concat(other: Bytes) -> Bytes`
+- `equals(other: any) -> bool`
+- `asHex() -> string`
+- `toString() -> string`
 - `asArray() -> array`
 - `unwrap() -> array`
 
-## Behavior Notes
+Notes:
+
+- `Bytes(...)` validates that every element is in the range `0..255`.
+- `asArray()` returns a normalized copy, so mutating that array does not mutate the original `Bytes` instance.
+- `toString()` currently returns the same hexadecimal text as `asHex()`.
+
+## Example
+
+```pf
+import polyloft.common { Integer, Boolean, String }
+
+println(Integer(-5).abs().intValue())
+println(Boolean(true).negate().booleanValue())
+println(String("polyloft").substring(0, 4).toString())
+```
+
+## Notes
 
 - Numeric wrappers unbox in arithmetic operators.
 - `Boolean` unboxes in conditions and logical operators.
-- Native text indexing still happens on raw `string` values; import `String` when you want object-style methods.
+- Native string indexing still happens on raw `string` values; use `String` when you want object-style methods.

@@ -1,0 +1,74 @@
+import polyloft.common { Hashable, Pair }
+
+public class Entry<K, V> implements Hashable, Unstructured, Sliceable:
+	let key: K
+	let value: V
+
+	Entry(key: K, value: V):
+		this.key = key
+		this.value = value
+	end
+
+	def getKey() -> K:
+		return this.key
+	end
+
+	def getValue() -> V:
+		return this.value
+	end
+
+	def first() -> K:
+		return this.key
+	end
+
+	def second() -> V:
+		return this.value
+	end
+
+	def toPair() -> Pair<K, V>:
+		return Pair<K, V>(this.key, this.value)
+	end
+
+	def __length() -> int:
+		return 2
+	end
+
+	def __get(index: int) -> K | V:
+		if index == 0:
+			return this.key
+		end
+		if index == 1:
+			return this.value
+		end
+		throw "Entry index out of range"
+	end
+
+	def __pieces() -> int:
+		return 2
+	end
+
+	def __getPiece(index: int) -> K | V:
+		return this.__get(index)
+	end
+
+	def __get_piece(index: int) -> K | V:
+		return this.__get(index)
+	end
+
+	def __slice(start: int, finish: int) -> array<K | V>:
+		let values: array<K | V> = [this.key, this.value]
+		return values[start...finish]
+	end
+
+	def __hash() -> any:
+		return hash([this.key, this.value])
+	end
+
+	def toString() -> string:
+		return "Entry(" + this.key + ", " + this.value + ")"
+	end
+
+	def asArray() -> array<K | V>:
+		return [this.key, this.value]
+	end
+end

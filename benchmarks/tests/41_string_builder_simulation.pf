@@ -1,0 +1,6 @@
+var started = Sys.time()
+var buffer = [97 + (i % 26) for i in range(5000)]
+var ended = Sys.time()
+println(buffer[100])
+println("TIME_PF")
+println(ended - started)

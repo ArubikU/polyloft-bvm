@@ -1,0 +1,31 @@
+def sieve(n: int) -> int:
+    var primes = new bool[n + 1]
+    for i in range(0, n + 1):
+        primes[i] = true
+    end
+    var p = 2
+    loop p * p <= n:
+        if primes[p]:
+            var i = p * p
+            loop i <= n:
+                primes[i] = false
+                i = i + p
+            end
+        end
+        p = p + 1
+    end
+    var count = 0
+    for i in range(2, n + 1):
+        if primes[i]:
+            count = count + 1
+        end
+    end
+    return count
+end
+
+var started = Sys.time()
+var res = sieve(1000000)
+var ended = Sys.time()
+println(res)
+println("TIME_PF")
+println(ended - started)

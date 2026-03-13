@@ -16,6 +16,14 @@ It is intentionally narrower than the full Polyloft language documentation in th
 - [Imports](imports.md)
 - [Control Flow](control-flow.md)
 
+### Implemented Highlights
+- variables: `let`, `var`, `const`, `final`
+- functions, methods, classes, interfaces, records and enums
+- annotations: `@Override`, `@Equals`, `@Hash`
+- control flow: `if`, `switch`, `for`, `loop`, `do`, `break`, `continue`, `return`
+- exceptions: `try`, `catch`, `throw`
+- imports from user files, bundles and embedded stdlib modules
+
 ## Scope note
 
 The best source of truth for current support is still the implementation and `e2e_test.go`, but these pages should stay synchronized with that tested surface.

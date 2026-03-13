@@ -1,0 +1,13 @@
+var m = {}
+for i in range(0, 10000):
+    m["key" + i] = i
+end
+var started = Sys.time()
+var s = 0
+for i in range(0, 10000):
+    s = s + m["key" + i]
+end
+var ended = Sys.time()
+println(s)
+println("TIME_PF")
+println(ended - started)

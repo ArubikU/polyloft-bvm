@@ -1,0 +1,27 @@
+class Entity:
+    id: int
+
+    Entity():
+        this.id = 0
+    end
+
+    def set_id(v: int) -> void:
+        this.id = v
+    end
+end
+
+var started = Sys.time()
+var base = new Entity()
+base.set_id(1)
+var count = 0
+for i in range(0, 1000000):
+    var other = new Entity()
+    other.set_id(i % 2)
+    if base.id == other.id:
+        count = count + 1
+    end
+end
+var ended = Sys.time()
+println(count)
+println("TIME_PF")
+println(ended - started)

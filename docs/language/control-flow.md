@@ -63,6 +63,37 @@ switch value:
 end
 ```
 
+## Try / catch / throw
+
+`polyloft-bvm` now supports structured exception handling.
+
+Basic form:
+
+```pf
+try:
+    throw "boom"
+catch err:
+    println(err)
+end
+```
+
+Typed catches are also supported when the runtime value matches the requested class:
+
+```pf
+try:
+    println(10 / 0)
+catch (err: ValueError):
+    println(err.message)
+end
+```
+
+Notes:
+
+- `throw` accepts plain values or instances
+- runtime errors such as division by zero are converted into structured exceptions
+- typed catches work with the built-in exception classes and user classes
+- if no catch matches, the VM reports a formatted runtime diagnostic with stack trace
+
 ## Logical operators
 
 The BVM supports:

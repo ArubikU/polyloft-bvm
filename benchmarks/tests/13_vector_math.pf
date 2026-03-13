@@ -1,0 +1,16 @@
+var started = Sys.time()
+var size = 10000
+var v1 = new float[size]
+var v2 = new float[size]
+for i in range(0, size):
+    v1[i] = i * 1.5
+    v2[i] = i * 2.5
+end
+var dot = 0.0
+for i in range(0, size):
+    dot = dot + (v1[i] * v2[i])
+end
+var ended = Sys.time()
+println(dot)
+println("TIME_PF")
+println(ended - started)

@@ -1,0 +1,10 @@
+var started = Sys.time()
+var val = 0.5
+for i in range(0, 5000000):
+    val = val * 1.000001
+    val = val / 1.000001
+end
+var ended = Sys.time()
+println(val)
+println("TIME_PF")
+println(ended - started)

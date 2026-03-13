@@ -1,0 +1,114 @@
+import polyloft.maps.contracts { MapLike }
+import polyloft.maps.entry { Entry }
+import polyloft.collections.arraylist { ArrayList }
+
+public class HashMap<K, V> implements MapLike<K, V>:
+	var storage: map<string, V>
+	var keyEntries: map<string, K>
+
+	HashMap():
+		this.storage = {}
+		this.keyEntries = {}
+	end
+
+	static def from(entries: map<K, V>) -> HashMap<K, V>:
+		let store = HashMap()
+		for key, value in entries:
+			store.put(key, value)
+		end
+		return store
+	end
+
+	def unwrap() -> map<string, V>:
+		return this.storage
+	end
+
+	def size() -> int:
+		return len(this.storage)
+	end
+
+	def isEmpty() -> bool:
+		return this.size() == 0
+	end
+
+	def containsHash(hashed: string) -> bool:
+		for candidate in this.storage:
+			if candidate == hashed:
+				return true
+			end
+		end
+		return false
+	end
+
+	def containsKey(key: K) -> bool:
+		return this.containsHash(hash(key))
+	end
+
+	def __contains(key: K) -> bool:
+		return this.containsKey(key)
+	end
+
+	def containsValue(expected: V) -> bool:
+		for key, value in this.storage:
+			if value == expected:
+				return true
+			end
+		end
+		return false
+	end
+
+	def get(key: K) -> V:
+		return this.storage[hash(key)]
+	end
+
+	def getOrDefault(key: K, fallback: V) -> V:
+		let hashed = hash(key)
+		if this.containsHash(hashed):
+			return this.storage[hashed]
+		end
+		return fallback
+	end
+
+	def put(key: K, value: V) -> HashMap<K, V>:
+		let hashed = hash(key)
+		this.keyEntries[hashed] = key
+		this.storage[hashed] = value
+		return this
+	end
+
+	def putAll(entries: map<K, V>) -> HashMap<K, V>:
+		for key, value in entries:
+			this.put(key, value)
+		end
+		return this
+	end
+
+	def clear() -> HashMap<K, V>:
+		this.storage = {}
+		this.keyEntries = {}
+		return this
+	end
+
+	def delete(key: K) -> bool:
+		let hashed = hash(key)
+		let removed = delete(this.storage, hashed)
+		delete(this.keyEntries, hashed)
+		return removed
+	end
+
+	def keys() -> array<K>:
+		return values(this.keyEntries)
+	end
+
+	def values() -> array<V>:
+		return values(this.storage)
+	end
+
+	def entries() -> array<Entry<K, V>>:
+		let result = ArrayList<Entry<K, V>>()
+		for hashed, value in this.storage:
+			result.add(Entry(this.keyEntries[hashed], value))
+		end
+		return result.asArray()
+	end
+end

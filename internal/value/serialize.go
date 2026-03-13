@@ -45,8 +45,6 @@ func (bc *BinaryCodec) EncodeConstant(w io.Writer, c any) error {
 	}
 
 	switch v := c.(type) {
-	case bytecode.NilConst:
-		return binary.Write(w, binary.LittleEndian, tagNil)
 	case int64:
 		if err := binary.Write(w, binary.LittleEndian, tagInt64); err != nil {
 			return err
@@ -199,6 +197,9 @@ func writeFieldDef(w io.Writer, f FieldDef) error {
 	if err := binary.Write(w, binary.LittleEndian, f.Mutable); err != nil {
 		return err
 	}
+	if err := binary.Write(w, binary.LittleEndian, f.IsFinal); err != nil {
+		return err
+	}
 	if err := bytecode.WriteString(w, f.TypeName); err != nil {
 		return err
 	}
@@ -211,6 +212,9 @@ func writeFieldDef(w io.Writer, f FieldDef) error {
 func readFieldDef(r io.Reader) (FieldDef, error) {
 	var f FieldDef
 	if err := binary.Read(r, binary.LittleEndian, &f.Mutable); err != nil {
+		return f, err
+	}
+	if err := binary.Read(r, binary.LittleEndian, &f.IsFinal); err != nil {
 		return f, err
 	}
 	var err error
@@ -452,19 +456,24 @@ func writeClass(w io.Writer, c *Class, enc *BinaryCodec) error {
 		}
 	}
 
-	// Special method pointers: IterableLength, IterableGet, PiecesMethod, GetPieceMethod,
-	// IndexGetMethod, IndexSetMethod, ContainsMethod, SliceMethod, EqualMethod, HashMethod
-	writeOptFn := func(fn *bytecode.Function) error {
-		if fn == nil {
-			return binary.Write(w, binary.LittleEndian, byte(0))
+	var specialCount uint32
+	for _, slot := range specialMethodSlotOrder {
+		if fn, ok := c.DeclaredSpecialMethod(slot); ok && fn != nil {
+			specialCount++
 		}
-		if err := binary.Write(w, binary.LittleEndian, byte(1)); err != nil {
+	}
+	if err := binary.Write(w, binary.LittleEndian, specialCount); err != nil {
+		return err
+	}
+	for _, slot := range specialMethodSlotOrder {
+		fn, ok := c.DeclaredSpecialMethod(slot)
+		if !ok || fn == nil {
+			continue
+		}
+		if err := binary.Write(w, binary.LittleEndian, uint8(slot)); err != nil {
 			return err
 		}
-		return fn.WriteBinary(w, enc)
-	}
-	for _, fn := range []*bytecode.Function{c.IterableLength, c.IterableGet, c.PiecesMethod, c.GetPieceMethod, c.IndexGetMethod, c.IndexSetMethod, c.ContainsMethod, c.SliceMethod, c.EqualMethod, c.HashMethod} {
-		if err := writeOptFn(fn); err != nil {
+		if err := fn.WriteBinary(w, enc); err != nil {
 			return err
 		}
 	}
@@ -746,46 +755,21 @@ func readClass(r io.Reader, dec *BinaryCodec, c *Class) error {
 		c.StaticVisibility[k] = v
 	}
 
-	// Special method pointers
-	readOptFn := func() (*bytecode.Function, error) {
-		var has byte
-		if err := binary.Read(r, binary.LittleEndian, &has); err != nil {
-			return nil, err
+	c.SpecialMethods = make(map[SpecialMethodSlot]*bytecode.Function)
+	var specialCount uint32
+	if err := binary.Read(r, binary.LittleEndian, &specialCount); err != nil {
+		return err
+	}
+	for i := uint32(0); i < specialCount; i++ {
+		var slot uint8
+		if err := binary.Read(r, binary.LittleEndian, &slot); err != nil {
+			return err
 		}
-		if has == 1 {
-			return bytecode.ReadBinaryFunction(r, dec)
+		fn, err := bytecode.ReadBinaryFunction(r, dec)
+		if err != nil {
+			return err
 		}
-		return nil, nil
-	}
-	if c.IterableLength, err = readOptFn(); err != nil {
-		return err
-	}
-	if c.IterableGet, err = readOptFn(); err != nil {
-		return err
-	}
-	if c.PiecesMethod, err = readOptFn(); err != nil {
-		return err
-	}
-	if c.GetPieceMethod, err = readOptFn(); err != nil {
-		return err
-	}
-	if c.IndexGetMethod, err = readOptFn(); err != nil {
-		return err
-	}
-	if c.IndexSetMethod, err = readOptFn(); err != nil {
-		return err
-	}
-	if c.ContainsMethod, err = readOptFn(); err != nil {
-		return err
-	}
-	if c.SliceMethod, err = readOptFn(); err != nil {
-		return err
-	}
-	if c.EqualMethod, err = readOptFn(); err != nil {
-		return err
-	}
-	if c.HashMethod, err = readOptFn(); err != nil {
-		return err
+		c.SpecialMethods[SpecialMethodSlot(slot)] = fn
 	}
 
 	return nil

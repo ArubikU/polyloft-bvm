@@ -1,488 +1,373 @@
 package main
 
 import (
-	"archive/zip"
-	"bytes"
-	"encoding/binary"
-	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/ArubikU/polyloft-bvm/internal/bytecode"
-	"github.com/ArubikU/polyloft-bvm/internal/compiler"
+	"github.com/ArubikU/polyloft-bvm/internal/diagnostic"
 	"github.com/ArubikU/polyloft-bvm/internal/modules"
 	bvmruntime "github.com/ArubikU/polyloft-bvm/internal/runtime"
-	"github.com/ArubikU/polyloft-bvm/internal/sema"
-	"github.com/ArubikU/polyloft-bvm/internal/value"
 	"github.com/ArubikU/polyloft-bvm/internal/vm"
-	"github.com/BurntSushi/toml"
 )
 
-type PfDependency struct {
-	Name    string `toml:"name"`
-	Version string `toml:"version"`
-	Include *bool  `toml:"include"`
-}
-
-type Config struct {
-	Project struct {
-		Name       string `toml:"name"`
-		Version    string `toml:"version"`
-		EntryPoint string `toml:"entry_point"`
-	} `toml:"project"`
-	Dependencies struct {
-		Pf []PfDependency `toml:"pf"`
-	} `toml:"dependencies"`
+type runOptions struct {
+	jitThreshold *int
+	jitLog       bool
 }
 
 func main() {
-	if len(os.Args) < 2 {
+	if len(os.Args) >= 2 && os.Args[1] == "types" {
+		fatal(typesTarget(os.Args[2:]))
+		return
+	}
+	if len(os.Args) >= 2 && os.Args[1] == "runline" {
+		fatal(runlineTarget(os.Args[2:]))
+		return
+	}
+	if len(os.Args) >= 2 && os.Args[1] == "check" {
+		fatal(checkTarget(os.Args[2:]))
+		return
+	}
+	if len(os.Args) < 3 {
 		usage()
 		os.Exit(1)
 	}
 
 	command := os.Args[1]
+	if command == "run" {
+		path, opts, err := parseRunArgs(os.Args[2:])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fatal(runTarget(path, opts))
+		return
+	}
+	var path string
+	var outFile string
+
+	if (command == "dump" || command == "compile") && len(os.Args) >= 4 && os.Args[2] == "-o" {
+		if len(os.Args) < 5 {
+			fmt.Fprintln(os.Stderr, "missing output file after -o")
+			os.Exit(1)
+		}
+		outFile = os.Args[3]
+		path = os.Args[4]
+	} else {
+		path = os.Args[2]
+	}
+
 	switch command {
-	case "run":
-		runCommand(os.Args[2:])
+	case "check":
+		fatal(checkPathTarget(path))
 	case "dump":
-		dumpCommand(os.Args[2:])
+		fatal(dumpTarget(path, outFile))
 	case "compile":
-		compileCommand(os.Args[2:])
+		fatal(compileTarget(path, outFile))
 	default:
 		usage()
 		os.Exit(1)
 	}
 }
 
-func runCommand(args []string) {
-	runCmd := flag.NewFlagSet("run", flag.ContinueOnError)
-	if err := runCmd.Parse(args); err != nil {
-		os.Exit(1)
+func runTarget(path string, opts runOptions) error {
+	if strings.HasSuffix(path, ".pfbc") {
+		fn, err := modules.LoadCompiledModule(path)
+		if err != nil {
+			return err
+		}
+		registry := bvmruntime.NewRegistry()
+		bvmruntime.InstallCoreGlobals(registry, os.Stdout)
+		machine := vm.NewWithRegistry(os.Stdout, registry)
+		applyRunOptions(machine, fn, opts)
+		_, err = machine.Run(fn)
+		return err
 	}
-
-	var path string
-	if runCmd.NArg() < 1 {
-		path = "."
-	} else {
-		path = runCmd.Arg(0)
-	}
-
-	var fn *bytecode.Function
-	var registry *bvmruntime.Registry
-	var err error
-
-	// Detect if it's a .pfx ZIP bundle
 	if strings.HasSuffix(path, ".pfx") {
-		fn, registry, err = runFromBundle(path)
-	} else {
-		// Existing logic for files/directories
-		if info, err := os.Stat(path); err == nil && (info.IsDir() || strings.HasSuffix(path, ".toml")) {
-			configPath := path
-			if info.IsDir() {
-				configPath = filepath.Join(path, "polyloft.toml")
-			}
-			cfg, err := loadConfig(configPath)
-			if err != nil {
-				fatal(err)
-			}
-			path = filepath.Join(filepath.Dir(configPath), cfg.Project.EntryPoint)
+		fn, registry, err := modules.LoadBundle(path, os.Stdout)
+		if err != nil {
+			return err
 		}
-		fn, registry, err = prepareAndCompile(path)
+		machine := vm.NewWithRegistry(os.Stdout, registry)
+		applyRunOptions(machine, fn, opts)
+		_, err = machine.Run(fn)
+		return err
 	}
-
+	fn, registry, err := modules.CompileSource(path, os.Stdout)
 	if err != nil {
-		fatal(err)
+		return err
 	}
-
 	machine := vm.NewWithRegistry(os.Stdout, registry)
-	if _, err := machine.Run(fn); err != nil {
-		fatal(err)
+	applyRunOptions(machine, fn, opts)
+	_, err = machine.Run(fn)
+	return err
+}
+
+func applyRunOptions(machine *vm.VM, fn *bytecode.Function, opts runOptions) {
+	if machine == nil {
+		return
+	}
+	if !shouldEnableJITForFunction(fn, opts) {
+		return
+	}
+	if opts.jitThreshold != nil {
+		machine.SetJITWarmupThreshold(*opts.jitThreshold)
+	}
+	if opts.jitLog {
+		machine.SetJITLogger(os.Stderr)
 	}
 }
 
-func runFromBundle(path string) (*bytecode.Function, *bvmruntime.Registry, error) {
-	r, err := zip.OpenReader(path)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer r.Close()
+func shouldEnableJITForFunction(fn *bytecode.Function, opts runOptions) bool {
+	return fn != nil && opts.jitThreshold != nil
+}
 
-	var tomlContent []byte
-
-	for _, f := range r.File {
-		if f.Name == "polyloft.toml" {
-			rc, err := f.Open()
-			if err != nil {
-				return nil, nil, err
+func parseRunArgs(args []string) (string, runOptions, error) {
+	opts := runOptions{}
+	positionals := make([]string, 0, 1)
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--jit":
+			threshold := 1
+			if opts.jitThreshold == nil {
+				opts.jitThreshold = &threshold
 			}
-			tomlContent, _ = io.ReadAll(rc)
-			rc.Close()
+		case "--jit-threshold":
+			i++
+			if i >= len(args) {
+				return "", runOptions{}, fmt.Errorf("missing value after --jit-threshold")
+			}
+			threshold, err := strconv.Atoi(args[i])
+			if err != nil || threshold < 1 {
+				return "", runOptions{}, fmt.Errorf("invalid --jit-threshold %q", args[i])
+			}
+			opts.jitThreshold = &threshold
+		case "--jit-log":
+			opts.jitLog = true
+		default:
+			positionals = append(positionals, args[i])
 		}
 	}
-
-	if tomlContent == nil {
-		return nil, nil, fmt.Errorf("invalid .pfx bundle: missing polyloft.toml")
+	if len(positionals) != 1 {
+		return "", runOptions{}, fmt.Errorf("usage: polyloft-bvm run [--jit] [--jit-threshold <n>] [--jit-log] <path>")
 	}
-
-	var cfg Config
-	if _, err := toml.Decode(string(tomlContent), &cfg); err != nil {
-		return nil, nil, fmt.Errorf("failed to parse polyloft.toml in bundle: %v", err)
-	}
-
-	loader := &modules.Loader{
-		Stdout:       os.Stdout,
-		WorkspaceDir: ".",
-		Cache:        make(map[string]*modules.LoadedModule),
-		Loading:      make(map[string]bool),
-		Archive:      r.File, // Pass the zip archive files directly to the loader
-	}
-
-	entryPoint := cfg.Project.EntryPoint
-	fn, registry, err := loader.PrepareFromBundle(entryPoint)
-	if err != nil {
-		return nil, nil, err
-	}
-	return fn, registry, nil
+	return positionals[0], opts, nil
 }
 
-func dumpCommand(args []string) {
-	dumpCmd := flag.NewFlagSet("dump", flag.ContinueOnError)
-	outFile := dumpCmd.String("o", "", "output file (.pfbc)")
-	disassemble := dumpCmd.Bool("d", false, "disassemble to text")
-	if err := dumpCmd.Parse(args); err != nil {
-		os.Exit(1)
-	}
+func checkPathTarget(path string) error {
+	return modules.CheckSource(path, io.Discard)
+}
 
-	if dumpCmd.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "missing file to dump")
-		os.Exit(1)
-	}
-	path := dumpCmd.Arg(0)
-
-	fn, registry, err := prepareAndCompile(path)
+func runlineTarget(args []string) error {
+	source, logicalPath, checkOnly, err := parseInlineArgs(args)
 	if err != nil {
-		fatal(err)
+		return err
 	}
+	if checkOnly {
+		return modules.CheckInlineSource(logicalPath, source, io.Discard)
+	}
+	fn, registry, err := modules.CompileInlineSource(logicalPath, source, os.Stdout)
+	if err != nil {
+		return err
+	}
+	machine := vm.NewWithRegistry(os.Stdout, registry)
+	_, err = machine.Run(fn)
+	return err
+}
 
-	if *outFile != "" {
-		// If disassemble is requested OR if the user didn't specify .pfbc,
-		// or if they explicitly asked for text, we write text.
-		// However, the rule we established is that .pfbc is binary.
-		if *disassemble {
-			dumpContent := fn.Chunk.Disassemble(fn.Name)
-			if err := os.WriteFile(*outFile, []byte(dumpContent), 0644); err != nil {
-				fatal(err)
+func checkTarget(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: polyloft-bvm check <path>")
+	}
+	return checkPathTarget(args[0])
+}
+
+func parseInlineArgs(args []string) (string, string, bool, error) {
+	checkOnly := false
+	readFromStdin := false
+	logicalPath := ""
+	positionals := make([]string, 0, 1)
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--check":
+			checkOnly = true
+		case "--stdin":
+			readFromStdin = true
+		case "--path":
+			i++
+			if i >= len(args) {
+				return "", "", false, fmt.Errorf("missing value after --path")
 			}
-		} else {
-			// Binary dump
-			if !strings.HasSuffix(*outFile, ".pfbc") {
-				*outFile += ".pfbc"
-			}
-			f, err := os.Create(*outFile)
-			if err != nil {
-				fatal(err)
-			}
-			defer f.Close()
-			codec := value.NewBinaryCodec()
-			if err := fn.WriteBinary(f, codec); err != nil {
-				fatal(err)
-			}
+			logicalPath = args[i]
+		default:
+			positionals = append(positionals, args[i])
 		}
-	} else {
-		_ = registry // registry is used in prepareAndCompile
-		fmt.Print(fn.Chunk.Disassemble(fn.Name))
 	}
+	var source string
+	if readFromStdin {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return "", "", false, err
+		}
+		source = string(data)
+	} else {
+		if len(positionals) != 1 {
+			return "", "", false, fmt.Errorf("usage: polyloft-bvm runline [--check] [--stdin] [--path <logical-path>] <inline-script>")
+		}
+		source = positionals[0]
+	}
+	if strings.TrimSpace(source) == "" {
+		return "", "", false, fmt.Errorf("inline source is empty")
+	}
+	return source, logicalPath, checkOnly, nil
 }
 
-func compileCommand(args []string) {
-	compileCmd := flag.NewFlagSet("compile", flag.ContinueOnError)
-	outFile := compileCmd.String("o", "", "output file (.pfx)")
-	if err := compileCmd.Parse(args); err != nil {
-		os.Exit(1)
-	}
-
-	var path string
-	if compileCmd.NArg() < 1 {
-		path = "."
+func dumpTarget(path string, outFile string) error {
+	var disassembly string
+	if strings.HasSuffix(path, ".pfbc") {
+		fn, err := modules.LoadCompiledModule(path)
+		if err != nil {
+			return err
+		}
+		disassembly = fn.Chunk.Disassemble(fn.Name)
+	} else if strings.HasSuffix(path, ".pfx") {
+		fn, _, err := modules.LoadBundle(path, os.Stdout)
+		if err != nil {
+			return err
+		}
+		disassembly = fn.Chunk.Disassemble(fn.Name)
 	} else {
-		path = compileCmd.Arg(0)
+		fn, _, err := modules.CompileSource(path, os.Stdout)
+		if err != nil {
+			return err
+		}
+		disassembly = fn.Chunk.Disassemble(fn.Name)
 	}
+	if outFile == "" {
+		fmt.Print(disassembly)
+		return nil
+	}
+	return os.WriteFile(outFile, []byte(disassembly), 0o644)
+}
 
+func compileTarget(path string, outFile string) error {
+	target, err := defaultCompileTarget(path, outFile)
+	if err != nil {
+		return err
+	}
+	f, err := os.Create(target)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if isProjectInput(path) {
+		return modules.BuildProjectBundle(path, os.Stdout, f)
+	}
+	return modules.WriteCompiledModule(path, os.Stdout, f)
+}
+
+func defaultCompileTarget(path string, outFile string) (string, error) {
+	if outFile != "" {
+		return outFile, nil
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	if isProjectInput(path) {
+		if strings.EqualFold(filepath.Base(absPath), "polyloft.toml") {
+			absPath = filepath.Dir(absPath)
+		}
+		return absPath + ".pfx", nil
+	}
+	if strings.HasSuffix(absPath, ".pf") {
+		return strings.TrimSuffix(absPath, ".pf") + ".pfbc", nil
+	}
+	return absPath + ".pfbc", nil
+}
+
+func isProjectInput(path string) bool {
 	info, err := os.Stat(path)
 	if err != nil {
-		fatal(err)
-	}
-
-	configPath := path
-	if info.IsDir() {
-		configPath = filepath.Join(path, "polyloft.toml")
-	}
-
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "compile command requires a polyloft.toml file. Not found at: %s\n", configPath)
-		os.Exit(1)
-	}
-
-	cfg, err := loadConfig(configPath)
-	if err != nil {
-		fatal(err)
-	}
-
-	entryPoint := filepath.Join(filepath.Dir(configPath), cfg.Project.EntryPoint)
-
-	// Use a shared loader to capture all compiled modules in cache
-	workspaceDir := filepath.Dir(configPath)
-	loader := &modules.Loader{
-		Stdout:       os.Stdout,
-		WorkspaceDir: workspaceDir,
-		Cache:        make(map[string]*modules.LoadedModule),
-		Loading:      make(map[string]bool),
-	}
-
-	program, registry, err := loader.Prepare(entryPoint)
-	if err != nil {
-		fatal(err)
-	}
-	if err := sema.Check(program, registry); err != nil {
-		fatal(err)
-	}
-	mainFn, err := compiler.CompileWithRegistry(program, registry)
-	if err != nil {
-		fatal(err)
-	}
-
-	target := *outFile
-	if target == "" {
-		target = cfg.Project.Name + ".pfx"
-		if target == ".pfx" {
-			target = "out.pfx"
-		}
-	}
-
-	// Create ZIP bundle
-	buf := new(bytes.Buffer)
-	zw := zip.NewWriter(buf)
-
-	// Add polyloft.toml
-	tf, err := zw.Create("polyloft.toml")
-	if err != nil {
-		fatal(err)
-	}
-	confData, _ := os.ReadFile(configPath)
-	tf.Write(confData)
-
-	// Helper to get relative path for zip entry names
-	absConfigDir, _ := filepath.Abs(filepath.Dir(configPath))
-	rel := func(p string) string {
-		absP, _ := filepath.Abs(p)
-		r, err := filepath.Rel(absConfigDir, absP)
-		if err != nil {
-			return p // fallback
-		}
-		return strings.ReplaceAll(r, "\\", "/")
-	}
-
-	// Collect exports for the main module
-	mainExports, _ := loader.CollectExports(program, nil, mainFn, registry) // machine nil here but it's okay for static exports
-
-	// Add entry point module
-	if err := saveModuleToZip(zw, rel(entryPoint), mainFn, mainExports); err != nil {
-		fatal(err)
-	}
-
-	// Helper to check if a module belongs to an excluded dependency
-	isExcluded := func(modPath string) bool {
-		if modules.IsStdlibModulePath(modPath) {
-			for _, dep := range cfg.Dependencies.Pf {
-				if dep.Name == "stdlib" {
-					if dep.Include != nil {
-						return !*dep.Include
-					}
-					return true // default false for stdlib if not explicitly included
-				}
-			}
-			return true // default false for stdlib if omitted from toml
-		}
-
-		for _, dep := range cfg.Dependencies.Pf {
-			if dep.Name == "stdlib" {
-				continue
-			}
-			if dep.Include != nil && !*dep.Include {
-				parts := strings.Split(filepath.ToSlash(modPath), "/")
-				for _, p := range parts {
-					if p == dep.Name {
-						return true
-					}
-				}
-			}
-		}
 		return false
 	}
-
-	// Add all imported modules from cache
-	for _, mod := range loader.Cache {
-		if isExcluded(mod.Path) {
-			continue
-		}
-		entryName := rel(mod.Path)
-		if modules.IsStdlibModulePath(mod.Path) {
-			entryName = modules.TrimStdlibModulePath(mod.Path)
-		}
-		if err := saveModuleToZip(zw, entryName, mod.Function, mod.Exports); err != nil {
-			fatal(err)
-		}
+	if info.IsDir() {
+		_, err := os.Stat(filepath.Join(path, "polyloft.toml"))
+		return err == nil
 	}
-
-	if err := zw.Close(); err != nil {
-		fatal(err)
-	}
-
-	if err := os.WriteFile(target, buf.Bytes(), 0644); err != nil {
-		fatal(err)
-	}
-
-	fmt.Printf("Compiled and bundled to %s\n", target)
-}
-
-// saveModuleToZip writes the compiled function and its metadata purely into the .pfbc file.
-func saveModuleToZip(zw *zip.Writer, relPath string, fn *bytecode.Function, exports map[string]modules.ExportMetadata) error {
-	basePath := strings.TrimSuffix(relPath, filepath.Ext(relPath))
-
-	f, err := zw.Create(basePath + ".pfbc")
-	if err != nil {
-		return err
-	}
-
-	codec := value.NewBinaryCodec()
-	if err := fn.WriteBinary(f, codec); err != nil {
-		return err
-	}
-
-	if exports == nil {
-		exports = make(map[string]modules.ExportMetadata)
-	}
-
-	// We only need the Spec and Visibility for bundle loading (evaluating ast.Visibility and type checking)
-	// We CANNOT serialize Value, so we make sure it's nil
-	exportMeta := make(map[string]modules.ExportMetadata)
-	for k, meta := range exports {
-		exportMeta[k] = modules.ExportMetadata{
-			Spec:       flattenSpec(meta.Spec, 0),
-			Visibility: meta.Visibility,
-		}
-	}
-
-	// Wait, we need to defer f.Close() to close the file or else the zip writer won't flush the file.
-	// Oh, I opened `f`, but `zw.Create` returns an io.Writer. We don't close it!
-
-	exportData, err := json.Marshal(exportMeta)
-	if err != nil {
-		return err
-	}
-
-	if err := binary.Write(f, binary.LittleEndian, uint32(len(exportData))); err != nil {
-		return err
-	}
-
-	if _, err := f.Write(exportData); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func prepareAndCompile(path string) (*bytecode.Function, *bvmruntime.Registry, error) {
-	program, registry, err := modules.Prepare(path, os.Stdout)
-	if err != nil {
-		return nil, nil, err
-	}
-	if registry == nil {
-		registry = bvmruntime.NewRegistry()
-		bvmruntime.InstallCoreGlobals(registry, os.Stdout)
-	}
-	if err := sema.Check(program, registry); err != nil {
-		return nil, nil, err
-	}
-	fn, err := compiler.CompileWithRegistry(program, registry)
-	return fn, registry, err
-}
-
-func loadConfig(path string) (*Config, error) {
-	var cfg Config
-	if _, err := toml.DecodeFile(path, &cfg); err != nil {
-		return nil, err
-	}
-	if cfg.Project.EntryPoint == "" {
-		return nil, fmt.Errorf("project.entry_point is required in polyloft.toml")
-	}
-	return &cfg, nil
+	return strings.EqualFold(filepath.Base(path), "polyloft.toml")
 }
 
 func usage() {
-	fmt.Println("Usage: polyloft-bvm <run|dump|compile> [options] <file|project>")
-	fmt.Println("\nCommands:")
-	fmt.Println("  run <file.pf|project_dir|file.pfx>")
-	fmt.Println("      Runs a single file, a project dir, or a compiled bundle")
-	fmt.Println("  dump [-d] [-o <file.pfbc>] <file.pf>")
-	fmt.Println("      Prints disassembly or saves binary bytecode (-o) to a file")
-	fmt.Println("      Use -d with -o to save text disassembly instead of binary")
-	fmt.Println("  compile [-o <file.pfx>] [project_dir]")
-	fmt.Println("      Compiles a project to a .pfx bundle (requires polyloft.toml)")
+	fmt.Println("Usage: polyloft-bvm <run|check|dump|compile> [options] <path>")
+	fmt.Println("       polyloft-bvm runline [--check] [--stdin] [--path <logical-path>] <inline-script>")
+	fmt.Println("       polyloft-bvm types <primitives|runtime|stdlib> [-o <file>]")
+	fmt.Println("  run             execute source (.pf), compiled module (.pfbc), bundle (.pfx), or project")
+	fmt.Println("  run --jit       force JIT hotness threshold to 1 for immediate compilation attempts")
+	fmt.Println("  run --jit-threshold <n>  set the JIT hotness threshold explicitly")
+	fmt.Println("  run --jit-log   write JIT compilation/execution logs to stderr")
+	fmt.Println("  check           parse and type-check a source (.pf), bundle entry, or project without running it")
+	fmt.Println("  runline         execute an inline Polyloft script")
+	fmt.Println("  runline --check parse and type-check an inline script without running it")
+	fmt.Println("  runline --stdin read the inline script from stdin")
+	fmt.Println("  runline --path  provide a logical file path for diagnostics and import resolution")
+	fmt.Println("  dump            print disassembly from source or compiled artifact")
+	fmt.Println("  dump -o <file>  write disassembly text to a file")
+	fmt.Println("  compile         write a compiled module (.pfbc) or project bundle (.pfx)")
+	fmt.Println("  compile -o <file>   override output path")
+	fmt.Println("  types primitives    write the primitive types manifest")
+	fmt.Println("  types runtime       write the runtime/native manifest")
+	fmt.Println("  types stdlib        write the stdlib types manifest")
 }
 
-func flattenSpec(s bvmruntime.Spec, depth int) bvmruntime.Spec {
-	if depth > 2 {
-		return bvmruntime.Spec{Name: s.Name, TypeName: s.TypeName, IsAbstract: s.IsAbstract, IsSealed: s.IsSealed, IsInterface: s.IsInterface, IsRecord: s.IsRecord}
+func typesTarget(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("missing types target")
 	}
-	res := bvmruntime.Spec{
-		Name:                  s.Name,
-		TypeName:              s.TypeName,
-		TypeParams:            s.TypeParams,
-		ConstructorVisibility: s.ConstructorVisibility,
-		IsAbstract:            s.IsAbstract,
-		IsSealed:              s.IsSealed,
-		IsInterface:           s.IsInterface,
-		IsRecord:              s.IsRecord,
-		Permits:               s.Permits,
+	target := args[0]
+	outFile := ""
+	if len(args) == 3 && args[1] == "-o" {
+		outFile = args[2]
+	} else if len(args) != 1 {
+		return fmt.Errorf("usage: polyloft-bvm types <primitives|runtime|stdlib> [-o <file>]")
 	}
-	if s.Callable != nil {
-		res.Callable = &bvmruntime.CallableSpec{
-			Params:   s.Callable.Params,
-			Return:   s.Callable.Return,
-			Variadic: s.Callable.Variadic,
-		}
+	writer, closeFn, err := typesOutputWriter(outFile)
+	if err != nil {
+		return err
 	}
-	if s.Members != nil {
-		res.Members = make(map[string]bvmruntime.Spec, len(s.Members))
-		for k, v := range s.Members {
-			res.Members[k] = flattenSpec(v, depth+1)
-		}
+	defer closeFn()
+	switch target {
+	case "primitives":
+		return modules.WritePrimitiveTypesManifest(writer)
+	case "runtime":
+		return modules.WriteRuntimeTypesManifest(writer)
+	case "stdlib":
+		return modules.WriteStdlibTypesManifest(writer)
+	default:
+		return fmt.Errorf("unknown types target %q", target)
 	}
-	if s.InstanceMembers != nil {
-		res.InstanceMembers = make(map[string]bvmruntime.Spec, len(s.InstanceMembers))
-		for k, v := range s.InstanceMembers {
-			res.InstanceMembers[k] = flattenSpec(v, depth+1)
-		}
+}
+
+func typesOutputWriter(path string) (io.Writer, func(), error) {
+	if path == "" {
+		return os.Stdout, func() {}, nil
 	}
-	if s.Module != nil {
-		res.Module = &bvmruntime.ModuleSpec{Name: s.Module.Name}
-		if s.Module.Members != nil {
-			res.Module.Members = make(map[string]bvmruntime.Spec, len(s.Module.Members))
-			for k, v := range s.Module.Members {
-				res.Module.Members[k] = flattenSpec(v, depth+1)
-			}
-		}
+	f, err := os.Create(path)
+	if err != nil {
+		return nil, func() {}, err
 	}
-	return res
+	return f, func() { _ = f.Close() }, nil
 }
 
 func fatal(err error) {
-	fmt.Fprintln(os.Stderr, err)
+	if err == nil {
+		return
+	}
+	fmt.Fprintln(os.Stderr, diagnostic.Format(err))
 	os.Exit(1)
 }

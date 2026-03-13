@@ -60,104 +60,65 @@ func (f *Function) WriteTo(w io.Writer) error {
 	registerGobTypes()
 	// sanitize constants recursively so gob never sees a nil interface element
 	for i, c := range f.Chunk.Constants {
-		f.Chunk.Constants[i] = SanitizeConst(c)
+		f.Chunk.Constants[i] = sanitizeConst(c)
 	}
 	return gob.NewEncoder(w).Encode(f)
 }
 
-// SanitizeConst walks through a constant value and replaces any nil entries
+// sanitizeConst walks through a constant value and replaces any nil entries
 // with NilConst{} so that gob encoding will succeed.  It handles slices,
 // maps and nested combinations.
-func SanitizeConst(c any) any {
+func sanitizeConst(c any) any {
 	if c == nil {
 		return NilConst{}
 	}
-
+	// check for pointer to struct with Elements/Entries or Object field
+	vptr := reflect.ValueOf(c)
+	if vptr.Kind() == reflect.Ptr {
+		vstruct := vptr.Elem()
+		if vstruct.Kind() == reflect.Struct {
+			// Elements field (for arrays)
+			if field := vstruct.FieldByName("Elements"); field.IsValid() && field.Kind() == reflect.Slice {
+				for i := 0; i < field.Len(); i++ {
+					field.Index(i).Set(reflect.ValueOf(sanitizeConst(field.Index(i).Interface())))
+				}
+				return c
+			}
+			// Entries field (for maps)
+			if field := vstruct.FieldByName("Entries"); field.IsValid() && field.Kind() == reflect.Map {
+				for _, key := range field.MapKeys() {
+					val := field.MapIndex(key).Interface()
+					field.SetMapIndex(key, reflect.ValueOf(sanitizeConst(val)))
+				}
+				return c
+			}
+			// Object field (for value.Value and possibly others)
+			if field := vstruct.FieldByName("Object"); field.IsValid() {
+				obj := field.Interface()
+				san := sanitizeConst(obj)
+				field.Set(reflect.ValueOf(san))
+				return c
+			}
+		}
+	}
+	// use reflection to handle slices/arrays/maps of arbitrary element types
 	v := reflect.ValueOf(c)
 	switch v.Kind() {
-	case reflect.Ptr:
-		if v.IsNil() {
-			return NilConst{}
-		}
-		vstruct := v.Elem()
-		if vstruct.Kind() == reflect.Struct {
-			for i := 0; i < vstruct.NumField(); i++ {
-				field := vstruct.Field(i)
-				if field.CanSet() {
-					fk := field.Kind()
-					if fk == reflect.Interface || fk == reflect.Slice || fk == reflect.Map || fk == reflect.Ptr {
-						san := SanitizeConst(field.Interface())
-						sanV := reflect.ValueOf(san)
-						if sanV.IsValid() && sanV.Type().AssignableTo(field.Type()) {
-							field.Set(sanV)
-						}
-					} else if fk == reflect.Struct {
-						san := SanitizeConst(field.Interface())
-						sanV := reflect.ValueOf(san)
-						if sanV.IsValid() && sanV.Type().AssignableTo(field.Type()) {
-							field.Set(sanV)
-						}
-					}
-				}
-			}
-		}
-		return c
-
-	case reflect.Struct:
-		newStruct := reflect.New(v.Type()).Elem()
-		for i := 0; i < v.NumField(); i++ {
-			field := v.Field(i)
-			newField := newStruct.Field(i)
-			if newField.CanSet() {
-				san := SanitizeConst(field.Interface())
-				sanV := reflect.ValueOf(san)
-				if sanV.IsValid() && sanV.Type().AssignableTo(newField.Type()) {
-					newField.Set(sanV)
-				} else if !sanV.IsValid() || sanV.Type().Kind() == reflect.Ptr {
-					// keep zero element
-				} else {
-					newField.Set(field)
-				}
-			}
-		}
-		return newStruct.Interface()
-
 	case reflect.Slice, reflect.Array:
-		newSlice := reflect.MakeSlice(v.Type(), v.Len(), v.Len())
 		for i := 0; i < v.Len(); i++ {
 			elem := v.Index(i).Interface()
-			san := SanitizeConst(elem)
-			sanV := reflect.ValueOf(san)
-			if sanV.IsValid() && sanV.Type().AssignableTo(v.Type().Elem()) {
-				newSlice.Index(i).Set(sanV)
-			} else {
-				if !sanV.IsValid() || sanV.Type().Kind() == reflect.Ptr {
-					// already zeroed by MakeSlice
-				} else {
-					newSlice.Index(i).Set(v.Index(i))
-				}
-			}
+			san := sanitizeConst(elem)
+			v.Index(i).Set(reflect.ValueOf(san))
 		}
-		return newSlice.Interface()
-
+		return v.Interface()
 	case reflect.Map:
-		newMap := reflect.MakeMap(v.Type())
-		for _, key := range v.MapKeys() {
-			val := v.MapIndex(key).Interface()
-			san := SanitizeConst(val)
-			sanV := reflect.ValueOf(san)
-			if sanV.IsValid() && sanV.Type().AssignableTo(v.Type().Elem()) {
-				newMap.SetMapIndex(key, sanV)
-			} else {
-				if san == nil || reflect.TypeOf(san) == reflect.TypeOf(NilConst{}) {
-					newMap.SetMapIndex(key, reflect.Zero(v.Type().Elem()))
-				} else {
-					newMap.SetMapIndex(key, v.MapIndex(key))
-				}
+		if v.Type().Key().Kind() == reflect.String {
+			for _, key := range v.MapKeys() {
+				val := v.MapIndex(key).Interface()
+				v.SetMapIndex(key, reflect.ValueOf(sanitizeConst(val)))
 			}
 		}
-		return newMap.Interface()
-
+		return v.Interface()
 	default:
 		return c
 	}
@@ -213,21 +174,15 @@ func (c *Chunk) PatchUint16(offset int, v uint16) {
 
 func (c *Chunk) Disassemble(name string) string {
 	var out strings.Builder
-	var nested []*Function
-
 	fmt.Fprintf(&out, "== %s ==\n", name)
 	for offset := 0; offset < len(c.Code); {
 		op := Op(c.Code[offset])
 		line := c.Lines[offset]
-		fmt.Fprintf(&out, "%04d L%-3d %-20s ", offset, line, op.String())
+		fmt.Fprintf(&out, "%04d L%-3d %-14s", offset, line, op.String())
 		switch op {
 		case OpConstant, OpDefineGlobal, OpGetGlobal, OpSetGlobal, OpGetProperty, OpSetProperty, OpClosure:
 			idx := readUint16(c.Code[offset+1:])
-			constant := c.Constants[idx]
-			fmt.Fprintf(&out, "%d (%v)", idx, constant)
-			if fn, ok := constant.(*Function); ok {
-				nested = append(nested, fn)
-			}
+			fmt.Fprintf(&out, "%d (%v)", idx, c.Constants[idx])
 			offset += 3
 		case OpWrapInterface:
 			ifaceIdx := readUint16(c.Code[offset+1:])
@@ -241,8 +196,34 @@ func (c *Chunk) Disassemble(name string) string {
 		case OpGetLocal, OpSetLocal, OpGetCapture, OpSetCapture, OpCall, OpCallSuper, OpRange, OpTuple, OpUnpack, OpGetField, OpSetField, OpGetThisField, OpSetThisField, OpDefineGlobalSlot, OpGetGlobalSlot, OpSetGlobalSlot, OpArray, OpMap:
 			fmt.Fprintf(&out, "%d", c.Code[offset+1])
 			offset += 2
+		case OpCallGlobalSlot:
+			fmt.Fprintf(&out, "slot=%d argc=%d", c.Code[offset+1], c.Code[offset+2])
+			offset += 3
 		case OpAddLocalMulThisField:
 			fmt.Fprintf(&out, "target=%d local=%d field=%d", c.Code[offset+1], c.Code[offset+2], c.Code[offset+3])
+			offset += 4
+		case OpAddLocalMulLocal:
+			fmt.Fprintf(&out, "target=%d left=%d right=%d", c.Code[offset+1], c.Code[offset+2], c.Code[offset+3])
+			offset += 4
+		case OpAppendLocalString:
+			fmt.Fprintf(&out, "slot=%d", c.Code[offset+1])
+			offset += 2
+		case OpCallConst:
+			idx := readUint16(c.Code[offset+1:])
+			fmt.Fprintf(&out, "%v argc=%d", c.Constants[idx], c.Code[offset+3])
+			offset += 4
+		case OpAddConstLocalInt:
+			idx := readUint16(c.Code[offset+2:])
+			fmt.Fprintf(&out, "slot=%d const=%v", c.Code[offset+1], c.Constants[idx])
+			offset += 4
+		case OpCallConstLocalSubInt:
+			callableIdx := readUint16(c.Code[offset+1:])
+			constIdx := readUint16(c.Code[offset+4:])
+			fmt.Fprintf(&out, "%v slot=%d sub=%v", c.Constants[callableIdx], c.Code[offset+3], c.Constants[constIdx])
+			offset += 6
+		case OpCallSelfLocalSubInt:
+			constIdx := readUint16(c.Code[offset+2:])
+			fmt.Fprintf(&out, "slot=%d sub=%v", c.Code[offset+1], c.Constants[constIdx])
 			offset += 4
 		case OpIterInit:
 			fmt.Fprintf(&out, "slot=%d mode=%d", c.Code[offset+1], c.Code[offset+2])
@@ -253,17 +234,27 @@ func (c *Chunk) Disassemble(name string) string {
 		case OpRangeNextFast:
 			fmt.Fprintf(&out, "current=%d end=%d step=%d value=%d exit=%d", c.Code[offset+1], c.Code[offset+2], c.Code[offset+3], c.Code[offset+4], readUint16(c.Code[offset+5:]))
 			offset += 7
+		case OpJumpIfLocalLessEqualIntConstFalse, OpJumpIfLocalDivisibleByIntConstFalse:
+			idx := readUint16(c.Code[offset+2:])
+			fmt.Fprintf(&out, "slot=%d const=%v jump=%d", c.Code[offset+1], c.Constants[idx], readUint16(c.Code[offset+4:]))
+			offset += 6
 		case OpInvoke:
+			idx := readUint16(c.Code[offset+1:])
+			fmt.Fprintf(&out, "%v argc=%d", c.Constants[idx], c.Code[offset+3])
+			offset += 4
+		case OpInvokeSuper:
 			idx := readUint16(c.Code[offset+1:])
 			fmt.Fprintf(&out, "%v argc=%d", c.Constants[idx], c.Code[offset+3])
 			offset += 4
 		case OpInvokeMethod:
 			fmt.Fprintf(&out, "slot=%d argc=%d", c.Code[offset+1], c.Code[offset+2])
 			offset += 3
-		case OpJump, OpJumpIfFalse, OpLoop:
+		case OpPushHandler, OpJump, OpJumpIfFalse, OpLoop:
 			jump := readUint16(c.Code[offset+1:])
 			fmt.Fprintf(&out, "%d", jump)
 			offset += 3
+		case OpAddNum, OpSubNum, OpMulNum, OpPowNum, OpDivNum, OpModNum, OpLessNum, OpGreaterNum, OpPopHandler, OpThrow, OpReturn, OpNil, OpTrue, OpFalse, OpPop, OpDup, OpDupTwo, OpEqual, OpGreater, OpLess, OpAdd, OpSub, OpMul, OpPow, OpDiv, OpMod, OpNot, OpNegate, OpFreeze:
+			offset++
 		case OpIterNext:
 			fmt.Fprintf(&out, "iter=%d value=%d exit=%d", c.Code[offset+1], c.Code[offset+2], readUint16(c.Code[offset+3:]))
 			offset += 5
@@ -274,12 +265,6 @@ func (c *Chunk) Disassemble(name string) string {
 		}
 		out.WriteByte('\n')
 	}
-
-	for _, fn := range nested {
-		out.WriteByte('\n')
-		out.WriteString(fn.Chunk.Disassemble(fn.Name))
-	}
-
 	return out.String()
 }
 

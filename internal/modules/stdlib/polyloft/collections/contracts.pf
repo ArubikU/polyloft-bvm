@@ -1,0 +1,42 @@
+public interface List<T>:
+	size() -> number
+	isEmpty() -> bool
+	add(element: T) -> void
+	remove(element: T) -> bool
+	contains(element: T) -> bool
+	clear() -> void
+	asArray() -> array<T>
+	__length() -> number
+	__get(index: int) -> T
+	__set(index: int, value: T) -> void
+	__contains(element: T) -> bool
+	__slice(start: int, finish: int) -> array<T>
+	get(index: int) -> T
+	set(index: int, value: T) -> void
+end
+
+public interface Deque<T>:
+	size() -> number
+	isEmpty() -> bool
+	add(element: T) -> void
+	remove(element: T) -> bool
+	contains(element: T) -> bool
+	clear() -> void
+	asArray() -> array<T>
+	addFirst(element: T) -> void
+	addLast(element: T) -> void
+	removeFirst() -> T
+	removeLast() -> T
+end
+
+public interface Set<T>:
+	size() -> number
+	isEmpty() -> bool
+	add(element: T) -> void
+	remove(element: T) -> bool
+	contains(element: T) -> bool
+	__contains(element: T) -> bool
+	clear() -> void
+	asArray() -> array<T>
+	values() -> array<T>
+end

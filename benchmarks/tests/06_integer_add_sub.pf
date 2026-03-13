@@ -1,0 +1,10 @@
+var started = Sys.time()
+var val = 0
+for i in range(0, 20000000):
+    val = val + 5
+    val = val - 2
+end
+var ended = Sys.time()
+println(val)
+println("TIME_PF")
+println(ended - started)

@@ -6,6 +6,11 @@ type Program struct {
 	Statements []Stmt
 }
 
+type SourceSpan struct {
+	StartLine int
+	EndLine   int
+}
+
 type Stmt interface {
 	stmtNode()
 }
@@ -117,6 +122,21 @@ type IfStmt struct {
 
 func (IfStmt) stmtNode() {}
 
+type CatchClause struct {
+	Keyword token.Token
+	Binding token.Token
+	Type    *TypeRef
+	Body    *BlockStmt
+}
+
+type TryStmt struct {
+	Keyword token.Token
+	Body    *BlockStmt
+	Catches []CatchClause
+}
+
+func (TryStmt) stmtNode() {}
+
 type TypePattern struct {
 	Binding token.Token
 	Type    *TypeRef
@@ -147,6 +167,13 @@ type ReturnStmt struct {
 
 func (ReturnStmt) stmtNode() {}
 
+type ThrowStmt struct {
+	Keyword token.Token
+	Value   Expr
+}
+
+func (ThrowStmt) stmtNode() {}
+
 type ImportStmt struct {
 	Path  []token.Token
 	Names []token.Token
@@ -163,12 +190,15 @@ type TypeAliasStmt struct {
 func (TypeAliasStmt) stmtNode() {}
 
 type FunctionStmt struct {
-	Visibility Visibility
-	Name       token.Token
-	TypeParams []TypeParam
-	Params     []Parameter
-	ReturnType *TypeRef
-	Body       *BlockStmt
+	Visibility  Visibility
+	Annotations []Annotation
+	Name        token.Token
+	TypeParams  []TypeParam
+	Params      []Parameter
+	ReturnType  *TypeRef
+	IsNative    bool
+	Body        *BlockStmt
+	SourceSpan  SourceSpan
 }
 
 func (FunctionStmt) stmtNode() {}
@@ -180,13 +210,15 @@ type InterfaceMethod struct {
 }
 
 type InterfaceStmt struct {
-	Visibility Visibility
-	Name       token.Token
-	TypeParams []TypeParam
-	Extends    []*TypeRef
-	Permits    []*TypeRef
-	IsSealed   bool
-	Methods    []InterfaceMethod
+	Visibility  Visibility
+	Annotations []Annotation
+	Name        token.Token
+	TypeParams  []TypeParam
+	Extends     []*TypeRef
+	Permits     []*TypeRef
+	IsSealed    bool
+	Methods     []InterfaceMethod
+	SourceSpan  SourceSpan
 }
 
 func (InterfaceStmt) stmtNode() {}
@@ -209,6 +241,7 @@ type MethodDecl struct {
 	Body          *BlockStmt
 	IsConstructor bool
 	IsAbstract    bool
+	IsNative      bool
 	Static        bool
 	Visibility    Visibility
 }
@@ -219,20 +252,22 @@ type EnumValueDecl struct {
 }
 
 type ClassStmt struct {
-	Visibility Visibility
-	Name       token.Token
-	TypeParams []TypeParam
-	Superclass *TypeRef
-	Implements []*TypeRef
-	Permits    []*TypeRef
-	IsAbstract bool
-	IsFinal    bool
-	IsSealed   bool
-	IsEnum     bool
-	IsRecord   bool
-	EnumValues []EnumValueDecl
-	Fields     []FieldDecl
-	Methods    []MethodDecl
+	Visibility  Visibility
+	Annotations []Annotation
+	Name        token.Token
+	TypeParams  []TypeParam
+	Superclass  *TypeRef
+	Implements  []*TypeRef
+	Permits     []*TypeRef
+	IsAbstract  bool
+	IsFinal     bool
+	IsSealed    bool
+	IsEnum      bool
+	IsRecord    bool
+	EnumValues  []EnumValueDecl
+	Fields      []FieldDecl
+	Methods     []MethodDecl
+	SourceSpan  SourceSpan
 }
 
 func (ClassStmt) stmtNode() {}
@@ -245,6 +280,27 @@ type ForStmt struct {
 }
 
 func (ForStmt) stmtNode() {}
+
+type LoopStmt struct {
+	Keyword       token.Token
+	Condition     Expr
+	Body          *BlockStmt
+	PostCondition bool
+}
+
+func (LoopStmt) stmtNode() {}
+
+type BreakStmt struct {
+	Keyword token.Token
+}
+
+func (BreakStmt) stmtNode() {}
+
+type ContinueStmt struct {
+	Keyword token.Token
+}
+
+func (ContinueStmt) stmtNode() {}
 
 type BinaryExpr struct {
 	Left     Expr
@@ -268,8 +324,17 @@ type CastExpr struct {
 
 func (CastExpr) exprNode() {}
 
+type InstanceOfExpr struct {
+	Expr    Expr
+	Target  *TypeRef
+	Binding *token.Token
+}
+
+func (InstanceOfExpr) exprNode() {}
+
 type CallExpr struct {
 	Callee    Expr
+	TypeArgs  []*TypeRef
 	Paren     token.Token
 	Arguments []Expr
 }
@@ -286,9 +351,11 @@ func (NewExpr) exprNode() {}
 
 // ArrayNewExpr represents a `new` expression targeting an array type.
 // Examples:
-//   new int[3]{1,2,3}
-//   new string[][]{}    // nested type
-//   new T[]{a, b}
+//
+//	new int[3]{1,2,3}
+//	new string[][]{}    // nested type
+//	new T[]{a, b}
+//
 // If Size is nil the bracket either was omitted or empty; initializer
 // length is not constrained. If Size is non-nil we may validate it in
 // semantic phase.
@@ -296,12 +363,13 @@ func (NewExpr) exprNode() {}
 // Initializer holds the comma-separated values inside `{}` if present.
 type ArrayNewExpr struct {
 	Type        *TypeRef
-	Size        Expr   // nil if unspecified or `[]`
+	Size        Expr        // nil if unspecified or `[]`
 	Brace       token.Token // location of '{', zero value if no initializer
 	Initializer []Expr
 }
 
 func (ArrayNewExpr) exprNode() {}
+
 type GetExpr struct {
 	Object Expr
 	Name   token.Token
@@ -363,6 +431,14 @@ type ArrayExpr struct {
 }
 
 func (ArrayExpr) exprNode() {}
+
+type ArrayComprehensionExpr struct {
+	Value    Expr
+	Var      token.Token
+	Iterable Expr
+}
+
+func (ArrayComprehensionExpr) exprNode() {}
 
 type MapEntry struct {
 	Key   string

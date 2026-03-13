@@ -1,0 +1,10 @@
+var started = Sys.time()
+var capacity = 100000
+var arr = new int[capacity]
+for i in range(0, capacity):
+    arr[i] = i
+end
+var ended = Sys.time()
+println(arr[99999])
+println("TIME_PF")
+println(ended - started)

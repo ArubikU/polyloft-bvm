@@ -1,0 +1,17 @@
+class MathUtils:
+    static def square(x: int) -> int:
+        return x * x
+    end
+end
+
+var started = Sys.time()
+var s = 0
+for i in range(0, 1000000):
+    if MathUtils.square(2) == 4:
+        s = s + 1
+    end
+end
+var ended = Sys.time()
+println(s)
+println("TIME_PF")
+println(ended - started)
