@@ -1,0 +1,11 @@
+import polyloft.ui { UI }
+import polyloft.concurrent { async, CompletableFuture }
+
+def f(x: any) -> any:
+    return "ok=>" + x
+end
+
+var app = UI.app("headless")
+app.setPermission("background", true)
+var future = app.dispatchAsync(f, "x")
+println(future.get())

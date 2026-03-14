@@ -1,0 +1,394 @@
+import polyloft.concurrent { CompletableFuture, async }
+
+native def app_new(backend: string) -> any
+native def app_set_permission(nativeApp: any, name: string, allowed: bool) -> bool
+native def app_has_permission(nativeApp: any, name: string) -> bool
+native def app_permissions(nativeApp: any) -> map<string, any>
+native def app_allow_profile(nativeApp: any, profile: string) -> void
+native def app_set_name(nativeApp: any, name: string) -> void
+native def app_set_icon(nativeApp: any, path: string) -> bool
+native def app_platform(nativeApp: any) -> string
+native def app_event_channel(nativeApp: any, capacity: int) -> any
+native def app_emit_event(nativeApp: any, name: string, payload: any) -> bool
+native def app_run(nativeApp: any) -> void
+native def app_channel_new(nativeApp: any, name: string, capacity: int) -> any
+native def app_channel_send(nativeApp: any, name: string, payload: any) -> bool
+native def app_channel_receive(nativeApp: any, name: string) -> any
+native def app_channel_close(nativeApp: any, name: string) -> bool
+native def app_dispatch(nativeApp: any, callback: any, payload: any) -> any
+native def app_dispatch_async(nativeApp: any, callback: any, payload: any) -> any
+native def app_post(nativeApp: any, callback: any, payload: any, priority: int) -> int
+native def app_cancel_task(nativeApp: any, taskId: int) -> bool
+native def app_run_on_ui_thread(nativeApp: any, maxTasks: int) -> int
+native def app_start_ui_loop(nativeApp: any, timeSliceMs: int, maxTasksPerTick: int) -> bool
+native def app_stop_ui_loop(nativeApp: any) -> bool
+native def app_ui_loop_running(nativeApp: any) -> bool
+
+native def node_new(kind: string) -> any
+native def node_set_prop(nativeNode: any, name: string, value: any) -> void
+native def node_set_style(nativeNode: any, name: string, value: any) -> void
+native def node_set_class(nativeNode: any, className: string) -> void
+native def node_add_class(nativeNode: any, className: string) -> void
+native def node_add_child(nativeParent: any, nativeChild: any) -> void
+
+native def stylesheet_new() -> any
+native def stylesheet_parse(nativeSS: any, css: string) -> int
+native def stylesheet_load_file(nativeSS: any, path: string) -> int
+native def stylesheet_set(nativeSS: any, className: string, property: string, value: string) -> void
+native def stylesheet_get(nativeSS: any, className: string, property: string) -> string
+native def app_attach_stylesheet(nativeApp: any, nativeSS: any) -> void
+
+native def app_quit(nativeApp: any) -> void
+native def window_close(nativeWindow: any) -> bool
+native def window_set_headless(nativeWindow: any, headless: bool) -> bool
+
+native def window_new(nativeApp: any, title: string, width: int, height: int) -> any
+native def window_set_title(nativeWindow: any, title: string) -> bool
+native def window_set_icon(nativeWindow: any, path: string) -> bool
+native def window_set_root(nativeWindow: any, nativeNode: any) -> void
+native def window_bind(nativeWindow: any, eventName: string, callback: any) -> bool
+native def window_trigger(nativeWindow: any, eventName: string, payload: any) -> bool
+native def window_to_json(nativeWindow: any) -> string
+native def window_layout_json(nativeWindow: any) -> string
+native def window_reconcile(nativeWindow: any, nativeNode: any) -> map<string, any>
+native def window_last_patch_json(nativeWindow: any) -> string
+native def window_last_transition_json(nativeWindow: any) -> string
+native def window_show(nativeWindow: any) -> bool
+
+public class StyleSheet:
+	var _native: any
+
+	StyleSheet():
+		this._native = stylesheet_new()
+	end
+
+	StyleSheet(nativeSS: any):
+		this._native = nativeSS
+	end
+
+	// parse(css) – load CSS from a string.
+	// Supports .classname { property: value } syntax and comma-separated selectors.
+	def parse(css: string) -> int:
+		return stylesheet_parse(this._native, css)
+	end
+
+	// loadFile(path) – load and parse a .css file.
+	def loadFile(path: string) -> int:
+		return stylesheet_load_file(this._native, path)
+	end
+
+	// set(className, property, value) – programmatic rule.
+	// className may start with "." or not.
+	def set(className: string, property: string, value: string) -> StyleSheet:
+		stylesheet_set(this._native, className, property, value)
+		return this
+	end
+
+	// get(className, property) – retrieve a stored rule value.
+	def get(className: string, property: string) -> string:
+		return stylesheet_get(this._native, className, property)
+	end
+end
+
+public class UINode:
+	var _native: any
+
+	UINode(kind: string):
+		this._native = node_new(kind)
+	end
+
+	UINode(nativeNode: any):
+		this._native = nativeNode
+	end
+
+	def set(name: string, value: any) -> UINode:
+		node_set_prop(this._native, name, value)
+		return this
+	end
+
+	// style(prop, val) – inline CSS property, highest priority.
+	// Accepts standard CSS names: "color", "background-color", "font-size",
+	// "font-weight", "font-style", "text-align", "padding", "width", "height", etc.
+	def style(name: string, value: any) -> UINode:
+		node_set_style(this._native, name, value)
+		return this
+	end
+
+	// setClass(className) – replace the entire class list for this node.
+	def setClass(className: string) -> UINode:
+		node_set_class(this._native, className)
+		return this
+	end
+
+	// addClass(className) – append a class to the existing class list.
+	def addClass(className: string) -> UINode:
+		node_add_class(this._native, className)
+		return this
+	end
+
+	def add(child: UINode) -> UINode:
+		node_add_child(this._native, child._native)
+		return this
+	end
+
+	static def view() -> UINode:
+		return UINode("View")
+	end
+
+	static def text(content: string) -> UINode:
+		let node = UINode("Text")
+		node.set("text", content)
+		return node
+	end
+
+	static def button(label: string) -> UINode:
+		let node = UINode("Button")
+		node.set("text", label)
+		return node
+	end
+
+	static def input() -> UINode:
+		return UINode("Input")
+	end
+end
+
+public class UIWindow:
+	var _native: any
+	var _app: UIApp
+
+	UIWindow(app: UIApp, title: string, width: int, height: int):
+		this._app = app
+		this._native = window_new(app._native, title, width, height)
+	end
+
+	def root(node: UINode) -> UIWindow:
+		window_set_root(this._native, node._native)
+		return this
+	end
+
+	def setTitle(title: string) -> bool:
+		return window_set_title(this._native, title)
+	end
+
+	def setIcon(path: string) -> bool:
+		return window_set_icon(this._native, path)
+	end
+
+	def on(eventName: string, callback: any) -> bool:
+		return window_bind(this._native, eventName, callback)
+	end
+
+	def trigger(eventName: string, payload: any) -> bool:
+		return window_trigger(this._native, eventName, payload)
+	end
+
+	def json() -> string:
+		return window_to_json(this._native)
+	end
+
+	def layoutJson() -> string:
+		return window_layout_json(this._native)
+	end
+
+	def reconcile(node: UINode) -> map<string, any>:
+		return window_reconcile(this._native, node._native)
+	end
+
+	def lastPatchJson() -> string:
+		return window_last_patch_json(this._native)
+	end
+
+	def lastTransitionJson() -> string:
+		return window_last_transition_json(this._native)
+	end
+
+	def show() -> bool:
+		return window_show(this._native)
+	end
+
+	// close() – hide and close this window.
+	def close() -> bool:
+		return window_close(this._native)
+	end
+
+	// setHeadless(true) – remove OS padding/decorations (best-effort).
+	// Build a custom title bar as UINode children for a fully custom chrome.
+	def setHeadless(enabled: bool) -> bool:
+		return window_set_headless(this._native, enabled)
+	end
+end
+
+public class UIApp:
+	var _native: any
+
+	UIApp(backend: string):
+		this._native = app_new(backend)
+	end
+
+	def allowProfile(profile: string) -> UIApp:
+		app_allow_profile(this._native, profile)
+		return this
+	end
+
+	def setName(name: string) -> UIApp:
+		app_set_name(this._native, name)
+		return this
+	end
+
+	def setIcon(path: string) -> bool:
+		return app_set_icon(this._native, path)
+	end
+
+	def setPermission(name: string, allowed: bool) -> bool:
+		return app_set_permission(this._native, name, allowed)
+	end
+
+	def hasPermission(name: string) -> bool:
+		return app_has_permission(this._native, name)
+	end
+
+	def permissions() -> map<string, any>:
+		return app_permissions(this._native)
+	end
+
+	def platform() -> string:
+		return app_platform(this._native)
+	end
+
+	def eventChannel(capacity: int) -> any:
+		return app_event_channel(this._native, capacity)
+	end
+
+	def emit(name: string, payload: any) -> bool:
+		return app_emit_event(this._native, name, payload)
+	end
+
+	def channel(name: string, capacity: int) -> UIChannel:
+		app_channel_new(this._native, name, capacity)
+		return UIChannel(this, name)
+	end
+
+	def dispatch(callback: any, payload: any) -> any:
+		return app_dispatch(this._native, callback, payload)
+	end
+
+	def dispatchAsync(callback: any, payload: any) -> CompletableFuture<any>:
+		let nativeApp = this._native
+		return async(() => app_dispatch(nativeApp, callback, payload))
+	end
+
+	def post(callback: any, payload: any, priority: int) -> int:
+		return app_post(this._native, callback, payload, priority)
+	end
+
+	def cancelTask(taskId: int) -> bool:
+		return app_cancel_task(this._native, taskId)
+	end
+
+	def runOnUiThread(maxTasks: int) -> int:
+		return app_run_on_ui_thread(this._native, maxTasks)
+	end
+
+	def startUiLoop(timeSliceMs: int, maxTasksPerTick: int) -> bool:
+		return app_start_ui_loop(this._native, timeSliceMs, maxTasksPerTick)
+	end
+
+	// attachStylesheet(ss) – attach a StyleSheet to this app so all nodes can use class names.
+	def attachStylesheet(ss: StyleSheet) -> UIApp:
+		app_attach_stylesheet(this._native, ss._native)
+		return this
+	end
+
+	// quit() – close all windows and terminate the app.
+	def quit() -> void:
+		app_quit(this._native)
+	end
+
+	def stopUiLoop() -> bool:
+		return app_stop_ui_loop(this._native)
+	end
+
+	def isUiLoopRunning() -> bool:
+		return app_ui_loop_running(this._native)
+	end
+
+	def window(title: string, width: int, height: int) -> UIWindow:
+		return UIWindow(this, title, width, height)
+	end
+
+	def run() -> void:
+		app_run(this._native)
+	end
+
+	static def create(backend: string) -> UIApp:
+		return UIApp(backend)
+	end
+end
+
+public class UIChannel:
+	var _app: UIApp
+	var _name: string
+
+	UIChannel(app: UIApp, name: string):
+		this._app = app
+		this._name = name
+	end
+
+	def send(payload: any) -> bool:
+		return app_channel_send(this._app._native, this._name, payload)
+	end
+
+	def receive() -> any:
+		return app_channel_receive(this._app._native, this._name)
+	end
+
+	def close() -> bool:
+		return app_channel_close(this._app._native, this._name)
+	end
+end
+
+public class UI:
+	static def app(backend: string) -> UIApp:
+		return UIApp(backend)
+	end
+
+	static def node(kind: string) -> UINode:
+		return UINode(kind)
+	end
+
+	static def view() -> UINode:
+		return UINode.view()
+	end
+
+	static def text(content: string) -> UINode:
+		return UINode.text(content)
+	end
+
+	static def button(label: string) -> UINode:
+		return UINode.button(label)
+	end
+
+	static def input() -> UINode:
+		return UINode.input()
+	end
+
+	static def nativeComponent(component: string) -> UINode:
+		let node = UINode("Native")
+		node.set("component", component)
+		return node
+	end
+
+	// stylesheet() – create a new empty StyleSheet.
+	// Call app.attachStylesheet(ss) to make it active for all nodes.
+	static def stylesheet() -> StyleSheet:
+		return StyleSheet()
+	end
+
+	static def post(app: UIApp, callback: any, payload: any, priority: int) -> int:
+		return app.post(callback, payload, priority)
+	end
+
+	static def runOnUiThread(app: UIApp, maxTasks: int) -> int:
+		return app.runOnUiThread(maxTasks)
+	end
+end

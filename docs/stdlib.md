@@ -20,6 +20,7 @@ For the object-oriented embedded stdlib, use:
 - [polyloft.maps](stdlib/maps.md)
 - [polyloft.collections](stdlib/collections.md)
 - [polyloft.vectors](stdlib/vectors.md)
+- [polyloft.ui](stdlib/ui.md)
 - [polyloft.math](stdlib/math.md)
 - [polyloft.crypto](stdlib/crypto.md)
 - [polyloft.function](stdlib/function.md)
@@ -214,6 +215,18 @@ Typed concurrency helpers:
 - `async<T>(task)`
 
 See [stdlib/concurrent.md](stdlib/concurrent.md).
+
+### polyloft.ui
+
+Object-oriented UI facade classes:
+
+- `UI`
+- `UIApp`
+- `UIWindow`
+- `UINode`
+- `UIChannel`
+
+See [stdlib/ui.md](stdlib/ui.md).
 
 ### polyloft.maps
 

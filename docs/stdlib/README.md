@@ -24,6 +24,7 @@ The same pattern is used for `polyloft.http`, `polyloft.io`, `polyloft.concurren
 - [maps.md](maps.md): object facades over raw maps and hashed map or set storage
 - [collections.md](collections.md): generic collection contracts plus concrete `ArrayList`, `ArrayDeque`, `LinkedList`, and `HashSet`, reexported from `polyloft.collections`
 - [vectors.md](vectors.md): `Vec2` and `Vec3` value types with arithmetic operators, hashing, and geometric helpers
+- [ui.md](ui.md): object-oriented UI facade (`UIApp`, `UIWindow`, `UINode`, `UIChannel`) backed by the global `Ui` runtime module
 - [math.md](math.md): `Math` constants and numeric helpers backed by the runtime module
 - [crypto.md](crypto.md): `Crypto` hashing and encoding helpers backed by the runtime module
 - [function.md](function.md): generic functional interfaces used by lambdas and single-abstract-method APIs, including `Runnable`

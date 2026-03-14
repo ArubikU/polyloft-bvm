@@ -1,0 +1,598 @@
+import polyloft.ui { UI }
+
+// ════════════════════════════════════════════════════════════════
+//  DASHBOARD.PF – Polyloft Developer Dashboard
+//  Demonstrates custom reusable function-components, CSS classes,
+//  inline style overrides, headless modal window, slider events.
+// ════════════════════════════════════════════════════════════════
+
+// ── App + Stylesheet setup ────────────────────────────────────────────────────
+var app = UI.app("go")
+app.allowProfile("desktop")
+
+var ss = UI.stylesheet()
+ss.loadFile("example_project/src/dashboard.css")
+app.attachStylesheet(ss)
+
+println("[dashboard] platform=" + app.platform())
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  CUSTOM COMPONENTS  (function-based, React-style)
+//  Each returns a UINode you can .add() anywhere.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── NavBar ────────────────────────────────────────────────────────────────────
+//  NavBar(title, activeTab)
+//  Emits events: "nav-overview", "nav-builds", "nav-logs", "nav-settings"
+def NavBar(title: string, activeTab: string) -> UINode:
+    var bar = UI.view()
+    bar.set("direction", "row")
+    bar.set("align", "center")
+    bar.set("justify", "space-between")
+    bar.set("gap", 2)
+    bar.set("padx", 16)
+    bar.set("height", 48)
+    bar.setClass("bg-panel")
+
+    var logo = UI.text("⬡ " + title)
+    logo.setClass("navbar-title")
+    logo.set("flex", 1)
+    bar.add(logo)
+
+    var tabs = ["Overview", "Builds", "Logs", "Settings"]
+    var events = ["nav-overview", "nav-builds", "nav-logs", "nav-settings"]
+    for i in range(0, 4):
+        var tab = tabs[i]
+        var evt = events[i]
+        var btn = UI.button(tab)
+        btn.set("event", evt)
+        btn.set("width", 90)
+        btn.set("height", 30)
+        if tab == activeTab:
+            btn.setClass("nav-item-active")
+        else:
+            btn.setClass("nav-item")
+        end
+        bar.add(btn)
+    end
+
+    return bar
+end
+
+// ── StatCard ──────────────────────────────────────────────────────────────────
+//  StatCard(label, value, deltaText, colorClass)
+//  A GitHub-style stat card showing a metric + colored delta.
+def StatCard(label: string, val: string, delta: string, colorClass: string) -> UINode:
+    var card = UI.view()
+    card.set("direction", "column")
+    card.set("align", "center")
+    card.set("justify", "center")
+    card.set("gap", 4)
+    card.set("padx", 12)
+    card.set("pady", 10)
+    card.set("width", 170)
+    card.set("height", 100)
+    card.setClass("bg-card")
+
+    var lbl = UI.text(label)
+    lbl.setClass("stat-label")
+
+    var vnode = UI.text(val)
+    vnode.setClass("stat-value")
+
+    var dnode = UI.text(delta)
+    dnode.setClass(colorClass)
+
+    card.add(lbl)
+    card.add(vnode)
+    card.add(dnode)
+    return card
+end
+
+// ── Badge ─────────────────────────────────────────────────────────────────────
+//  Badge(text, colorClass)  – inline colored tag
+def Badge(text: string, colorClass: string) -> UINode:
+    var b = UI.text("● " + text)
+    b.setClass(colorClass)
+    b.set("width", 80)
+    return b
+end
+
+// ── LogLine ───────────────────────────────────────────────────────────────────
+//  LogLine(time, level, message)
+//  level: "info" | "ok" | "warn" | "error"
+def LogLine(ts: string, level: string, msg: string) -> UINode:
+    var row = UI.view()
+    row.set("direction", "row")
+    row.set("align", "center")
+    row.set("gap", 8)
+    row.set("height", 20)
+
+    var timeNode = UI.text(ts)
+    timeNode.setClass("log-dim")
+    timeNode.set("width", 58)
+
+    var levelCls = "log-info"
+    var levelText = "[INFO ]"
+    if level == "ok":
+        levelCls = "log-ok"
+        levelText = "[ OK  ]"
+    end
+    if level == "warn":
+        levelCls = "log-warn"
+        levelText = "[WARN ]"
+    end
+    if level == "error":
+        levelCls = "log-error"
+        levelText = "[ERROR]"
+    end
+
+    var lvlNode = UI.text(levelText)
+    lvlNode.setClass(levelCls)
+    lvlNode.set("width", 56)
+
+    var msgNode = UI.text(msg)
+    msgNode.setClass("text-body")
+    msgNode.set("flex", 1)
+
+    row.add(timeNode)
+    row.add(lvlNode)
+    row.add(msgNode)
+    return row
+end
+
+// ── BuildRow ──────────────────────────────────────────────────────────────────
+//  BuildRow(id, branch, status, duration)
+//  status: "success" | "failed" | "running" | "queued"
+def BuildRow(buildId: string, branch: string, status: string, duration: string) -> UINode:
+    var row = UI.view()
+    row.set("direction", "row")
+    row.set("align", "center")
+    row.set("justify", "space-between")
+    row.set("gap", 8)
+    row.set("padx", 12)
+    row.set("height", 36)
+    row.setClass("bg-hover")
+
+    var idNode = UI.text("#" + buildId)
+    idNode.setClass("text-code")
+    idNode.set("width", 50)
+
+    var branchNode = UI.text(branch)
+    branchNode.setClass("text-body")
+    branchNode.set("flex", 1)
+
+    var statusCls = "badge-blue"
+    var statusSymbol = "◉ running"
+    if status == "success":
+        statusCls = "badge-green"
+        statusSymbol = "✔ success"
+    end
+    if status == "failed":
+        statusCls = "badge-red"
+        statusSymbol = "✘ failed"
+    end
+    if status == "queued":
+        statusCls = "badge-muted"
+        statusSymbol = "○ queued"
+    end
+
+    var statusNode = UI.text(statusSymbol)
+    statusNode.setClass(statusCls)
+    statusNode.set("width", 80)
+
+    var durNode = UI.text(duration)
+    durNode.setClass("text-small")
+    durNode.set("width", 50)
+
+    row.add(idNode)
+    row.add(branchNode)
+    row.add(statusNode)
+    row.add(durNode)
+    return row
+end
+
+// ── SectionHeader ─────────────────────────────────────────────────────────────
+def SectionHeader(text: string) -> UINode:
+    var h = UI.text(text)
+    h.setClass("section-header")
+    h.set("height", 28)
+    return h
+end
+
+// ── Divider ───────────────────────────────────────────────────────────────────
+def Divider() -> UINode:
+    var bar = UI.view()
+    bar.set("height", 1)
+    bar.setClass("bg-muted")
+    return bar
+end
+
+// ── VolumeSlider ─────────────────────────────────────────────────────────────
+//  A labeled slider component with a live-percent label below.
+//  Events: fires "volume-change"
+def VolumeSlider(label: string, initVal: int, maxVal: int) -> UINode:
+    var wrap = UI.view()
+    wrap.set("direction", "column")
+    wrap.set("gap", 4)
+
+    var lbl = UI.text(label)
+    lbl.setClass("text-body")
+
+    var slider = UI.nativeComponent("slider")
+    slider.set("min", 0)
+    slider.set("max", maxVal)
+    slider.set("value", initVal)
+    slider.set("height", 36)
+    slider.set("event", "volume-change")
+
+    var hint = UI.text("Drag to adjust  |  fires volume-change event with percent")
+    hint.setClass("text-small")
+
+    wrap.add(lbl)
+    wrap.add(slider)
+    wrap.add(hint)
+    return wrap
+end
+
+// ── ProgressBar (custom visual via canvas rectangle) ─────────────────────────
+def ProgressTrack(label: string, pct: int, colorClass: string) -> UINode:
+    var wrap = UI.view()
+    wrap.set("direction", "column")
+    wrap.set("gap", 3)
+
+    var row = UI.view()
+    row.set("direction", "row")
+    row.set("justify", "space-between")
+    row.set("height", 18)
+
+    var lbl = UI.text(label)
+    lbl.setClass("text-body")
+    var pctNode = UI.text(pct + "%")
+    pctNode.setClass("text-small")
+    row.add(lbl)
+    row.add(pctNode)
+    wrap.add(row)
+
+    var track = UI.nativeComponent("progressbar")
+    track.set("value", pct / 100.0)
+    track.set("height", 10)
+    wrap.add(track)
+
+    return wrap
+end
+
+// ════════════════════════════════════════════════════════════════════════════
+//  MODAL WINDOW  (headless, custom close button)
+// ════════════════════════════════════════════════════════════════════════════
+
+def on_modal_close(payload: any) -> void:
+    println("[modal] closed  payload=" + payload)
+end
+
+var modalRoot = UI.view()
+modalRoot.set("direction", "column")
+modalRoot.set("justify", "start")
+modalRoot.set("align", "stretch")
+modalRoot.set("gap", 0)
+modalRoot.set("width", 440)
+modalRoot.set("height", 240)
+modalRoot.setClass("bg-panel")
+
+// Custom title bar
+var mbar = UI.view()
+mbar.set("direction", "row")
+mbar.set("align", "center")
+mbar.set("justify", "space-between")
+mbar.set("padx", 16)
+mbar.set("height", 40)
+mbar.setClass("bg-dark")
+
+var mTitle = UI.text("⚠  Deployment Alert")
+mTitle.setClass("modal-title")
+mTitle.style("font-size", "15px")
+mTitle.style("text-align", "left")
+mTitle.set("flex", 1)
+
+var mClose = UI.button("✕")
+mClose.setClass("close-x")
+mClose.set("event", "modal-close")
+mClose.set("width", 32)
+mClose.set("height", 30)
+
+mbar.add(mTitle)
+mbar.add(mClose)
+modalRoot.add(mbar)
+
+// Divider
+modalRoot.add(Divider())
+
+// Body
+var mBody = UI.view()
+mBody.set("direction", "column")
+mBody.set("align", "center")
+mBody.set("justify", "center")
+mBody.set("padx", 28)
+mBody.set("pady", 24)
+mBody.set("gap", 14)
+mBody.set("flex", 1)
+
+var mMsg = UI.text("Build #4521 on branch release/v2.1 failed during the integration test phase with 3 errors.")
+mMsg.setClass("modal-body")
+
+var mRow = UI.view()
+mRow.set("direction", "row")
+mRow.set("align", "center")
+mRow.set("justify", "center")
+mRow.set("gap", 12)
+mRow.set("height", 38)
+
+var mRetry = UI.button("Retry Build")
+mRetry.setClass("btn-primary")
+mRetry.set("event", "modal-retry")
+mRetry.set("width", 110)
+mRetry.set("height", 34)
+
+var mDismiss = UI.button("Dismiss")
+mDismiss.setClass("btn-ghost")
+mDismiss.set("event", "modal-close")
+mDismiss.set("width", 90)
+mDismiss.set("height", 34)
+
+mRow.add(mRetry)
+mRow.add(mDismiss)
+mBody.add(mMsg)
+mBody.add(mRow)
+modalRoot.add(mBody)
+
+var modalWin = app.window("Alert", 440, 240)
+modalWin.root(modalRoot)
+modalWin.setHeadless(true)
+modalWin.on("modal-close", on_modal_close)
+modalWin.on("modal-retry", (p: any) =>:
+    println("[modal] retry build  payload=" + p)
+end)
+
+// ════════════════════════════════════════════════════════════════════════════
+//  MAIN DASHBOARD WINDOW
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── Event handlers ────────────────────────────────────────────────────────────
+def on_nav(payload: any) -> void:
+    println("[nav] tab switched  payload=" + payload)
+end
+
+def on_volume(payload: any) -> void:
+    println("[volume] value=" + payload)
+end
+
+def on_action(payload: any) -> void:
+    println("[action] btn pressed  payload=" + payload)
+end
+
+// ── Root ──────────────────────────────────────────────────────────────────────
+var root = UI.view()
+root.set("direction", "column")
+root.set("justify", "start")
+root.set("align", "stretch")
+root.set("gap", 0)
+root.set("width", 1060)
+root.set("height", 720)
+root.setClass("bg-dark")
+
+// NavBar component
+root.add(NavBar("Polyloft CI", "Overview"))
+root.add(Divider())
+
+// ── Body split: left sidebar + main content ───────────────────────────────────
+var body = UI.view()
+body.set("direction", "row")
+body.set("align", "stretch")
+body.set("gap", 0)
+body.set("flex", 1)
+
+// ─── Sidebar ─────────────────────────────────────────────────────────────────
+var sidebar = UI.view()
+sidebar.set("direction", "column")
+sidebar.set("justify", "start")
+sidebar.set("align", "stretch")
+sidebar.set("padx", 12)
+sidebar.set("pady", 16)
+sidebar.set("gap", 8)
+sidebar.set("width", 200)
+sidebar.setClass("bg-panel")
+
+sidebar.add(SectionHeader("Navigation"))
+
+var navItems = ["Dashboard", "Pull Requests", "Issues", "Actions", "Packages", "Settings"]
+for i in range(0, 6):
+    var item = navItems[i]
+    var navBtn = UI.button(item)
+    navBtn.set("event", "sidebar-nav")
+    navBtn.set("height", 32)
+    if i == 0:
+        navBtn.setClass("nav-item-active")
+    else:
+        navBtn.setClass("nav-item")
+    end
+    sidebar.add(navBtn)
+end
+
+sidebar.add(Divider())
+sidebar.add(SectionHeader("Repos"))
+
+var repos = ["polyloft-bvm", "polyloft-server", "polyloft-ui"]
+for i in range(0, 3):
+    var repoLabel = UI.text("  · " + repos[i])
+    repoLabel.setClass("text-small")
+    repoLabel.set("height", 22)
+    sidebar.add(repoLabel)
+end
+
+body.add(sidebar)
+
+// ─── Main content ─────────────────────────────────────────────────────────────
+var main = UI.view()
+main.set("direction", "column")
+main.set("justify", "start")
+main.set("align", "stretch")
+main.set("padx", 24)
+main.set("pady", 16)
+main.set("gap", 16)
+main.set("flex", 1)
+
+// Hero line
+var heroRow = UI.view()
+heroRow.set("direction", "row")
+heroRow.set("align", "center")
+heroRow.set("justify", "space-between")
+heroRow.set("height", 44)
+
+var heroTitle = UI.text("Developer Dashboard")
+heroTitle.setClass("text-hero")
+heroTitle.style("font-size", "22px")
+
+var deployBtn = UI.button("▶  Deploy Now")
+deployBtn.setClass("btn-primary")
+deployBtn.set("event", "deploy")
+deployBtn.set("width", 130)
+deployBtn.set("height", 34)
+deployBtn.style("color", "#ffffff")
+
+heroRow.add(heroTitle)
+heroRow.add(deployBtn)
+main.add(heroRow)
+
+// ── Stat cards row ────────────────────────────────────────────────────────────
+var statsRow = UI.view()
+statsRow.set("direction", "row")
+statsRow.set("align", "center")
+statsRow.set("justify", "start")
+statsRow.set("gap", 12)
+statsRow.set("height", 108)
+
+statsRow.add(StatCard("Total Builds",    "4 521",  "↑ 12% this week",  "text-green"))
+statsRow.add(StatCard("Success Rate",    "94.3%",  "↓ 0.8% vs last",   "text-yellow"))
+statsRow.add(StatCard("Avg Duration",    "3m 12s", "↑ faster by 18s",  "text-blue"))
+statsRow.add(StatCard("Active Workers",  "8 / 12", "4 idle right now",  "text-purple"))
+statsRow.add(StatCard("Open PRs",        "23",     "→ +3 since Monday", "text-body"))
+
+main.add(statsRow)
+
+// ── Recent builds ─────────────────────────────────────────────────────────────
+main.add(SectionHeader("Recent Builds"))
+
+var buildsPanel = UI.view()
+buildsPanel.set("direction", "column")
+buildsPanel.set("gap", 3)
+buildsPanel.setClass("bg-card")
+
+buildsPanel.add(BuildRow("4521", "release/v2.1",   "failed",  "1m 54s"))
+buildsPanel.add(BuildRow("4520", "feature/css-ui", "success", "2m 11s"))
+buildsPanel.add(BuildRow("4519", "main",           "success", "3m 07s"))
+buildsPanel.add(BuildRow("4518", "fix/slider-pct", "success", "2m 58s"))
+buildsPanel.add(BuildRow("4517", "feature/router", "running", "1m 22s"))
+buildsPanel.add(BuildRow("4516", "main",           "queued",  "—"))
+
+main.add(buildsPanel)
+
+// ── Progress bars ─────────────────────────────────────────────────────────────
+var progressSection = UI.view()
+progressSection.set("direction", "row")
+progressSection.set("align", "start")
+progressSection.set("gap", 24)
+progressSection.set("height", 110)
+
+var leftProgress = UI.view()
+leftProgress.set("direction", "column")
+leftProgress.set("gap", 10)
+leftProgress.set("flex", 1)
+leftProgress.add(SectionHeader("Resource Usage"))
+leftProgress.add(ProgressTrack("CPU",     68, "text-yellow"))
+leftProgress.add(ProgressTrack("Memory",  42, "text-blue"))
+leftProgress.add(ProgressTrack("Storage", 81, "text-red"))
+
+var rightProgress = UI.view()
+rightProgress.set("direction", "column")
+rightProgress.set("gap", 10)
+rightProgress.set("flex", 1)
+rightProgress.add(SectionHeader("Test Coverage"))
+rightProgress.add(ProgressTrack("Unit Tests",        94, "text-green"))
+rightProgress.add(ProgressTrack("Integration Tests", 76, "text-yellow"))
+rightProgress.add(ProgressTrack("E2E Tests",         58, "text-yellow"))
+
+progressSection.add(leftProgress)
+progressSection.add(rightProgress)
+main.add(progressSection)
+
+// ── Volume slider ─────────────────────────────────────────────────────────────
+main.add(VolumeSlider("Worker Concurrency  (0 – 16)", 8, 16))
+
+body.add(main)
+
+// ─── Right panel: Live log feed ───────────────────────────────────────────────
+var logPanel = UI.view()
+logPanel.set("direction", "column")
+logPanel.set("justify", "start")
+logPanel.set("align", "stretch")
+logPanel.set("padx", 12)
+logPanel.set("pady", 14)
+logPanel.set("gap", 6)
+logPanel.set("width", 320)
+logPanel.setClass("bg-panel")
+
+logPanel.add(SectionHeader("Live Log"))
+logPanel.add(Divider())
+
+var logLines = [
+    ["12:40:01", "ok",    "Pipeline started – build #4521"],
+    ["12:40:03", "info",  "Pulling image polyloft/ci:2.1.0"],
+    ["12:40:08", "ok",    "Dependencies installed (512 pkgs)"],
+    ["12:40:11", "info",  "Running unit tests…"],
+    ["12:40:19", "warn",  "Flaky test detected – retrying"],
+    ["12:40:25", "ok",    "Unit tests passed  (318/318)"],
+    ["12:40:27", "info",  "Starting integration suite"],
+    ["12:40:41", "error", "Test: TestAuthFlow – timeout"],
+    ["12:40:41", "error", "Test: TestDBMigration – conn err"],
+    ["12:40:42", "warn",  "Retrying 2 failed tests…"],
+    ["12:40:55", "error", "Integration suite FAILED (3 err)"],
+    ["12:40:56", "info",  "Artifacts archived to /tmp/ci"],
+    ["12:40:57", "warn",  "Notification dispatched"],
+    ["12:40:57", "ok",    "Worker released"],
+]
+
+for i in range(0, 14):
+    var entry = logLines[i]
+    logPanel.add(LogLine(entry[0], entry[1], entry[2]))
+end
+
+logPanel.add(Divider())
+
+var refreshBtn = UI.button("⟳  Refresh Logs")
+refreshBtn.setClass("btn-ghost")
+refreshBtn.set("event", "refresh-logs")
+refreshBtn.set("height", 30)
+logPanel.add(refreshBtn)
+
+body.add(logPanel)
+root.add(body)
+
+// ── Assemble main window ──────────────────────────────────────────────────────
+var win = app.window("Polyloft – Developer Dashboard", 1060, 720)
+win.root(root)
+
+win.on("nav-overview",  on_nav)
+win.on("nav-builds",    on_nav)
+win.on("nav-logs",      on_nav)
+win.on("nav-settings",  on_nav)
+win.on("sidebar-nav",   on_nav)
+win.on("volume-change", on_volume)
+win.on("deploy",        on_action)
+win.on("refresh-logs",  on_action)
+
+app.setIcon("polyloft-vscode-extension/icon.png")
+
+println("[dashboard] starting UI…")
+app.startUiLoop(16, 4)
+app.run()
+app.stopUiLoop()

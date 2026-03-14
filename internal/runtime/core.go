@@ -96,7 +96,7 @@ func InstallCoreGlobals(registry *Registry, stdout io.Writer) {
 	})
 
 	registry.DefineTypedBuiltin("__array_new", []string{TypeInt}, TypeArray, false, func(args []value.Value) (value.Value, error) {
-		size := args[0]
+		size := args[0] // size is the first argument
 		if size.Kind != value.Number || size.NumberKind != value.NumberInt {
 			return value.NilValue(), fmt.Errorf("__array_new expects an int size")
 		}
@@ -205,6 +205,7 @@ func InstallCoreGlobals(registry *Registry, stdout io.Writer) {
 	registry.DefineModule(BuildCryptoModule())
 	registry.DefineModule(BuildCollectionsModule())
 	registry.DefineModule(BuildConcurrentModule())
+	registry.DefineModule(BuildUiModule())
 }
 
 func installExceptionClasses(registry *Registry) {

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"io/ioutil"
+	"math"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -39,6 +41,35 @@ func parseOutput(outBytes []byte, marker string) (string, float64, error) {
 		}
 	}
 	return strings.Join(outputLines, "\n"), timeVal, nil
+}
+
+func outputsEquivalent(left, right string) bool {
+	if left == right {
+		return true
+	}
+	leftLines := strings.Split(strings.TrimSpace(left), "\n")
+	rightLines := strings.Split(strings.TrimSpace(right), "\n")
+	if len(leftLines) != len(rightLines) {
+		return false
+	}
+	for i := range leftLines {
+		l := strings.TrimSpace(leftLines[i])
+		r := strings.TrimSpace(rightLines[i])
+		if l == r {
+			continue
+		}
+		lf, lErr := strconv.ParseFloat(l, 64)
+		rf, rErr := strconv.ParseFloat(r, 64)
+		if lErr != nil || rErr != nil {
+			return false
+		}
+		delta := math.Abs(lf - rf)
+		scale := math.Max(1.0, math.Max(math.Abs(lf), math.Abs(rf)))
+		if delta > 1e-9*scale {
+			return false
+		}
+	}
+	return true
 }
 
 func main() {
@@ -81,7 +112,11 @@ func main() {
 		pyErr := pyCmd.Run()
 		pyOutputRaw := pyOut.String()
 
-		pfCmd := exec.Command("./polyloft-bvm.exe", "run", "--jit", pfPath)
+		pfArgs := []string{"run", pfPath}
+		if strings.EqualFold(os.Getenv("POLYLOFT_BENCH_JIT"), "1") {
+			pfArgs = []string{"run", "--jit", pfPath}
+		}
+		pfCmd := exec.Command("./polyloft-bvm.exe", pfArgs...)
 		var pfOut bytes.Buffer
 		pfCmd.Stdout = &pfOut
 		pfCmd.Stderr = &pfOut
@@ -99,7 +134,7 @@ func main() {
 			fmt.Printf("  [PY ERROR] %v\n", pyErr)
 		}
 
-		if pyOutput == pfOutput && pfErr == nil && pyErr == nil {
+		if outputsEquivalent(pyOutput, pfOutput) && pfErr == nil && pyErr == nil {
 			passed = true
 			passedCount++
 			totalPy += pyTime

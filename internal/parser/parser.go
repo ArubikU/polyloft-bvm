@@ -2215,6 +2215,7 @@ func (p *Parser) primary() (ast.Expr, error) {
 		return &ast.LiteralExpr{Value: p.previous().Lexeme}, nil
 	}
 	if p.match(token.LeftBracket) {
+		p.skipNewlines()
 		if p.check(token.RightBracket) {
 			p.advance()
 			return &ast.ArrayExpr{Elements: []ast.Expr{}}, nil
@@ -2254,10 +2255,12 @@ func (p *Parser) primary() (ast.Expr, error) {
 			}, nil
 		}
 
-		// Normal array: [ e1, e2, ... ]
+		// Normal array: [ e1, e2, ... ] (supports multiline)
 		elements := []ast.Expr{first}
 		if p.match(token.Comma) {
+			p.skipNewlines()
 			for {
+				p.skipNewlines()
 				if p.check(token.RightBracket) {
 					break
 				}
@@ -2269,8 +2272,10 @@ func (p *Parser) primary() (ast.Expr, error) {
 				if !p.match(token.Comma) {
 					break
 				}
+				p.skipNewlines()
 			}
 		}
+		p.skipNewlines()
 		if _, err := p.consume(token.RightBracket, "expected ']' after array literal"); err != nil {
 			return nil, err
 		}

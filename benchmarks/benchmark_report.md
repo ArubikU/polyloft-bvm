@@ -1,56 +1,56 @@
 # Polyloft BVM vs Python Stress Test Benchmark
 
 ## Summary
-- **Tests Passed:** 37 / 45
-- **Total Python Internal Time (passed):** 7825 ms
-- **Total Polyloft Internal Time (passed):** 44838 ms
-- **Overall Speedup:** 0.17x
+- **Tests Passed:** 45 / 45
+- **Total Python Internal Time (passed):** 33456 ms
+- **Total Polyloft Internal Time (passed):** 82181 ms
+- **Overall Speedup:** 0.41x
 
 ## Detailed Results
 | Test Name | Python Time (ms) | Polyloft Time (ms) | Speedup | Passed |
 |-----------|------------------|--------------------|---------|--------|
-| 01_while_loop_10m              |           507 |             997 |   0.51x |   ✅   |
-| 02_for_loop_10m                |           649 |            2188 |   0.30x |   ✅   |
-| 03_nested_loops                |            63 |              92 |   0.68x |   ✅   |
-| 04_complex_branching           |           488 |             850 |   0.57x |   ✅   |
-| 05_recursion_fibonacci         |          1200 |            3647 |   0.33x |   ✅   |
-| 06_integer_add_sub             |          1778 |            5027 |   0.35x |   ✅   |
-| 07_integer_mul_div             |           466 |            1780 |   0.26x |   ❌   |
-| 08_float_arithmetic            |           464 |            1776 |   0.26x |   ✅   |
-| 09_modulo_operations           |           598 |             940 |   0.64x |   ✅   |
-| 10_collaz_conjecture           |           777 |            2592 |   0.30x |   ✅   |
-| 11_primes_sieve                |            88 |            1035 |   0.09x |   ✅   |
-| 12_mandelbrot_set              |            30 |             249 |   0.12x |   ✅   |
-| 13_vector_math                 |             1 |               8 |   0.12x |   ❌   |
-| 14_polynomial_eval             |           841 |           38007 |   0.02x |   ❌   |
-| 15_factorial_loop              |            41 |             838 |   0.05x |   ❌   |
-| 16_array_append                |             5 |              20 |   0.25x |   ✅   |
-| 17_array_seq_read              |             7 |              29 |   0.24x |   ✅   |
-| 18_array_rand_access           |            17 |              54 |   0.31x |   ✅   |
-| 19_array_sorting               |             5 |              38 |   0.13x |   ✅   |
-| 20_array_slicing               |             0 |              11 |   0.00x |   ✅   |
-| 21_map_insertion               |             2 |               6 |   0.33x |   ✅   |
-| 22_map_retrieval               |             2 |               5 |   0.40x |   ✅   |
-| 23_map_updates                 |             2 |               6 |   0.33x |   ✅   |
-| 24_map_deletion                |             2 |               6 |   0.33x |   ✅   |
-| 25_string_concat               |             0 |               0 |   0.00x |   ✅   |
-| 26_string_search               |            73 |             194 |   0.38x |   ✅   |
-| 27_string_split_join           |            21 |             145 |   0.14x |   ✅   |
-| 28_tuple_creation              |           127 |             777 |   0.16x |   ✅   |
-| 29_nested_data_structures      |             0 |               0 |   0.00x |   ✅   |
-| 30_simulated_sets              |             6 |              11 |   0.55x |   ✅   |
-| 31_object_instantiation        |            19 |              69 |   0.28x |   ✅   |
-| 32_method_calls_simple         |            79 |             295 |   0.27x |   ✅   |
-| 33_polymorphism                |            96 |            6988 |   0.01x |   ✅   |
-| 34_property_access             |            93 |             308 |   0.30x |   ✅   |
-| 35_static_methods              |           111 |            7282 |   0.02x |   ✅   |
-| 36_deep_hierarchy              |            21 |              59 |   0.36x |   ✅   |
-| 37_many_arguments              |           145 |            7734 |   0.02x |   ✅   |
-| 38_object_comparisons          |           237 |            1022 |   0.23x |   ✅   |
-| 39_factory_pattern             |           106 |             354 |   0.30x |   ✅   |
-| 40_linked_list                 |             3 |              10 |   0.30x |   ✅   |
-| 41_string_builder_simulation   |             1 |               0 |   0.00x |   ❌   |
-| 42_dfs_graph                   |             0 |               0 |   0.00x |   ❌   |
-| 43_bubble_sort_objects         |             3 |               0 |   0.00x |   ❌   |
-| 44_n_queens                    |             4 |              22 |   0.18x |   ✅   |
-| 45_monte_carlo_pi              |            31 |              82 |   0.38x |   ❌   |
+| 01_while_loop_10m              |          1909 |            3566 |   0.54x |   ✅   |
+| 02_for_loop_10m                |          2383 |            4477 |   0.53x |   ✅   |
+| 03_nested_loops                |           221 |             298 |   0.74x |   ✅   |
+| 04_complex_branching           |          2254 |            3566 |   0.63x |   ✅   |
+| 05_recursion_fibonacci         |          4884 |           12834 |   0.38x |   ✅   |
+| 06_integer_add_sub             |          6636 |           11158 |   0.59x |   ✅   |
+| 07_integer_mul_div             |          1410 |            3510 |   0.40x |   ✅   |
+| 08_float_arithmetic            |          1629 |            3961 |   0.41x |   ✅   |
+| 09_modulo_operations           |          1965 |            2895 |   0.68x |   ✅   |
+| 10_collaz_conjecture           |          2643 |            9069 |   0.29x |   ✅   |
+| 11_primes_sieve                |           416 |            3124 |   0.13x |   ✅   |
+| 12_mandelbrot_set              |           112 |             561 |   0.20x |   ✅   |
+| 13_vector_math                 |             6 |              21 |   0.29x |   ✅   |
+| 14_polynomial_eval             |          2339 |            8077 |   0.29x |   ✅   |
+| 15_factorial_loop              |           160 |             656 |   0.24x |   ✅   |
+| 16_array_append                |            16 |              68 |   0.24x |   ✅   |
+| 17_array_seq_read              |            17 |              68 |   0.25x |   ✅   |
+| 18_array_rand_access           |            65 |             127 |   0.51x |   ✅   |
+| 19_array_sorting               |            23 |             123 |   0.19x |   ✅   |
+| 20_array_slicing               |             2 |              32 |   0.06x |   ✅   |
+| 21_map_insertion               |             6 |              25 |   0.24x |   ✅   |
+| 22_map_retrieval               |             9 |              14 |   0.64x |   ✅   |
+| 23_map_updates                 |            13 |              23 |   0.57x |   ✅   |
+| 24_map_deletion                |             7 |              16 |   0.44x |   ✅   |
+| 25_string_concat               |             1 |               1 |   1.00x |   ✅   |
+| 26_string_search               |           255 |             658 |   0.39x |   ✅   |
+| 27_string_split_join           |            73 |             458 |   0.16x |   ✅   |
+| 28_tuple_creation              |           448 |            2424 |   0.18x |   ✅   |
+| 29_nested_data_structures      |             0 |               2 |   0.00x |   ✅   |
+| 30_simulated_sets              |            26 |              39 |   0.67x |   ✅   |
+| 31_object_instantiation        |            75 |             209 |   0.36x |   ✅   |
+| 32_method_calls_simple         |           284 |             838 |   0.34x |   ✅   |
+| 33_polymorphism                |           300 |             776 |   0.39x |   ✅   |
+| 34_property_access             |           365 |             854 |   0.43x |   ✅   |
+| 35_static_methods              |           425 |             943 |   0.45x |   ✅   |
+| 36_deep_hierarchy              |           104 |             151 |   0.69x |   ✅   |
+| 37_many_arguments              |           537 |            2117 |   0.25x |   ✅   |
+| 38_object_comparisons          |           886 |            3183 |   0.28x |   ✅   |
+| 39_factory_pattern             |           419 |             993 |   0.42x |   ✅   |
+| 40_linked_list                 |            11 |              25 |   0.44x |   ✅   |
+| 41_string_builder_simulation   |             1 |              10 |   0.10x |   ✅   |
+| 42_dfs_graph                   |             0 |               0 |   0.00x |   ✅   |
+| 43_bubble_sort_objects         |            12 |              48 |   0.25x |   ✅   |
+| 44_n_queens                    |            14 |              26 |   0.54x |   ✅   |
+| 45_monte_carlo_pi              |            95 |             157 |   0.61x |   ✅   |

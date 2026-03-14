@@ -144,8 +144,9 @@ type ClassDecl struct {
 }
 
 type ClassRuntime struct {
-	FastConstructor *FastConstructorPlan
-	FastMethods     []*FastMethodPlan
+	FastConstructor   *FastConstructorPlan
+	FastMethods       []*FastMethodPlan
+	FastStaticMethods map[string]*FastMethodPlan
 
 	MethodOrder []string
 	MethodIndex map[string]int
@@ -171,6 +172,8 @@ type FastMethodExprKind uint8
 
 const (
 	FastMethodExprNumber FastMethodExprKind = iota
+	FastMethodExprLiteral
+	FastMethodExprParam
 	FastMethodExprField
 	FastMethodExprAdd
 	FastMethodExprSub
@@ -180,11 +183,13 @@ const (
 )
 
 type FastMethodExpr struct {
-	Kind      FastMethodExprKind
-	Number    float64
-	FieldSlot int
-	Left      *FastMethodExpr
-	Right     *FastMethodExpr
+	Kind       FastMethodExprKind
+	Number     float64
+	Literal    Value
+	ParamIndex int
+	FieldSlot  int
+	Left       *FastMethodExpr
+	Right      *FastMethodExpr
 }
 
 type FastMethodPlan struct {
@@ -246,6 +251,7 @@ type Iterator struct {
 type Value struct {
 	Kind       Kind
 	Num        float64
+	Int        int64
 	NumberKind NumberKind
 	Bool       bool
 	Str        string
@@ -261,11 +267,11 @@ func NumberValue(v float64) Value {
 }
 
 func IntValue(v int64) Value {
-	return Value{Kind: Number, Num: float64(v), NumberKind: NumberInt}
+	return Value{Kind: Number, Num: float64(v), Int: v, NumberKind: NumberInt}
 }
 
 func FloatValue(v float64) Value {
-	return Value{Kind: Number, Num: v, NumberKind: NumberFloat}
+	return Value{Kind: Number, Num: v, Int: int64(v), NumberKind: NumberFloat}
 }
 
 func BoolValue(v bool) Value {
@@ -487,6 +493,19 @@ func (c *Class) LookupFastMethodBySlot(slot int) (*FastMethodPlan, bool) {
 	return plan, plan != nil
 }
 
+func (c *Class) LookupFastStaticMethod(name string, argc int) (*Class, *FastMethodPlan, bool) {
+	if c == nil {
+		return nil, nil, false
+	}
+	if plan, ok := c.FastStaticMethods[name]; ok && plan != nil && plan.Arity == argc {
+		return c, plan, true
+	}
+	if c.Superclass != nil {
+		return c.Superclass.LookupFastStaticMethod(name, argc)
+	}
+	return nil, nil, false
+}
+
 func (c *Class) LookupStatic(name string) (Value, bool) {
 	if field, ok := c.StaticValues[name]; ok {
 		return field, true
@@ -623,6 +642,9 @@ func Equal(left, right Value) bool {
 	case Nil:
 		return true
 	case Number:
+		if left.NumberKind == NumberInt && right.NumberKind == NumberInt {
+			return left.Int == right.Int
+		}
 		return left.Num == right.Num
 	case Bool:
 		return left.Bool == right.Bool
@@ -665,11 +687,11 @@ func (v Value) String() string {
 		return "nil"
 	case Number:
 		if v.NumberKind == NumberInt {
-			return strconv.FormatInt(int64(v.Num), 10)
+			return strconv.FormatInt(v.Int, 10)
 		}
 		// For floats, if it's effectively an integer and fits in reasonable range, show as int
 		if v.Num == float64(int64(v.Num)) {
-			// Check if it's a very large whole number that might still be an int
+			// Ensure it differentiates correctly between integer addition and direct python matching.
 			if v.Num > -1e15 && v.Num < 1e15 {
 				return strconv.FormatInt(int64(v.Num), 10)
 			}

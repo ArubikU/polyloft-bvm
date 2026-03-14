@@ -13,17 +13,21 @@ const (
 	irLoadLocal irOp = iota
 	irSetLocal
 	irLoadGlobalSlot
+	irDefineGlobalSlot
 	irLoadField
 	irLoadConst
+	irClosure
 	irLoadNil
 	irLoadTrue
 	irLoadFalse
 	irPop
 	irCallGlobalSlot
+	irCallConst
 	irInvokeMember
 	irRangeInitFast
 	irRangeNextFast
 	irCastInt
+	irCastFloat
 	irAddValue
 	irArray
 	irMap
@@ -43,6 +47,7 @@ const (
 	irSubNumber
 	irMulNumber
 	irDivNumber
+	irModNumber
 	irNegNumber
 	irJump
 	irJumpIfFalse
@@ -111,17 +116,21 @@ type opcodeSet struct {
 	loadLocal        byte
 	setLocal         byte
 	loadGlobalSlot   byte
+	defineGlobalSlot byte
 	loadField        byte
 	loadConst        byte
+	closure          byte
 	loadNil          byte
 	loadTrue         byte
 	loadFalse        byte
 	pop              byte
 	callGlobalSlot   byte
+	callConst        byte
 	invokeMember     byte
 	rangeInitFast    byte
 	rangeNextFast    byte
 	castInt          byte
+	castFloat        byte
 	addValue         byte
 	array            byte
 	mapValue         byte
@@ -141,6 +150,7 @@ type opcodeSet struct {
 	subNumber        byte
 	mulNumber        byte
 	divNumber        byte
+	modNumber        byte
 	negNumber        byte
 	jump             byte
 	jumpIfFalse      byte
@@ -163,10 +173,14 @@ func opcodeFor(op irOp, ops opcodeSet) byte {
 		return ops.setLocal
 	case irLoadGlobalSlot:
 		return ops.loadGlobalSlot
+	case irDefineGlobalSlot:
+		return ops.defineGlobalSlot
 	case irLoadField:
 		return ops.loadField
 	case irLoadConst:
 		return ops.loadConst
+	case irClosure:
+		return ops.closure
 	case irLoadNil:
 		return ops.loadNil
 	case irLoadTrue:
@@ -177,6 +191,8 @@ func opcodeFor(op irOp, ops opcodeSet) byte {
 		return ops.pop
 	case irCallGlobalSlot:
 		return ops.callGlobalSlot
+	case irCallConst:
+		return ops.callConst
 	case irInvokeMember:
 		return ops.invokeMember
 	case irRangeInitFast:
@@ -185,6 +201,8 @@ func opcodeFor(op irOp, ops opcodeSet) byte {
 		return ops.rangeNextFast
 	case irCastInt:
 		return ops.castInt
+	case irCastFloat:
+		return ops.castFloat
 	case irAddValue:
 		return ops.addValue
 	case irArray:
@@ -223,6 +241,8 @@ func opcodeFor(op irOp, ops opcodeSet) byte {
 		return ops.mulNumber
 	case irDivNumber:
 		return ops.divNumber
+	case irModNumber:
+		return ops.modNumber
 	case irNegNumber:
 		return ops.negNumber
 	case irJump:
@@ -353,17 +373,21 @@ func implementedBytecodeOps() map[bytecode.Op]bool {
 		bytecode.OpGetLocal:         true,
 		bytecode.OpSetLocal:         true,
 		bytecode.OpGetGlobalSlot:    true,
+		bytecode.OpDefineGlobalSlot: true,
 		bytecode.OpGetThisField:     true,
 		bytecode.OpConstant:         true,
+		bytecode.OpClosure:          true,
 		bytecode.OpNil:              true,
 		bytecode.OpTrue:             true,
 		bytecode.OpFalse:            true,
 		bytecode.OpPop:              true,
 		bytecode.OpCallGlobalSlot:   true,
+		bytecode.OpCallConst:        true,
 		bytecode.OpInvoke:           true,
 		bytecode.OpRangeInitFast:    true,
 		bytecode.OpRangeNextFast:    true,
 		bytecode.OpCastInt:          true,
+		bytecode.OpCastFloat:        true,
 		bytecode.OpAdd:              true,
 		bytecode.OpArray:            true,
 		bytecode.OpMap:              true,
@@ -384,6 +408,7 @@ func implementedBytecodeOps() map[bytecode.Op]bool {
 		bytecode.OpSubNum:           true,
 		bytecode.OpMulNum:           true,
 		bytecode.OpDivNum:           true,
+		bytecode.OpModNum:           true,
 		bytecode.OpNegate:           true,
 		bytecode.OpJump:             true,
 		bytecode.OpJumpIfFalse:      true,
@@ -436,17 +461,21 @@ func opcodeSetForBackend(name string) (opcodeSet, bool) {
 		loadLocal:        lookup[bytecode.OpGetLocal],
 		setLocal:         lookup[bytecode.OpSetLocal],
 		loadGlobalSlot:   lookup[bytecode.OpGetGlobalSlot],
+		defineGlobalSlot: lookup[bytecode.OpDefineGlobalSlot],
 		loadField:        lookup[bytecode.OpGetThisField],
 		loadConst:        lookup[bytecode.OpConstant],
+		closure:          lookup[bytecode.OpClosure],
 		loadNil:          lookup[bytecode.OpNil],
 		loadTrue:         lookup[bytecode.OpTrue],
 		loadFalse:        lookup[bytecode.OpFalse],
 		pop:              lookup[bytecode.OpPop],
 		callGlobalSlot:   lookup[bytecode.OpCallGlobalSlot],
+		callConst:        lookup[bytecode.OpCallConst],
 		invokeMember:     lookup[bytecode.OpInvoke],
 		rangeInitFast:    lookup[bytecode.OpRangeInitFast],
 		rangeNextFast:    lookup[bytecode.OpRangeNextFast],
 		castInt:          lookup[bytecode.OpCastInt],
+		castFloat:        lookup[bytecode.OpCastFloat],
 		addValue:         lookup[bytecode.OpAdd],
 		array:            lookup[bytecode.OpArray],
 		mapValue:         lookup[bytecode.OpMap],
@@ -466,6 +495,7 @@ func opcodeSetForBackend(name string) (opcodeSet, bool) {
 		subNumber:        lookup[bytecode.OpSubNum],
 		mulNumber:        lookup[bytecode.OpMulNum],
 		divNumber:        lookup[bytecode.OpDivNum],
+		modNumber:        lookup[bytecode.OpModNum],
 		negNumber:        lookup[bytecode.OpNegate],
 		jump:             lookup[bytecode.OpJump],
 		jumpIfFalse:      lookup[bytecode.OpJumpIfFalse],

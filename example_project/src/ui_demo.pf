@@ -1,0 +1,221 @@
+import polyloft.ui { UI }
+import polyloft.concurrent { async, CompletableFuture }
+
+// ── Callbacks ─────────────────────────────────────────────────────────────────
+def on_click(payload: any) -> void:
+    println("[click] " + payload)
+end
+
+def on_slider_change(payload: any) -> void:
+    println("[slider] value=" + payload)
+end
+
+def on_close(payload: any) -> void:
+    println("[close-btn] closing app")
+end
+
+// ── App + stylesheet ──────────────────────────────────────────────────────────
+var app = UI.app("go")
+app.allowProfile("desktop")
+println("platform=" + app.platform())
+
+// Method 1: load CSS from a file
+var ss = UI.stylesheet()
+var rulesLoaded = ss.loadFile("example_project/src/styles.css")
+println("CSS rules loaded=" + rulesLoaded)
+
+// Method 2: programmatic rule (inline, highest priority over file)
+ss.set(".highlight", "color", "#f9e784")
+ss.set(".highlight", "font-weight", "bold")
+ss.set(".highlight", "text-align", "center")
+
+app.attachStylesheet(ss)
+
+// ── Main window root ──────────────────────────────────────────────────────────
+var root = UI.view()
+root.set("direction", "column")
+root.set("justify", "start")
+root.set("align", "stretch")
+root.set("gap", 10)
+root.set("padx", 16)
+root.set("pady", 16)
+root.set("width", 920)
+root.set("height", 600)
+
+// Title – uses CSS class ".title" (bold, center, 28px)
+var title = UI.text("Polyloft UI – CSS Demo")
+title.setClass("title")
+root.add(title)
+
+// Subtitle – uses ".subtitle" class
+var sub = UI.text("Styles via CSS class names  |  text-align  |  font-size  |  color")
+sub.setClass("subtitle")
+root.add(sub)
+
+// Row with three labels using different classes
+var row = UI.view()
+row.set("direction", "row")
+row.set("align", "center")
+row.set("justify", "space-between")
+row.set("gap", 6)
+row.set("height", 40)
+
+var left = UI.text("Left")
+left.setClass("label")
+left.set("flex", 1)
+
+var center = UI.text("Center")
+center.setClass("label-center")
+center.set("flex", 1)
+
+var right = UI.text("Right")
+right.setClass("label-right")
+right.set("flex", 1)
+
+row.add(left)
+row.add(center)
+row.add(right)
+root.add(row)
+
+// Highlighted label – programmatic rule ".highlight"
+var highlight = UI.text("Programmatic rule: .highlight class → gold, bold, centered")
+highlight.setClass("highlight")
+root.add(highlight)
+
+// Inline style override (highest priority, beats any class rule)
+var inlineLabel = UI.text("Inline style override → color: #ff8c42, font-size: 16px, italic")
+inlineLabel.setClass("label")
+inlineLabel.style("color", "#ff8c42")
+inlineLabel.style("font-size", "16px")
+inlineLabel.style("font-style", "italic")
+root.add(inlineLabel)
+
+// Accent label
+var accent = UI.text("Accent text example (.accent class → blue, bold)")
+accent.setClass("accent")
+root.add(accent)
+
+// Button
+var btn = UI.button("Send Click Event")
+btn.set("event", "click")
+btn.set("height", 36)
+root.add(btn)
+
+// Slider with onChange event → reports value + percent
+var sliderLabel = UI.text("Slider (onChange → value + percent):")
+sliderLabel.setClass("label")
+root.add(sliderLabel)
+
+var slider = UI.nativeComponent("slider")
+slider.set("min", 0)
+slider.set("max", 200)
+slider.set("value", 50)
+slider.set("height", 42)
+slider.set("event", "change")
+root.add(slider)
+
+// Muted hint
+var muted = UI.text("Drag the slider to fire onChange events with percent calculation.")
+muted.setClass("muted")
+root.add(muted)
+
+// ── Main window ───────────────────────────────────────────────────────────────
+var win = app.window("Polyloft – CSS Demo", 920, 600)
+win.root(root)
+win.on("click", on_click)
+win.on("change", on_slider_change)
+
+// ── Headless window demo ──────────────────────────────────────────────────────
+// A window with no OS padding, custom title bar built entirely from nodes.
+var hw = UI.view()
+hw.set("direction", "column")
+hw.set("justify", "start")
+hw.set("align", "stretch")
+hw.set("gap", 0)
+hw.set("width", 480)
+hw.set("height", 320)
+
+// Custom title bar row
+var tbar = UI.view()
+tbar.set("direction", "row")
+tbar.set("align", "center")
+tbar.set("justify", "space-between")
+tbar.set("gap", 4)
+tbar.set("height", 36)
+tbar.setClass("titlebar")
+
+var tbTitle = UI.text("Custom Window (headless)")
+tbTitle.setClass("titlebar-title")
+tbTitle.set("flex", 1)
+
+var btnMin = UI.button("–")
+btnMin.setClass("minimize-btn")
+btnMin.set("event", "minimize")
+btnMin.set("width", 32)
+btnMin.set("height", 28)
+
+var btnClose = UI.button("✕")
+btnClose.setClass("close-btn")
+btnClose.set("event", "window-close")
+btnClose.set("width", 32)
+btnClose.set("height", 28)
+
+tbar.add(tbTitle)
+tbar.add(btnMin)
+tbar.add(btnClose)
+hw.add(tbar)
+
+// Body content
+var hwBody = UI.view()
+hwBody.set("direction", "column")
+hwBody.set("align", "center")
+hwBody.set("justify", "center")
+hwBody.set("gap", 12)
+hwBody.set("padx", 24)
+hwBody.set("pady", 24)
+hwBody.set("flex", 1)
+
+var hwTitle = UI.text("Headless Window")
+hwTitle.setClass("title")
+hwTitle.style("font-size", "20px")
+
+var hwSub = UI.text("No OS title bar · custom chrome · custom buttons")
+hwSub.setClass("subtitle")
+
+hwBody.add(hwTitle)
+hwBody.add(hwSub)
+hw.add(hwBody)
+
+var headlessWin = app.window("headless", 480, 320)
+headlessWin.root(hw)
+headlessWin.setHeadless(true)
+headlessWin.on("window-close", on_close)
+
+// ── App icon (polyloft branding) ──────────────────────────────────────────────
+app.setIcon("polyloft-vscode-extension/icon.png")
+
+// ── Console-only part (channels, tasks) ──────────────────────────────────────
+var eventCh = app.eventChannel(32)
+
+var jobs = app.channel("jobs", 8)
+jobs.send("recompute-layout")
+jobs.send("sync-theme")
+
+for i in range(0, 2):
+    var job = jobs.receive()
+    println("job => " + job)
+end
+
+def format_payload(payload: any) -> any:
+    return "handled => " + payload
+end
+
+var syncResult = app.dispatch(format_payload, "sync-dispatch")
+println(syncResult)
+
+app.startUiLoop(16, 4)
+app.run()
+app.stopUiLoop()
+
+win.show()
+app.run()

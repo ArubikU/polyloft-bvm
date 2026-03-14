@@ -872,6 +872,32 @@ func (c *Checker) checkExprWithExpected(expr ast.Expr, expected *Type) (Type, er
 			elements[i] = elementType
 		}
 		return TupleOf(elements), nil
+	case *ast.ArrayComprehensionExpr:
+		// [ expr for var in iterable ]
+		// We need to infer the type of 'expr' in a scope that has 'var'
+		c.pushScope()
+		defer c.popScope()
+
+		iterableType, err := c.checkExpr(node.Iterable)
+		if err != nil {
+			return Unknown(), err
+		}
+
+		// Var type usually comes from iterable element type
+		varType := Any()
+		if iterableType.Name == runtime.TypeArray && len(iterableType.Args) > 0 {
+			varType = iterableType.Args[0]
+		}
+
+		c.currentScope()[node.Var.Lexeme] = symbol{Type: varType, Mutable: false}
+
+		valueType, err := c.checkExpr(node.Value)
+		if err != nil {
+			return Unknown(), err
+		}
+
+		return ArrayOf(valueType), nil
+
 	case *ast.ArrayExpr:
 		elementType := Any()
 		for i, element := range node.Elements {

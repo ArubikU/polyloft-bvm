@@ -41,8 +41,8 @@ func BuildJsonModule() *RuntimeModule {
 func valueToNative(v value.Value) any {
 	switch v.Kind {
 	case value.Number:
-		if v.Num == float64(int64(v.Num)) {
-			return int64(v.Num)
+		if v.NumberKind == value.NumberInt {
+			return v.Int
 		}
 		return v.Num
 	case value.Bool:

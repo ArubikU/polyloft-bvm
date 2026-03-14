@@ -212,6 +212,13 @@ func lowerBytecode(fn *bytecode.Function) ([]irInstruction, []value.Value, []any
 			ir = append(ir, irInstruction{opcode: irLoadGlobalSlot, operand: uint16(code[offset+1])})
 			stackDepth++
 			offset += 2
+		case bytecode.OpDefineGlobalSlot:
+			if offset+1 >= len(code) || stackDepth < 1 {
+				return nil, nil, nil, false, 0, false, "invalid DEFINE_GLOBAL_SLOT"
+			}
+			ir = append(ir, irInstruction{opcode: irDefineGlobalSlot, operand: uint16(code[offset+1])})
+			stackDepth--
+			offset += 2
 		case bytecode.OpGetThisField:
 			if offset+1 >= len(code) {
 				return nil, nil, nil, false, 0, false, "truncated GET_THIS_FIELD"
@@ -237,6 +244,30 @@ func lowerBytecode(fn *bytecode.Function) ([]irInstruction, []value.Value, []any
 				constants = append(constants, constant)
 			}
 			ir = append(ir, irInstruction{opcode: irLoadConst, operand: jitIndex})
+			stackDepth++
+			offset += 3
+		case bytecode.OpClosure:
+			if offset+2 >= len(code) {
+				return nil, nil, nil, false, 0, false, "truncated CLOSURE"
+			}
+			idx := readUint16(code[offset+1:])
+			raw := fn.Chunk.Constants[idx]
+			compiledFn, ok := raw.(*bytecode.Function)
+			if !ok {
+				return nil, nil, nil, false, 0, false, fmt.Sprintf("unsupported closure constant %T", raw)
+			}
+			if len(compiledFn.Upvalues) != 0 {
+				return nil, nil, nil, false, 0, false, "closures with captures not supported in jit"
+			}
+			callable := value.ObjectValue(compiledFn)
+			key := constantCacheKey(callable)
+			jitIndex, exists := constantIndex[key]
+			if !exists {
+				jitIndex = uint16(len(constants))
+				constantIndex[key] = jitIndex
+				constants = append(constants, callable)
+			}
+			ir = append(ir, irInstruction{opcode: irClosure, operand: jitIndex})
 			stackDepth++
 			offset += 3
 		case bytecode.OpNil:
@@ -265,6 +296,33 @@ func lowerBytecode(fn *bytecode.Function) ([]irInstruction, []value.Value, []any
 			ir = append(ir, irInstruction{opcode: irCallGlobalSlot, operand: uint16(code[offset+1]), aux: uint16(code[offset+2])})
 			stackDepth = stackDepth - int(code[offset+2]) + 1
 			offset += 3
+		case bytecode.OpCallConst:
+			if offset+3 >= len(code) || stackDepth < int(code[offset+3]) {
+				return nil, nil, nil, false, 0, false, "invalid CALL_CONST"
+			}
+			idx := readUint16(code[offset+1:])
+			constant, ok := jitConstantValue(fn.Chunk.Constants[idx])
+			if !ok {
+				return nil, nil, nil, false, 0, false, fmt.Sprintf("unsupported call const %T", fn.Chunk.Constants[idx])
+			}
+			if fnValue, ok := constant.AsFunction(); ok {
+				if len(fnValue.Upvalues) != 0 {
+					return nil, nil, nil, false, 0, false, "call const with captures not supported in jit"
+				}
+				if _, _, _, _, _, ok, reason := lowerBytecode(fnValue); !ok {
+					return nil, nil, nil, false, 0, false, "call const target not jit-compilable: " + reason
+				}
+			}
+			key := constantCacheKey(constant)
+			jitIndex, exists := constantIndex[key]
+			if !exists {
+				jitIndex = uint16(len(constants))
+				constantIndex[key] = jitIndex
+				constants = append(constants, constant)
+			}
+			ir = append(ir, irInstruction{opcode: irCallConst, operand: jitIndex, aux: uint16(code[offset+3])})
+			stackDepth = stackDepth - int(code[offset+3]) + 1
+			offset += 4
 		case bytecode.OpInvoke:
 			if offset+3 >= len(code) || stackDepth < int(code[offset+3])+1 {
 				return nil, nil, nil, false, 0, false, "invalid INVOKE"
@@ -296,6 +354,12 @@ func lowerBytecode(fn *bytecode.Function) ([]irInstruction, []value.Value, []any
 			}
 			ir = append(ir, irInstruction{opcode: irCastInt})
 			offset++
+		case bytecode.OpCastFloat:
+			if stackDepth < 1 {
+				return nil, nil, nil, false, 0, false, "stack underflow CAST_FLOAT"
+			}
+			ir = append(ir, irInstruction{opcode: irCastFloat})
+			offset++
 		case bytecode.OpAdd:
 			if stackDepth < 2 {
 				return nil, nil, nil, false, 0, false, "stack underflow ADD"
@@ -308,6 +372,27 @@ func lowerBytecode(fn *bytecode.Function) ([]irInstruction, []value.Value, []any
 				return nil, nil, nil, false, 0, false, "stack underflow SUB"
 			}
 			ir = append(ir, irInstruction{opcode: irSubNumber})
+			stackDepth--
+			offset++
+		case bytecode.OpMul:
+			if stackDepth < 2 {
+				return nil, nil, nil, false, 0, false, "stack underflow MUL"
+			}
+			ir = append(ir, irInstruction{opcode: irMulNumber})
+			stackDepth--
+			offset++
+		case bytecode.OpDiv:
+			if stackDepth < 2 {
+				return nil, nil, nil, false, 0, false, "stack underflow DIV"
+			}
+			ir = append(ir, irInstruction{opcode: irDivNumber})
+			stackDepth--
+			offset++
+		case bytecode.OpMod:
+			if stackDepth < 2 {
+				return nil, nil, nil, false, 0, false, "stack underflow MOD"
+			}
+			ir = append(ir, irInstruction{opcode: irModNumber})
 			stackDepth--
 			offset++
 		case bytecode.OpAddLocalMulLocal:
@@ -400,7 +485,7 @@ func lowerBytecode(fn *bytecode.Function) ([]irInstruction, []value.Value, []any
 			}
 			ir = append(ir, irInstruction{opcode: irNot})
 			offset++
-		case bytecode.OpAddNum, bytecode.OpSubNum, bytecode.OpMulNum, bytecode.OpDivNum:
+		case bytecode.OpAddNum, bytecode.OpSubNum, bytecode.OpMulNum, bytecode.OpDivNum, bytecode.OpModNum:
 			if stackDepth < 2 {
 				return nil, nil, nil, false, 0, false, "stack underflow numeric op"
 			}
@@ -412,6 +497,8 @@ func lowerBytecode(fn *bytecode.Function) ([]irInstruction, []value.Value, []any
 				mapped = irMulNumber
 			case bytecode.OpDivNum:
 				mapped = irDivNumber
+			case bytecode.OpModNum:
+				mapped = irModNumber
 			}
 			ir = append(ir, irInstruction{opcode: mapped})
 			stackDepth--
@@ -492,6 +579,8 @@ func jitConstantValue(constant any) (value.Value, bool) {
 		return value.IntValue(int64(candidate)), true
 	case int64:
 		return value.IntValue(candidate), true
+	case *bytecode.Function:
+		return value.ObjectValue(candidate), true
 	case float64:
 		return value.FloatValue(candidate), true
 	case string:
@@ -515,6 +604,9 @@ func constantCacheKey(v value.Value) string {
 	case value.Nil:
 		return "nil"
 	case value.Number:
+		if v.NumberKind == value.NumberInt {
+			return fmt.Sprintf("num:%d:%d", v.NumberKind, v.Int)
+		}
 		return fmt.Sprintf("num:%d:%g", v.NumberKind, v.Num)
 	case value.Bool:
 		return fmt.Sprintf("bool:%t", v.Bool)
@@ -580,6 +672,18 @@ func executeProgram(program *Program, receiver *value.Instance, args []value.Val
 			}
 			stack = append(stack, runtime.GlobalSlots[slot])
 			ip++
+		case ops.defineGlobalSlot:
+			slot := int(instruction.Operand)
+			if len(stack) < 1 {
+				return value.NilValue(), fmt.Errorf("jit stack underflow in %s", program.Name)
+			}
+			if runtime == nil || slot < 0 || slot >= len(runtime.GlobalSlots) || slot >= len(runtime.GlobalDefined) {
+				return value.NilValue(), fmt.Errorf("jit global slot %d out of range for %s", slot, program.Name)
+			}
+			runtime.GlobalSlots[slot] = stack[len(stack)-1]
+			runtime.GlobalDefined[slot] = true
+			stack = stack[:len(stack)-1]
+			ip++
 		case ops.loadField:
 			slot := int(instruction.Operand)
 			if receiver == nil {
@@ -591,6 +695,13 @@ func executeProgram(program *Program, receiver *value.Instance, args []value.Val
 			stack = append(stack, receiver.Fields[slot])
 			ip++
 		case ops.loadConst:
+			idx := int(instruction.Operand)
+			if idx < 0 || idx >= len(program.Constants) {
+				return value.NilValue(), fmt.Errorf("jit constant %d out of range for %s", idx, program.Name)
+			}
+			stack = append(stack, program.Constants[idx])
+			ip++
+		case ops.closure:
 			idx := int(instruction.Operand)
 			if idx < 0 || idx >= len(program.Constants) {
 				return value.NilValue(), fmt.Errorf("jit constant %d out of range for %s", idx, program.Name)
@@ -624,6 +735,24 @@ func executeProgram(program *Program, receiver *value.Instance, args []value.Val
 			callArgs := append([]value.Value(nil), stack[len(stack)-argc:]...)
 			stack = stack[:len(stack)-argc]
 			result, err := jitCallValue(runtime.GlobalSlots[slot], callArgs, runtime, program.Name)
+			if err != nil {
+				return value.NilValue(), err
+			}
+			stack = append(stack, result)
+			ip++
+		case ops.callConst:
+			argc := int(instruction.Aux)
+			if len(stack) < argc {
+				return value.NilValue(), fmt.Errorf("jit stack underflow in %s", program.Name)
+			}
+			constIdx := int(instruction.Operand)
+			if constIdx < 0 || constIdx >= len(program.Constants) {
+				return value.NilValue(), fmt.Errorf("jit constant %d out of range for %s", constIdx, program.Name)
+			}
+			callee := program.Constants[constIdx]
+			callArgs := append([]value.Value(nil), stack[len(stack)-argc:]...)
+			stack = stack[:len(stack)-argc]
+			result, err := jitCallValue(callee, callArgs, runtime, program.Name)
 			if err != nil {
 				return value.NilValue(), err
 			}
@@ -683,7 +812,21 @@ func executeProgram(program *Program, receiver *value.Instance, args []value.Val
 			if operand.Kind != value.Number {
 				return value.NilValue(), fmt.Errorf("jit cast int expects number in %s", program.Name)
 			}
-			stack[len(stack)-1] = value.IntValue(int64(operand.Num))
+			if operand.NumberKind == value.NumberInt {
+				stack[len(stack)-1] = value.IntValue(operand.Int)
+			} else {
+				stack[len(stack)-1] = value.IntValue(int64(operand.Num))
+			}
+			ip++
+		case ops.castFloat:
+			if len(stack) < 1 {
+				return value.NilValue(), fmt.Errorf("jit stack underflow in %s", program.Name)
+			}
+			operand := stack[len(stack)-1]
+			if operand.Kind != value.Number {
+				return value.NilValue(), fmt.Errorf("jit cast float expects number in %s", program.Name)
+			}
+			stack[len(stack)-1] = value.FloatValue(operand.Num)
 			ip++
 		case ops.addValue:
 			if len(stack) < 2 {
@@ -819,12 +962,12 @@ func executeProgram(program *Program, receiver *value.Instance, args []value.Val
 				return value.NilValue(), fmt.Errorf("jit negate expects number in %s", program.Name)
 			}
 			if operand.NumberKind == value.NumberInt {
-				stack = append(stack, value.IntValue(-int64(operand.Num)))
+				stack = append(stack, value.IntValue(-operand.Int))
 			} else {
 				stack = append(stack, value.FloatValue(-operand.Num))
 			}
 			ip++
-		case ops.addNumber, ops.subNumber, ops.mulNumber, ops.divNumber:
+		case ops.addNumber, ops.subNumber, ops.mulNumber, ops.divNumber, ops.modNumber:
 			if len(stack) < 2 {
 				return value.NilValue(), fmt.Errorf("jit stack underflow in %s", program.Name)
 			}
@@ -866,8 +1009,14 @@ func executeNumericCompare(opcode byte, ops opcodeSet, left value.Value, right v
 	}
 	switch opcode {
 	case ops.lessNum:
+		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
+			return value.BoolValue(left.Int < right.Int), nil
+		}
 		return value.BoolValue(left.Num < right.Num), nil
 	case ops.greaterNum:
+		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
+			return value.BoolValue(left.Int > right.Int), nil
+		}
 		return value.BoolValue(left.Num > right.Num), nil
 	default:
 		return value.NilValue(), fmt.Errorf("unsupported numeric compare jit opcode %d in %s", opcode, name)
@@ -884,7 +1033,13 @@ func jitValuesEqual(left value.Value, right value.Value) bool {
 	case value.Bool:
 		return left.Bool == right.Bool
 	case value.Number:
-		return left.Num == right.Num && left.NumberKind == right.NumberKind
+		if left.NumberKind != right.NumberKind {
+			return false
+		}
+		if left.NumberKind == value.NumberInt {
+			return left.Int == right.Int
+		}
+		return left.Num == right.Num
 	case value.Char, value.String:
 		return left.Str == right.Str
 	default:
@@ -1068,7 +1223,43 @@ func jitCallValue(callee value.Value, args []value.Value, runtime *RuntimeContex
 		}
 		return builtin.Fn(args)
 	}
+	if fn, ok := callee.AsFunction(); ok {
+		program, err := jitProgramForFunction(fn)
+		if err != nil {
+			return value.NilValue(), err
+		}
+		return executeProgram(program, nil, args, runtime)
+	}
+	if closure, ok := callee.AsClosure(); ok {
+		if closure == nil || closure.Function == nil || len(closure.Captures) != 0 {
+			return value.NilValue(), fmt.Errorf("unsupported closure call in %s", name)
+		}
+		program, err := jitProgramForFunction(closure.Function)
+		if err != nil {
+			return value.NilValue(), err
+		}
+		return executeProgram(program, nil, args, runtime)
+	}
 	return value.NilValue(), fmt.Errorf("unsupported jit call target in %s", name)
+}
+
+var jitNestedProgramCache sync.Map
+
+func jitProgramForFunction(fn *bytecode.Function) (*Program, error) {
+	if fn == nil {
+		return nil, fmt.Errorf("missing function")
+	}
+	if cached, ok := jitNestedProgramCache.Load(fn); ok {
+		if program, ok := cached.(*Program); ok {
+			return program, nil
+		}
+	}
+	program, ok, reason := compileFunction(selectBackend(), fn)
+	if !ok {
+		return nil, fmt.Errorf("unsupported jit function %s: %s", safeFunctionName(fn), reason)
+	}
+	jitNestedProgramCache.Store(fn, program)
+	return program, nil
 }
 
 func jitInvokeMember(receiver value.Value, member string, args []value.Value, runtime *RuntimeContext, name string) (value.Value, error) {
@@ -1093,6 +1284,12 @@ func jitInitFastRange(locals []value.Value, stack *[]value.Value, meta rangeInit
 		if end.Kind != value.Number {
 			return fmt.Errorf("range expects numeric arguments")
 		}
+		if end.NumberKind == value.NumberInt {
+			locals[int(meta.CurrentSlot)] = value.IntValue(-1)
+			locals[int(meta.EndSlot)] = end
+			locals[int(meta.StepSlot)] = value.IntValue(1)
+			return nil
+		}
 		locals[int(meta.CurrentSlot)] = value.NumberValue(-1)
 		locals[int(meta.EndSlot)] = end
 		locals[int(meta.StepSlot)] = value.NumberValue(1)
@@ -1103,6 +1300,16 @@ func jitInitFastRange(locals []value.Value, stack *[]value.Value, meta rangeInit
 		*stack = (*stack)[:len(*stack)-2]
 		if start.Kind != value.Number || end.Kind != value.Number {
 			return fmt.Errorf("range expects numeric arguments")
+		}
+		if start.NumberKind == value.NumberInt && end.NumberKind == value.NumberInt {
+			step := int64(1)
+			if start.Int > end.Int {
+				step = -1
+			}
+			locals[int(meta.CurrentSlot)] = value.IntValue(start.Int - step)
+			locals[int(meta.EndSlot)] = end
+			locals[int(meta.StepSlot)] = value.IntValue(step)
+			return nil
 		}
 		step := 1.0
 		if start.Num > end.Num {
@@ -1123,6 +1330,17 @@ func jitRangeNextFast(locals []value.Value, meta rangeNextMeta) (bool, error) {
 	step := locals[int(meta.StepSlot)]
 	if current.Kind != value.Number || end.Kind != value.Number || step.Kind != value.Number {
 		return false, fmt.Errorf("fast range expects numeric locals")
+	}
+	if current.NumberKind == value.NumberInt && end.NumberKind == value.NumberInt && step.NumberKind == value.NumberInt {
+		next := current.Int + step.Int
+		if step.Int > 0 && next >= end.Int {
+			return false, nil
+		}
+		if step.Int < 0 && next <= end.Int {
+			return false, nil
+		}
+		locals[int(meta.CurrentSlot)] = value.IntValue(next)
+		return true, nil
 	}
 	next := current.Num + step.Num
 	if step.Num > 0 && next >= end.Num {
@@ -1150,7 +1368,7 @@ func jitAddLocalMulLocal(target value.Value, left value.Value, right value.Value
 		return value.NilValue(), fmt.Errorf("ADD_LOCAL_MUL_LOCAL expects numbers in %s", name)
 	}
 	if target.NumberKind == value.NumberInt && left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-		return value.IntValue(int64(target.Num) + int64(left.Num)*int64(right.Num)), nil
+		return value.IntValue(target.Int + left.Int*right.Int), nil
 	}
 	return value.FloatValue(target.Num + left.Num*right.Num), nil
 }
@@ -1159,23 +1377,23 @@ func executeNumeric(opcode byte, ops opcodeSet, left value.Value, right value.Va
 	if left.Kind != value.Number || right.Kind != value.Number {
 		return value.NilValue(), fmt.Errorf("jit numeric operation expects numbers in %s", name)
 	}
-	if right.Num == 0 && opcode == ops.divNumber {
+	if (opcode == ops.divNumber || opcode == ops.modNumber) && ((right.NumberKind == value.NumberInt && right.Int == 0) || (right.NumberKind != value.NumberInt && right.Num == 0)) {
 		return value.NilValue(), fmt.Errorf("division by zero")
 	}
 	switch opcode {
 	case ops.addNumber:
 		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-			return value.IntValue(int64(left.Num) + int64(right.Num)), nil
+			return value.IntValue(left.Int + right.Int), nil
 		}
 		return value.FloatValue(left.Num + right.Num), nil
 	case ops.subNumber:
 		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-			return value.IntValue(int64(left.Num) - int64(right.Num)), nil
+			return value.IntValue(left.Int - right.Int), nil
 		}
 		return value.FloatValue(left.Num - right.Num), nil
 	case ops.mulNumber:
 		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-			return value.IntValue(int64(left.Num) * int64(right.Num)), nil
+			return value.IntValue(left.Int * right.Int), nil
 		}
 		return value.FloatValue(left.Num * right.Num), nil
 	case ops.divNumber:
@@ -1184,6 +1402,11 @@ func executeNumeric(opcode byte, ops opcodeSet, left value.Value, right value.Va
 			return value.FloatValue(result), nil
 		}
 		return value.NilValue(), fmt.Errorf("invalid division result in %s", name)
+	case ops.modNumber:
+		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
+			return value.IntValue(left.Int % right.Int), nil
+		}
+		return value.FloatValue(math.Mod(left.Num, right.Num)), nil
 	default:
 		return value.NilValue(), fmt.Errorf("unsupported numeric jit opcode %d in %s", opcode, name)
 	}

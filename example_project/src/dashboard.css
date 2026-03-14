@@ -1,0 +1,189 @@
+/* ═══════════════════════════════════════════════════════════════
+   Polyloft Developer Dashboard – Component Library Stylesheet
+   All properties are standard CSS names.
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Base ── */
+.bg-dark    { background-color: #0d1117 }
+.bg-panel   { background-color: #161b22 }
+.bg-card    { background-color: #1c2128 }
+.bg-hover   { background-color: #21262d }
+.bg-accent  { background-color: #238636 }
+.bg-danger  { background-color: #da3633 }
+.bg-warning { background-color: #d29922 }
+.bg-info    { background-color: #1f6feb }
+.bg-purple  { background-color: #6e40c9 }
+.bg-muted   { background-color: #30363d }
+
+/* ── Typography ── */
+.text-hero {
+  color: #e6edf3;
+  font-size: 32px;
+  font-weight: bold;
+}
+
+.text-title {
+  color: #e6edf3;
+  font-size: 20px;
+  font-weight: bold;
+}
+
+.text-subtitle {
+  color: #8b949e;
+  font-size: 13px;
+}
+
+.text-body {
+  color: #c9d1d9;
+  font-size: 14px;
+}
+
+.text-small {
+  color: #8b949e;
+  font-size: 12px;
+}
+
+.text-code {
+  color: #79c0ff;
+  font-size: 13px;
+  font-weight: bold;
+}
+
+.text-green {
+  color: #3fb950;
+  font-size: 14px;
+  font-weight: bold;
+}
+
+.text-red {
+  color: #f85149;
+  font-size: 14px;
+  font-weight: bold;
+}
+
+.text-yellow {
+  color: #d29922;
+  font-size: 14px;
+  font-weight: bold;
+}
+
+.text-blue {
+  color: #58a6ff;
+  font-size: 14px;
+  font-weight: bold;
+}
+
+.text-purple {
+  color: #bc8cff;
+  font-size: 14px;
+  font-weight: bold;
+}
+
+.text-center {
+  color: #c9d1d9;
+  font-size: 14px;
+  text-align: center;
+}
+
+.label-sm {
+  color: #8b949e;
+  font-size: 11px;
+  text-align: center;
+}
+
+.stat-value {
+  color: #e6edf3;
+  font-size: 26px;
+  font-weight: bold;
+  text-align: center;
+}
+
+.stat-label {
+  color: #8b949e;
+  font-size: 12px;
+  text-align: center;
+}
+
+/* ── Badges ── */
+.badge-green  { color: #3fb950; font-size: 11px; font-weight: bold }
+.badge-red    { color: #f85149; font-size: 11px; font-weight: bold }
+.badge-yellow { color: #d29922; font-size: 11px; font-weight: bold }
+.badge-blue   { color: #58a6ff; font-size: 11px; font-weight: bold }
+.badge-muted  { color: #8b949e; font-size: 11px }
+
+/* ── Buttons ── */
+.btn-primary {
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: bold;
+}
+
+.btn-danger {
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: bold;
+}
+
+.btn-ghost {
+  color: #8b949e;
+  font-size: 13px;
+}
+
+/* ── Nav bar ── */
+.navbar-title {
+  color: #e6edf3;
+  font-size: 16px;
+  font-weight: bold;
+}
+
+.nav-item {
+  color: #8b949e;
+  font-size: 13px;
+  text-align: center;
+}
+
+.nav-item-active {
+  color: #58a6ff;
+  font-size: 13px;
+  font-weight: bold;
+  text-align: center;
+}
+
+/* ── Notification / log ── */
+.log-info  { color: #58a6ff; font-size: 12px }
+.log-ok    { color: #3fb950; font-size: 12px }
+.log-warn  { color: #d29922; font-size: 12px }
+.log-error { color: #f85149; font-size: 12px }
+.log-dim   { color: #484f58; font-size: 12px }
+
+/* ── Section header ── */
+.section-header {
+  color: #e6edf3;
+  font-size: 15px;
+  font-weight: bold;
+}
+
+.divider-label {
+  color: #30363d;
+  font-size: 11px;
+}
+
+/* ── Modal ── */
+.modal-title {
+  color: #e6edf3;
+  font-size: 17px;
+  font-weight: bold;
+  text-align: center;
+}
+
+.modal-body {
+  color: #8b949e;
+  font-size: 13px;
+  text-align: center;
+}
+
+.close-x {
+  color: #8b949e;
+  font-size: 14px;
+  font-weight: bold;
+}
