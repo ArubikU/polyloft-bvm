@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>UI Demo Comparison - Grade A CSS</title>
+  <link rel="stylesheet" href="./demo.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="header">
+      <h1 class="title">Cross Platform UI Demo - CSS Grade A</h1>
+      <p class="subtitle">Referencia visual: HTML/CSS, PF y Tkinter con mismo contenido</p>
+    </header>
+
+    <section class="layout">
+      <!-- LEFT PANEL: Overview & Inputs -->
+      <div class="panel">
+        <h2 class="panel-title">Overview</h2>
+
+        <div class="kpis">
+          <article class="card">
+            <div class="card-label">Platform</div>
+            <div class="card-value">Native</div>
+          </article>
+          <article class="card">
+            <div class="card-label">Theme</div>
+            <div class="card-value">Dark</div>
+          </article>
+          <article class="card">
+            <div class="card-label">CSS Grade</div>
+            <div class="card-value">A+</div>
+          </article>
+        </div>
+
+        <div class="toolbar">
+          <button class="btn btn-primary" type="button">Primary</button>
+          <button class="btn" type="button">Secondary</button>
+        </div>
+
+        <div class="status">Status: All CSS features enabled</div>
+
+        <!-- INPUT FORMS -->
+        <h3 class="section-title">Input Forms</h3>
+        <div class="inputs">
+          <div class="input-row">
+            <input class="input" type="text" placeholder="Text input" />
+            <input class="input" type="email" placeholder="email@example.com" />
+            <input class="input" type="number" placeholder="42" />
+          </div>
+          
+          <div class="input-row">
+            <input class="input" type="search" placeholder="Search..." />
+            <input class="input" type="url" placeholder="https://example.com" />
+          </div>
+          
+          <div class="input-row">
+            <input class="input" type="date" value="2026-03-17" />
+            <input class="input" type="time" value="14:30" />
+            <input class="input" type="password" placeholder="••••••" />
+          </div>
+          
+          <textarea class="input" rows="3" placeholder="Multiline text area..."></textarea>
+        </div>
+
+        <!-- LIST -->
+        <h3 class="section-title">Scrollable List</h3>
+        <div class="list-wrap">
+          <div class="row"><span>Bulbasaur</span><span class="badge">Grass</span></div>
+          <div class="row"><span>Charmander</span><span class="badge">Fire</span></div>
+          <div class="row"><span>Squirtle</span><span class="badge">Water</span></div>
+          <div class="row"><span>Pikachu</span><span class="badge">Electric</span></div>
+          <div class="row"><span>Eevee</span><span class="badge">Normal</span></div>
+          <div class="row"><span>Snorlax</span><span class="badge">Normal</span></div>
+          <div class="row"><span>Gengar</span><span class="badge">Ghost</span></div>
+          <div class="row"><span>Dragonite</span><span class="badge">Dragon</span></div>
+        </div>
+      </div>
+
+      <!-- RIGHT PANEL: Advanced CSS Features -->
+      <div class="panel">
+        <h2 class="panel-title">Advanced CSS Features (Grade A)</h2>
+
+        <div class="advanced-demo">
+          <!-- 1. POSITION + Z-INDEX -->
+          <h3 class="feature-label">1. Position: absolute/relative + Z-Index</h3>
+          <div class="position-demo">
+            <div class="pos-box pos-box-1"></div>
+            <div class="pos-box pos-box-2"></div>
+            <div class="pos-box pos-box-3"></div>
+          </div>
+
+          <!-- 2. WIDTH/HEIGHT CSS PROPERTIES -->
+          <h3 class="feature-label">2. Width/Height CSS Properties</h3>
+          <div class="size-demo">
+            <div class="fixed-size"></div>
+            <div class="flex-size"></div>
+          </div>
+
+          <!-- 3. ASPECT-RATIO -->
+          <h3 class="feature-label">3. Aspect-Ratio</h3>
+          <div class="aspect-demo">
+            <div class="aspect-box aspect-16-9"></div>
+            <div class="aspect-box aspect-1-1"></div>
+            <div class="aspect-box aspect-2-1"></div>
+          </div> 
+
+          <!-- 4. FILTER: BRIGHTNESS -->
+          <h3 class="feature-label">4. Filter: Brightness</h3>
+          <div class="filter-row">
+            <div class="filter-box" style="filter: brightness(0.7);" title="0.7"></div>
+            <div class="filter-box" style="filter: brightness(1.0);" title="1.0 (normal)"></div>
+            <div class="filter-box" style="filter: brightness(1.5);" title="1.5"></div>
+          </div>
+
+          <!-- 5. FILTER: CONTRAST -->
+          <h3 class="feature-label">5. Filter: Contrast</h3>
+          <div class="filter-row">
+            <div class="filter-box contrast-box" style="filter: contrast(0.5);" title="0.5"></div>
+            <div class="filter-box contrast-box" style="filter: contrast(1.0);" title="1.0 (normal)"></div>
+            <div class="filter-box contrast-box" style="filter: contrast(1.8);" title="1.8"></div>
+          </div>
+
+          <!-- 6. FILTER: SATURATE -->
+          <h3 class="feature-label">6. Filter: Saturate</h3>
+          <div class="filter-row">
+            <div class="filter-box saturate-box" style="filter: saturate(0.0);" title="0.0 (gray)"></div>
+            <div class="filter-box saturate-box" style="filter: saturate(1.0);" title="1.0 (normal)"></div>
+            <div class="filter-box saturate-box" style="filter: saturate(2.0);" title="2.0 (vivid)"></div>
+          </div>
+
+          <!-- 7. FILTER: GRAYSCALE -->
+          <h3 class="feature-label">7. Filter: Grayscale</h3>
+          <div class="filter-row">
+            <div class="filter-box saturate-box" style="filter: grayscale(0.0);" title="0.0 (color)"></div>
+            <div class="filter-box saturate-box" style="filter: grayscale(0.5);" title="0.5 (50%)"></div>
+            <div class="filter-box saturate-box" style="filter: grayscale(1.0);" title="1.0 (gray)"></div>
+          </div>
+
+          <!-- 8. FILTER: INVERT -->
+          <h3 class="feature-label">8. Filter: Invert</h3>
+          <div class="filter-row">
+            <div class="filter-box" style="filter: invert(0.0);" title="0.0 (normal)"></div>
+            <div class="filter-box" style="filter: invert(0.5);" title="0.5 (50%)"></div>
+            <div class="filter-box" style="filter: invert(1.0);" title="1.0 (inverted)"></div>
+          </div>
+
+          <!-- 9. TEXT-DECORATION -->
+          <h3 class="feature-label">9. Text-Decoration Properties</h3>
+          <div class="text-decoration-demo">
+            <p class="deco-underline">This is underlined text</p>
+            <p class="deco-overline">This is overlined text</p>
+            <p class="deco-strikethrough">This is strikethrough text</p>
+            <p class="deco-double">This is double-line underline</p>
+          </div>
+
+          <!-- 10. CURSOR PROPERTY -->
+          <h3 class="feature-label">10. Cursor Property</h3>
+          <div class="cursor-demo">
+            <div class="cursor-default" title="default">Default</div>
+            <div class="cursor-pointer" title="pointer">Pointer</div>
+            <div class="cursor-text" title="text">Text</div>
+            <div class="cursor-move" title="move">Move</div>
+          </div>
+
+          <!-- 11. TRANSFORM: TRANSLATE -->
+          <h3 class="feature-label">11. Transform: Translate</h3>
+          <div class="translate-demo">
+            <div class="translate-box translate-0">0px</div>
+            <div class="translate-box translate-x">+10px</div>
+            <div class="translate-box translate-y">+5px</div>
+          </div>
+
+          <!-- 12. TRANSFORM: SCALE -->
+          <h3 class="feature-label">12. Transform: Scale</h3>
+          <div class="scale-demo">
+            <div class="scale-box scale-075">0.75x</div>
+            <div class="scale-box scale-100">1.0x</div>
+            <div class="scale-box scale-125">1.25x</div>
+          </div>
+
+          <!-- 13. BOX-SHADOW (INSET) -->
+          <h3 class="feature-label">13. Box-Shadow (Inset & Outer)</h3>
+          <div class="shadow-demo">
+            <div class="shadow-outer">Outer shadow</div>
+            <div class="shadow-inset">Inset shadow</div>
+          </div>
+
+          <!-- 14. BORDER-RADIUS -->
+          <h3 class="feature-label">14. Border-Radius Variations</h3>
+          <div class="border-radius-demo">
+            <div class="br-0">0px</div>
+            <div class="br-8">8px</div>
+            <div class="br-16">16px</div>
+            <div class="br-circle">50%</div>
+          </div>
+
+          <!-- 15. LAYERED GRADIENTS -->
+          <h3 class="feature-label">15. Multi-Layer Gradients</h3>
+          <div class="gradient-demo">
+            <div class="gradient-layer-1">3-Layer Linear</div>
+            <div class="gradient-layer-2">Radial Gradient</div>
+            <div class="gradient-layer-3">Repeating Gradient</div>
+          </div>
+
+          <!-- 16. COMBINED EFFECTS -->
+          <h3 class="feature-label">16. Combined Effects: Position + Filters + Transform</h3>
+          <div class="combined-demo">
+            <div class="combined-box combined-1">Position + Scale</div>
+            <div class="combined-box combined-2">Brightness + Transform</div>
+            <div class="combined-box combined-3">Saturate + Translate</div>
+          </div>
+
+          <!-- FINAL PREVIEW -->
+          <h3 class="feature-label">Grade A CSS Support Summary</h3>
+          <div class="css-grade-summary">
+            ✓ Position (absolute, relative, fixed)<br/>
+            ✓ Z-Index stacking contexts<br/>
+            ✓ Width/Height CSS properties<br/>
+            ✓ Min/Max constraints<br/>
+            ✓ Aspect-ratio<br/>
+            ✓ Advanced Filters (brightness, contrast, saturate, grayscale, invert)<br/>
+            ✓ Text-decoration (underline, overline, strikethrough)<br/>
+            ✓ Cursor property<br/>
+            ✓ Transform: translate, scale<br/>
+            ✓ Box-shadow (inset & outer)<br/>
+            ✓ Border-radius variations<br/>
+            ✓ Multi-layer gradients<br/>
+            ✓ Transitions & animations
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

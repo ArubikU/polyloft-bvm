@@ -1,0 +1,17 @@
+protected def helper(x: number) -> number:
+    return x + 1
+end
+
+public def twice(x: number) -> number:
+    return x * 2
+end
+
+public class Greeter:
+    let prefix: string
+    Greeter(prefix: string):
+        this.prefix = prefix
+    end
+    def say(name: string) -> string:
+        return this.prefix + name
+    end
+end

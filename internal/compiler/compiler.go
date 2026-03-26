@@ -170,14 +170,12 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 			}
 			c.emit(bytecode.OpSetLocal, node.Name.Line)
 			c.emitByte(slot, node.Name.Line)
-			c.emit(bytecode.OpPop, node.Name.Line)
 			return nil
 		}
 		if slot, ok := c.resolveGlobalSlot(node.Name.Lexeme); ok {
 			c.globalTypes[node.Name.Lexeme] = declaredType
 			c.emit(bytecode.OpDefineGlobalSlot, node.Name.Line)
 			c.emitByte(slot, node.Name.Line)
-			c.emit(bytecode.OpPop, node.Name.Line)
 			return nil
 		}
 		if c.state.depth == 0 {
@@ -185,7 +183,6 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 			name := c.constant(node.Name.Lexeme)
 			c.emit(bytecode.OpDefineGlobal, node.Name.Line)
 			c.emitUint16(name, node.Name.Line)
-			c.emit(bytecode.OpPop, node.Name.Line)
 			return nil
 		}
 		slot := c.declareLocal(node.Name, declaredType)
@@ -194,7 +191,6 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 		}
 		c.emit(bytecode.OpSetLocal, node.Name.Line)
 		c.emitByte(slot, node.Name.Line)
-		c.emit(bytecode.OpPop, node.Name.Line)
 		return nil
 	case *ast.DestructureLetStmt:
 		if node.Kind == ast.VariableFinal {
@@ -281,9 +277,6 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 			if c.emitFastAddConstLocalAssign(slot, node, targetType) {
 				return nil
 			}
-			if node.Operator.Type == token.Equal && c.emitFastLocalMulLocalAssign(slot, node, targetType) {
-				return nil
-			}
 			if node.Operator.Type == token.Equal && c.emitFastStringAppendAssign(slot, node, targetType) {
 				return nil
 			}
@@ -299,7 +292,6 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 				c.emitCompoundOp(node.Operator, targetType, assignedType)
 				c.emit(bytecode.OpSetLocal, node.Name.Line)
 				c.emitByte(slot, node.Name.Line)
-				c.emit(bytecode.OpPop, node.Name.Line)
 				return nil
 			}
 		} else if current, ok := c.globalTypes[node.Name.Lexeme]; ok {
@@ -319,7 +311,6 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 			}
 			c.emit(bytecode.OpSetLocal, node.Name.Line)
 			c.emitByte(slot, node.Name.Line)
-			c.emit(bytecode.OpPop, node.Name.Line)
 			return nil
 		}
 		if slot, ok := c.resolveUpvalue(node.Name.Lexeme); ok {
@@ -336,7 +327,6 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 			}
 			c.emit(bytecode.OpSetCapture, node.Name.Line)
 			c.emitByte(slot, node.Name.Line)
-			c.emit(bytecode.OpPop, node.Name.Line)
 			return nil
 		}
 		if slot, ok := c.resolveGlobalSlot(node.Name.Lexeme); ok {
@@ -358,7 +348,6 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 			}
 			c.emit(bytecode.OpSetGlobalSlot, node.Name.Line)
 			c.emitByte(slot, node.Name.Line)
-			c.emit(bytecode.OpPop, node.Name.Line)
 			return nil
 		}
 		if assignedType != "" {
@@ -379,7 +368,6 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 		name := c.constant(node.Name.Lexeme)
 		c.emit(bytecode.OpSetGlobal, node.Name.Line)
 		c.emitUint16(name, node.Name.Line)
-		c.emit(bytecode.OpPop, node.Name.Line)
 		return nil
 	case *ast.ExprStmt:
 		if err := c.compileExpr(node.Expr); err != nil {
@@ -974,20 +962,15 @@ func (c *Compiler) compileExpr(expr ast.Expr) error {
 		return nil
 
 	case *ast.ArrayNewExpr:
+		// compile size expression if present (result unused)
 		if node.Size != nil {
-			// new T[size] -> call __array_new(size)
 			if err := c.compileExpr(node.Size); err != nil {
 				return err
 			}
-			name := c.constant("__array_new")
-			c.emit(bytecode.OpGetGlobal, 0)
-			c.emitUint16(name, 0)
-			c.emit(bytecode.OpSwap, 0) // [size, __array_new] -> [__array_new, size]
-			c.emit(bytecode.OpCall, 0)
-			c.emitByte(1, 0)
-			return nil
+			// drop size from stack
+			c.emit(bytecode.OpPop, 0)
 		}
-		// compile initializer elements: new T[]{e1, e2}
+		// compile initializer elements
 		for _, element := range node.Initializer {
 			if err := c.compileExpr(element); err != nil {
 				return err
@@ -995,70 +978,6 @@ func (c *Compiler) compileExpr(expr ast.Expr) error {
 		}
 		c.emit(bytecode.OpArray, 0)
 		c.emitByte(byte(len(node.Initializer)), 0)
-		return nil
-
-	case *ast.ArrayComprehensionExpr:
-		// [ expr for var in iterable ]
-
-		// 1. Initialize temp list
-		listNewIdx := c.constant("__list_new")
-		c.emit(bytecode.OpGetGlobal, node.Var.Line)
-		c.emitUint16(listNewIdx, node.Var.Line)
-		c.emit(bytecode.OpCall, node.Var.Line)
-		c.emitByte(0, node.Var.Line)
-
-		tempListSlot := c.declareLocal(token.Token{Lexeme: "__temp_list", Line: node.Var.Line}, "ArrayList")
-		c.emit(bytecode.OpSetLocal, node.Var.Line)
-		c.emitByte(tempListSlot, node.Var.Line)
-		c.emit(bytecode.OpPop, node.Var.Line)
-
-		// 2. Compile loop
-		if err := c.compileExpr(node.Iterable); err != nil {
-			return err
-		}
-
-		iterName := token.Token{Lexeme: "__iter_" + node.Var.Lexeme, Line: node.Var.Line}
-		iterSlot := c.declareLocal(iterName, "Iterator")
-		varSlot := c.declareLocal(node.Var, "")
-
-		c.emit(bytecode.OpIterInit, node.Var.Line)
-		c.emitByte(iterSlot, node.Var.Line)
-		c.emitByte(0, node.Var.Line) // values
-
-		loopStart := len(c.state.chunk.Code)
-		exitJump := c.emitIterNext(iterSlot, varSlot, node.Var.Line)
-
-		// Loop body:
-		listAddIdx := c.constant("__list_add")
-		c.emit(bytecode.OpGetGlobal, node.Var.Line)
-		c.emitUint16(listAddIdx, node.Var.Line)
-
-		c.emit(bytecode.OpGetLocal, node.Var.Line)
-		c.emitByte(tempListSlot, node.Var.Line)
-
-		if err := c.compileExpr(node.Value); err != nil {
-			return err
-		}
-
-		c.emit(bytecode.OpCall, node.Var.Line)
-		c.emitByte(2, node.Var.Line)
-		c.emit(bytecode.OpPop, node.Var.Line) // drop result of list_add
-
-		c.emitLoop(loopStart, node.Var.Line)
-		c.patchJump(exitJump)
-
-		// 3. Convert to array
-		listAsArrayIdx := c.constant("__list_as_array")
-		c.emit(bytecode.OpGetGlobal, node.Var.Line)
-		c.emitUint16(listAsArrayIdx, node.Var.Line)
-		c.emit(bytecode.OpGetLocal, node.Var.Line)
-		c.emitByte(tempListSlot, node.Var.Line)
-		c.emit(bytecode.OpCall, node.Var.Line)
-		c.emitByte(1, node.Var.Line)
-
-		// Clean up our 3 locals: __temp_list, __iter, user_var
-		c.state.locals = c.state.locals[:len(c.state.locals)-3]
-
 		return nil
 	case *ast.MapExpr:
 		for _, entry := range node.Entries {
@@ -1519,29 +1438,6 @@ func (c *Compiler) emitFastLocalMulThisFieldAssign(targetSlot byte, node *ast.As
 	return true
 }
 
-func (c *Compiler) emitFastLocalMulLocalAssign(targetSlot byte, node *ast.AssignStmt, targetType string) bool {
-	if rootTypeName(targetType) != bvmruntime.TypeInt && rootTypeName(targetType) != bvmruntime.TypeNumber {
-		return false
-	}
-	addExpr, ok := node.Value.(*ast.BinaryExpr)
-	if !ok || addExpr.Operator.Type != token.Plus {
-		return false
-	}
-	leftVar, ok := addExpr.Left.(*ast.VariableExpr)
-	if !ok || leftVar.Name.Lexeme != node.Name.Lexeme {
-		return false
-	}
-	leftSlot, rightSlot, ok := c.matchLocalMulLocal(addExpr.Right)
-	if !ok {
-		return false
-	}
-	c.emit(bytecode.OpAddLocalMulLocal, node.Name.Line)
-	c.emitByte(targetSlot, node.Name.Line)
-	c.emitByte(leftSlot, node.Name.Line)
-	c.emitByte(rightSlot, node.Name.Line)
-	return true
-}
-
 func (c *Compiler) emitFastStringAppendAssign(targetSlot byte, node *ast.AssignStmt, targetType string) bool {
 	if c.state.parent != nil || c.state.name != "<script>" {
 		return false
@@ -1591,7 +1487,7 @@ func (c *Compiler) emitFastAddConstLocalAssign(targetSlot byte, node *ast.Assign
 	if !ok || constantValue.Kind != value.Number || constantValue.NumberKind != value.NumberInt {
 		return false
 	}
-	idx := c.constant(constantValue.Int)
+	idx := c.constant(int64(constantValue.Num))
 	c.emit(bytecode.OpAddConstLocalInt, node.Name.Line)
 	c.emitByte(targetSlot, node.Name.Line)
 	c.emitUint16(idx, node.Name.Line)
@@ -1675,7 +1571,7 @@ func (c *Compiler) matchLocalLessEqualIntConstCondition(expr ast.Expr) (byte, in
 	if !ok || constantValue.Kind != value.Number || constantValue.NumberKind != value.NumberInt {
 		return 0, 0, false
 	}
-	return slot, constantValue.Int, true
+	return slot, int64(constantValue.Num), true
 }
 
 func (c *Compiler) matchLocalDivisibleByIntConstCondition(expr ast.Expr) (byte, int64, bool) {
@@ -1709,7 +1605,7 @@ func (c *Compiler) matchLocalDivisibleByIntConstCondition(expr ast.Expr) (byte, 
 	if !ok || constantValue.Kind != value.Number || constantValue.NumberKind != value.NumberInt {
 		return 0, 0, false
 	}
-	return slot, constantValue.Int, true
+	return slot, int64(constantValue.Num), true
 }
 
 func (c *Compiler) matchConstCallableLocalSubInt(constantValue value.Value, args []ast.Expr) (any, byte, int64, bool) {
@@ -1736,7 +1632,7 @@ func (c *Compiler) matchConstCallableLocalSubInt(constantValue value.Value, args
 	if !ok || constantArg.Kind != value.Number || constantArg.NumberKind != value.NumberInt {
 		return nil, 0, 0, false
 	}
-	return callableConst, slot, constantArg.Int, true
+	return callableConst, slot, int64(constantArg.Num), true
 }
 
 func (c *Compiler) matchSelfCallableLocalSubInt(name string, args []ast.Expr) (byte, int64, bool) {
@@ -1762,7 +1658,7 @@ func (c *Compiler) matchSelfCallableLocalSubInt(name string, args []ast.Expr) (b
 	if !ok || constantArg.Kind != value.Number || constantArg.NumberKind != value.NumberInt {
 		return 0, 0, false
 	}
-	return slot, constantArg.Int, true
+	return slot, int64(constantArg.Num), true
 }
 
 func (c *Compiler) matchLocalMulThisField(expr ast.Expr) (byte, byte, bool) {
@@ -1775,36 +1671,6 @@ func (c *Compiler) matchLocalMulThisField(expr ast.Expr) (byte, byte, bool) {
 		return localSlot, fieldSlot, true
 	}
 	return c.matchLocalAndThisField(mulExpr.Right, mulExpr.Left)
-}
-
-func (c *Compiler) matchLocalMulLocal(expr ast.Expr) (byte, byte, bool) {
-	expr = unwrapGrouping(expr)
-	mulExpr, ok := expr.(*ast.BinaryExpr)
-	if !ok || mulExpr.Operator.Type != token.Star {
-		return 0, 0, false
-	}
-	leftSlot, ok := c.matchLocalSlot(mulExpr.Left)
-	if !ok {
-		return 0, 0, false
-	}
-	rightSlot, ok := c.matchLocalSlot(mulExpr.Right)
-	if !ok {
-		return 0, 0, false
-	}
-	return leftSlot, rightSlot, true
-}
-
-func (c *Compiler) matchLocalSlot(expr ast.Expr) (byte, bool) {
-	expr = unwrapGrouping(expr)
-	variable, ok := expr.(*ast.VariableExpr)
-	if !ok {
-		return 0, false
-	}
-	slot, ok := c.resolveLocal(variable.Name.Lexeme)
-	if !ok {
-		return 0, false
-	}
-	return slot, true
 }
 
 func (c *Compiler) matchLocalAndThisField(localExpr ast.Expr, fieldExpr ast.Expr) (byte, byte, bool) {
@@ -2023,7 +1889,6 @@ func (c *Compiler) compileClass(stmt *ast.ClassStmt) (*value.Class, error) {
 		ClassRuntime: value.ClassRuntime{
 			FastConstructor:       nil,
 			FastMethods:           make([]*value.FastMethodPlan, 0),
-			FastStaticMethods:     make(map[string]*value.FastMethodPlan),
 			MethodOrder:           make([]string, 0),
 			MethodIndex:           make(map[string]int),
 			MethodTable:           make([]*bytecode.Function, 0),
@@ -2073,9 +1938,6 @@ func (c *Compiler) compileClass(stmt *ast.ClassStmt) (*value.Class, error) {
 		for name, overloads := range superclass.StaticMethodOverloads {
 			classValue.StaticMethodOverloads[name] = append(classValue.StaticMethodOverloads[name], overloads...)
 		}
-		for name, plan := range superclass.FastStaticMethods {
-			classValue.FastStaticMethods[name] = plan
-		}
 		if superclass.Constructor != nil {
 			classValue.ConstructorOverloads = append(classValue.ConstructorOverloads, superclass.ConstructorOverloads...)
 		}
@@ -2108,7 +1970,7 @@ func (c *Compiler) compileClass(stmt *ast.ClassStmt) (*value.Class, error) {
 				defaultValue = constantValue
 			}
 		}
-		def := value.FieldDef{Default: defaultValue, Mutable: field.Kind == ast.VariableLet || field.Kind == ast.VariableVar, IsFinal: field.Kind == ast.VariableFinal, TypeName: c.inferFieldType(field, defaultValue)}
+		def := value.FieldDef{Default: defaultValue, Mutable: field.Kind == ast.VariableLet || field.Kind == ast.VariableVar, TypeName: c.inferFieldType(field, defaultValue)}
 		def.Visibility = string(field.Visibility)
 		if field.Static {
 			classValue.StaticFields[field.Name.Lexeme] = def
@@ -2203,7 +2065,6 @@ func (c *Compiler) compileClass(stmt *ast.ClassStmt) (*value.Class, error) {
 			classValue.StaticMethods[method.Name.Lexeme] = fn
 			classValue.StaticVisibility[method.Name.Lexeme] = string(method.Visibility)
 			classValue.StaticMethodOverloads[method.Name.Lexeme] = append(classValue.StaticMethodOverloads[method.Name.Lexeme], fn)
-			classValue.FastStaticMethods[method.Name.Lexeme] = c.detectFastMethod(classValue, method)
 			continue
 		}
 		classValue.MethodVisibility[method.Name.Lexeme] = string(method.Visibility)
@@ -2231,7 +2092,7 @@ func (c *Compiler) compileClass(stmt *ast.ClassStmt) (*value.Class, error) {
 }
 
 func (c *Compiler) detectFastMethod(classValue *value.Class, method ast.MethodDecl) *value.FastMethodPlan {
-	if method.IsConstructor {
+	if method.Static || method.IsConstructor || len(method.Params) != 0 {
 		return nil
 	}
 	if len(method.Body.Statements) != 1 {
@@ -2241,15 +2102,11 @@ func (c *Compiler) detectFastMethod(classValue *value.Class, method ast.MethodDe
 	if !ok || ret.Value == nil {
 		return nil
 	}
-	paramSlots := make(map[string]int, len(method.Params))
-	for i, param := range method.Params {
-		paramSlots[param.Name.Lexeme] = i
-	}
-	expr := c.detectFastMethodExpr(classValue, ret.Value, paramSlots, !method.Static)
+	expr := c.detectFastMethodExpr(classValue, ret.Value)
 	if expr == nil {
 		return nil
 	}
-	return &value.FastMethodPlan{Arity: len(method.Params), Expr: expr}
+	return &value.FastMethodPlan{Arity: 0, Expr: expr}
 }
 
 func (c *Compiler) buildDynamicInstanceFieldInitializers(fields []ast.FieldDecl) []ast.Stmt {
@@ -2312,30 +2169,18 @@ func isSuperConstructorCall(stmt ast.Stmt) bool {
 	return ok
 }
 
-func (c *Compiler) detectFastMethodExpr(classValue *value.Class, expr ast.Expr, paramSlots map[string]int, allowThis bool) *value.FastMethodExpr {
+func (c *Compiler) detectFastMethodExpr(classValue *value.Class, expr ast.Expr) *value.FastMethodExpr {
 	expr = unwrapGrouping(expr)
 	switch node := expr.(type) {
 	case *ast.LiteralExpr:
-		switch literal := node.Value.(type) {
-		case float64:
-			return &value.FastMethodExpr{Kind: value.FastMethodExprNumber, Number: literal}
-		case int64:
-			return &value.FastMethodExpr{Kind: value.FastMethodExprNumber, Number: float64(literal)}
-		case string:
-			return &value.FastMethodExpr{Kind: value.FastMethodExprLiteral, Literal: value.StringValue(literal)}
-		case rune:
-			return &value.FastMethodExpr{Kind: value.FastMethodExprLiteral, Literal: value.CharValue(literal)}
-		case bool:
-			return &value.FastMethodExpr{Kind: value.FastMethodExprLiteral, Literal: value.BoolValue(literal)}
-		case nil:
-			return &value.FastMethodExpr{Kind: value.FastMethodExprLiteral, Literal: value.NilValue()}
-		default:
-			return nil
+		if number, ok := node.Value.(float64); ok {
+			return &value.FastMethodExpr{Kind: value.FastMethodExprNumber, Number: number}
 		}
+		if number, ok := node.Value.(int64); ok {
+			return &value.FastMethodExpr{Kind: value.FastMethodExprNumber, Number: float64(number)}
+		}
+		return nil
 	case *ast.GetExpr:
-		if !allowThis {
-			return nil
-		}
 		if _, isThis := node.Object.(*ast.ThisExpr); !isThis {
 			return nil
 		}
@@ -2344,23 +2189,18 @@ func (c *Compiler) detectFastMethodExpr(classValue *value.Class, expr ast.Expr, 
 			return nil
 		}
 		return &value.FastMethodExpr{Kind: value.FastMethodExprField, FieldSlot: fieldSlot}
-	case *ast.VariableExpr:
-		if idx, ok := paramSlots[node.Name.Lexeme]; ok {
-			return &value.FastMethodExpr{Kind: value.FastMethodExprParam, ParamIndex: idx}
-		}
-		return nil
 	case *ast.UnaryExpr:
 		if node.Operator.Type != token.Minus {
 			return nil
 		}
-		right := c.detectFastMethodExpr(classValue, node.Right, paramSlots, allowThis)
+		right := c.detectFastMethodExpr(classValue, node.Right)
 		if right == nil {
 			return nil
 		}
 		return &value.FastMethodExpr{Kind: value.FastMethodExprNegate, Left: right}
 	case *ast.BinaryExpr:
-		left := c.detectFastMethodExpr(classValue, node.Left, paramSlots, allowThis)
-		right := c.detectFastMethodExpr(classValue, node.Right, paramSlots, allowThis)
+		left := c.detectFastMethodExpr(classValue, node.Left)
+		right := c.detectFastMethodExpr(classValue, node.Right)
 		if left == nil || right == nil {
 			return nil
 		}
@@ -2574,7 +2414,7 @@ func (c *Compiler) evalEnumInitExpr(expr ast.Expr, bindings map[string]value.Val
 				return value.NilValue(), false
 			}
 			if right.NumberKind == value.NumberInt {
-				return value.IntValue(-right.Int), true
+				return value.IntValue(-int64(right.Num)), true
 			}
 			return value.FloatValue(-right.Num), true
 		case token.Bang:
@@ -2681,7 +2521,7 @@ func (c *Compiler) evalConstExpr(expr ast.Expr) (value.Value, bool) {
 				return value.NilValue(), false
 			}
 			if right.NumberKind == value.NumberInt {
-				return value.IntValue(-right.Int), true
+				return value.IntValue(-int64(right.Num)), true
 			}
 			return value.FloatValue(-right.Num), true
 		case token.Bang:
@@ -2977,7 +2817,7 @@ func (c *Compiler) emitInlineConst(v value.Value, line int) {
 	case value.Number:
 		constant := c.constant(v.Num)
 		if v.NumberKind == value.NumberInt {
-			constant = c.constant(v.Int)
+			constant = c.constant(int64(v.Num))
 		}
 		c.emit(bytecode.OpConstant, line)
 		c.emitUint16(constant, line)
@@ -3229,28 +3069,28 @@ func foldNumericBinary(operator token.Type, left value.Value, right value.Value)
 	switch operator {
 	case token.Plus:
 		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-			return value.IntValue(left.Int + right.Int)
+			return value.IntValue(int64(left.Num + right.Num))
 		}
 		return value.FloatValue(left.Num + right.Num)
 	case token.Minus:
 		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-			return value.IntValue(left.Int - right.Int)
+			return value.IntValue(int64(left.Num - right.Num))
 		}
 		return value.FloatValue(left.Num - right.Num)
 	case token.Star:
 		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-			return value.IntValue(left.Int * right.Int)
+			return value.IntValue(int64(left.Num * right.Num))
 		}
 		return value.FloatValue(left.Num * right.Num)
 	case token.StarStar, token.Caret:
 		result := math.Pow(left.Num, right.Num)
-		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt && right.Int >= 0 {
+		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt && right.Num >= 0 {
 			return value.IntValue(int64(result))
 		}
 		return value.FloatValue(result)
 	case token.Percent:
 		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-			return value.IntValue(left.Int % right.Int)
+			return value.IntValue(int64(math.Mod(left.Num, right.Num)))
 		}
 		return value.FloatValue(math.Mod(left.Num, right.Num))
 	default:

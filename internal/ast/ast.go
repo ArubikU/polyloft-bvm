@@ -432,14 +432,6 @@ type ArrayExpr struct {
 
 func (ArrayExpr) exprNode() {}
 
-type ArrayComprehensionExpr struct {
-	Value    Expr
-	Var      token.Token
-	Iterable Expr
-}
-
-func (ArrayComprehensionExpr) exprNode() {}
-
 type MapEntry struct {
 	Key   string
 	Value Expr

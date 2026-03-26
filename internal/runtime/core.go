@@ -96,7 +96,7 @@ func InstallCoreGlobals(registry *Registry, stdout io.Writer) {
 	})
 
 	registry.DefineTypedBuiltin("__array_new", []string{TypeInt}, TypeArray, false, func(args []value.Value) (value.Value, error) {
-		size := args[0] // size is the first argument
+		size := args[0]
 		if size.Kind != value.Number || size.NumberKind != value.NumberInt {
 			return value.NilValue(), fmt.Errorf("__array_new expects an int size")
 		}
@@ -107,31 +107,6 @@ func InstallCoreGlobals(registry *Registry, stdout io.Writer) {
 		for i := range items {
 			items[i] = value.NilValue()
 		}
-		return value.ObjectValue(&value.Array{Elements: items}), nil
-	})
-
-	registry.DefineTypedBuiltin("__list_new", []string{}, TypeAny, false, func(args []value.Value) (value.Value, error) {
-		handle := &nativeListHandle{items: make([]value.Value, 10), size: 0}
-		return value.ObjectValue(handle), nil
-	})
-
-	registry.DefineTypedBuiltin("__list_add", []string{TypeAny, TypeAny}, TypeVoid, false, func(args []value.Value) (value.Value, error) {
-		handle, err := asNativeListHandle(args[0])
-		if err != nil {
-			return value.NilValue(), err
-		}
-		handle.ensureCapacity(handle.size + 1)
-		handle.items[handle.size] = args[1]
-		handle.size++
-		return value.NilValue(), nil
-	})
-
-	registry.DefineTypedBuiltin("__list_as_array", []string{TypeAny}, TypeArray, false, func(args []value.Value) (value.Value, error) {
-		handle, err := asNativeListHandle(args[0])
-		if err != nil {
-			return value.NilValue(), err
-		}
-		items := append([]value.Value(nil), handle.items[:handle.size]...)
 		return value.ObjectValue(&value.Array{Elements: items}), nil
 	})
 

@@ -1,0 +1,484 @@
+import polyloft.ui { UI, UIWindow }
+
+var app = UI.app("go")
+app.allowProfile("desktop")
+var win = app.window("UI Demo PF", 1120, 760)
+
+var compact = false
+var altTheme = false
+var statusText = "Haz click en los botones para cambiar estado"
+var lastDateValue = "2026-03-17"
+var lastTimeValue = "14:30"
+
+var ss = UI.stylesheet()
+ss.loadFile("ui_demo/demo.css")
+app.attachStylesheet(ss)
+
+
+def rowItem(name: string, kind: string) -> UINode:
+    var row = UI.view()
+    row.set("direction", "row")
+    row.set("align", "center")
+    row.set("justify", "space-between")
+    row.setClass("row")
+
+    var left = UI.text(name)
+    var right = UI.text(kind)
+    right.setClass("badge")
+
+    row.add(left)
+    row.add(right)
+    return row
+end
+
+
+def card(label: string, val: string) -> UINode:
+    var c = UI.view().setClass("card")
+    c.add(UI.text(label).setClass("card-label"))
+    c.add(UI.text(val).setClass("card-value"))
+    return c
+end
+
+
+def boxTextCentered(value: string) -> UINode:
+    var t = UI.text(value)
+    t.style("text-align", "center")
+    t.style("white-space", "nowrap")
+    return t
+end
+
+
+def buildRoot() -> UINode:
+    var root = UI.view()
+    root.set("direction", "column")
+    root.set("width", "100vw")
+    root.set("height", "100vh")
+    root.style("overflow", "auto")
+    root.style("overflow-x", "auto")
+    root.style("overflow-y", "auto")
+    if altTheme:
+        root.setClass("app app-alt")
+    else:
+        root.setClass("app")
+    end
+
+    var header = UI.view().setClass("header")
+    header.set("direction", "column")
+    header.set("gap", 2)
+    header.add(UI.h1("Cross Platform UI Demo").setClass("title"))
+    header.add(UI.text("Referencia visual: HTML/CSS, PF y Tkinter con mismo contenido").setClass("subtitle"))
+
+    var layout = UI.view().setClass("layout")
+
+    var leftPanel = UI.view().setClass("panel")
+    leftPanel.set("direction", "column")
+    leftPanel.set("gap", 10)
+    leftPanel.add(UI.text("Overview").setClass("panel-title"))
+
+    var kpis = UI.view().setClass("kpis")
+    kpis.add(card("Platform", "Native"))
+    kpis.add(card("Theme", "Dark"))
+    kpis.add(card("Sync CSS", "Yes"))
+    leftPanel.add(kpis)
+
+    var toolbar = UI.view().setClass("toolbar")
+    toolbar.set("direction", "row")
+    toolbar.set("gap", 10)
+    toolbar.add(UI.button("Primary").set("event", "demo.primary").setClass("btn btn-primary"))
+    toolbar.add(UI.button("Secondary").set("event", "demo.secondary").setClass("btn"))
+    leftPanel.add(toolbar)
+
+    leftPanel.add(UI.label(statusText).setClass("status"))
+
+    var inputs = UI.view().setClass("inputs")
+    inputs.set("direction", "column")
+    inputs.set("gap", 8)
+    
+    // Text inputs row
+    var textRow = UI.view().setClass("input-row")
+    textRow.add(UI.input("text").set("text", "Text").setClass("input"))
+    textRow.add(UI.input("email").set("text", "email@example.com").setClass("input"))
+    textRow.add(UI.input("number").set("text", "42").setClass("input"))
+    inputs.add(textRow)
+    
+    // Search and URL inputs row
+    var searchRow = UI.view().setClass("input-row")
+    searchRow.add(UI.input("search").set("text", "Search...").setClass("input"))
+    searchRow.add(UI.input("url").set("text", "https://example.com").setClass("input"))
+    inputs.add(searchRow)
+    
+    // Date, Time, Password row
+    var dateRow = UI.view().setClass("input-row")
+    var dateInput = UI.input("date").set("value", lastDateValue).setClass("input")
+    dateInput.set("oninput", "demo.dateinput")
+    dateInput.set("onchange", "demo.datechange")
+    dateInput.set("onshowpicker", "demo.datepicker")
+    dateInput.set("direction", "left")
+    
+    var timeInput = UI.input("time").set("value", lastTimeValue).setClass("input")
+    timeInput.set("oninput", "demo.timeinput")
+    timeInput.set("onchange", "demo.timechange")
+    timeInput.set("onshowpicker", "demo.timepicker")
+    timeInput.set("direction", "left")
+    
+    dateRow.add(dateInput)
+    dateRow.add(timeInput)
+    dateRow.add(UI.input("password").set("text", "••••••").setClass("input"))
+    inputs.add(dateRow)
+    
+    // Textarea
+    inputs.add(UI.input("textarea").set("text", "Multiline text area for longer content...").setClass("input"))
+    
+    leftPanel.add(inputs)
+
+    var list = UI.view().setClass("list-wrap")
+    list.set("direction", "column")
+    list.set("gap", 8)
+    if compact:
+        list.set("height", 140)
+    else:
+        list.set("height", 220)
+    end
+    list.add(rowItem("Bulbasaur", "Grass"))
+    list.add(rowItem("Charmander", "Fire"))
+    list.add(rowItem("Squirtle", "Water"))
+    list.add(rowItem("Pikachu", "Electric"))
+    list.add(rowItem("Eevee", "Normal"))
+    list.add(rowItem("Snorlax", "Normal"))
+    list.add(rowItem("Gengar", "Ghost"))
+    list.add(rowItem("Dragonite", "Dragon"))
+    leftPanel.add(list)
+
+    var rightPanel = UI.view().setClass("panel")
+    rightPanel.set("direction", "column")
+    rightPanel.set("gap", 10)
+    rightPanel.add(UI.text("Advanced CSS Features (Grade A)").setClass("panel-title"))
+    
+    // Position & Z-Index Demo
+    rightPanel.add(UI.text("1. POSITION: ABSOLUTE/RELATIVE + Z-INDEX").setClass("section-title"))
+    var posDemo = UI.view().setClass("position-demo")
+    posDemo.add(UI.view().setClass("pos-box pos-box-1"))
+    posDemo.add(UI.view().setClass("pos-box pos-box-2"))
+    posDemo.add(UI.view().setClass("pos-box pos-box-3"))
+    rightPanel.add(posDemo)
+    
+    // Width/Height CSS Properties
+    rightPanel.add(UI.text("2. WIDTH/HEIGHT CSS PROPERTIES").setClass("section-title"))
+    var sizeDemo = UI.view().setClass("size-demo")
+    sizeDemo.set("direction", "row")
+    sizeDemo.add(UI.view().setClass("fixed-size"))
+    sizeDemo.add(UI.view().setClass("flex-size"))
+    rightPanel.add(sizeDemo)
+    
+    // Aspect-Ratio
+    rightPanel.add(UI.text("3. ASPECT-RATIO").setClass("section-title"))
+    var aspectDemo = UI.view().setClass("aspect-demo")
+    aspectDemo.set("direction", "row")
+    aspectDemo.add(UI.view().setClass("aspect-box aspect-16-9"))
+    aspectDemo.add(UI.view().setClass("aspect-box aspect-1-1"))
+    aspectDemo.add(UI.view().setClass("aspect-box aspect-2-1"))
+    rightPanel.add(aspectDemo)
+    
+    // Filter: Brightness
+    rightPanel.add(UI.text("4. FILTER: BRIGHTNESS").setClass("section-title"))
+    var filterBright = UI.view().setClass("filter-row")
+    filterBright.set("direction", "row")
+    filterBright.add(UI.view().setClass("filter-box filter-brightness-low"))
+    filterBright.add(UI.view().setClass("filter-box filter-brightness-med"))
+    filterBright.add(UI.view().setClass("filter-box filter-brightness-high"))
+    rightPanel.add(filterBright)
+    
+    // Filter: Contrast
+    rightPanel.add(UI.text("5. FILTER: CONTRAST").setClass("section-title"))
+    var filterCon = UI.view().setClass("filter-row")
+    filterCon.set("direction", "row")
+    filterCon.add(UI.view().setClass("filter-box filter-contrast-low"))
+    filterCon.add(UI.view().setClass("filter-box filter-contrast-med"))
+    filterCon.add(UI.view().setClass("filter-box filter-contrast-high"))
+    rightPanel.add(filterCon)
+    
+    // Filter: Saturate
+    rightPanel.add(UI.text("6. FILTER: SATURATE").setClass("section-title"))
+    var filterSat = UI.view().setClass("filter-row")
+    filterSat.set("direction", "row")
+    filterSat.add(UI.view().setClass("filter-box filter-saturate-low"))
+    filterSat.add(UI.view().setClass("filter-box filter-saturate-med"))
+    filterSat.add(UI.view().setClass("filter-box filter-saturate-high"))
+    rightPanel.add(filterSat)
+    
+    // Filter: Grayscale
+    rightPanel.add(UI.text("7. FILTER: GRAYSCALE").setClass("section-title"))
+    var filterGray = UI.view().setClass("filter-row")
+    filterGray.set("direction", "row")
+    filterGray.add(UI.view().setClass("filter-box filter-gray-low"))
+    filterGray.add(UI.view().setClass("filter-box filter-gray-med"))
+    filterGray.add(UI.view().setClass("filter-box filter-gray-high"))
+    rightPanel.add(filterGray)
+    
+    // Filter: Invert
+    rightPanel.add(UI.text("8. FILTER: INVERT").setClass("section-title"))
+    var filterInv = UI.view().setClass("filter-row")
+    filterInv.set("direction", "row")
+    filterInv.add(UI.view().setClass("filter-box filter-invert-low"))
+    filterInv.add(UI.view().setClass("filter-box filter-invert-med"))
+    filterInv.add(UI.view().setClass("filter-box filter-invert-high"))
+    rightPanel.add(filterInv)
+    
+    // Text Decoration
+    rightPanel.add(UI.text("9. TEXT-DECORATION PROPERTIES").setClass("section-title"))
+    var decoDemo = UI.view().setClass("text-decoration-demo")
+    decoDemo.add(UI.text("Underlined Text").setClass("deco-underline"))
+    decoDemo.add(UI.text("Overline Text").setClass("deco-overline"))
+    decoDemo.add(UI.text("Strikethrough Text").setClass("deco-strikethrough"))
+    decoDemo.add(UI.text("Double Decoration").setClass("deco-double"))
+    rightPanel.add(decoDemo)
+    
+    // Cursor Property
+    rightPanel.add(UI.text("10. CURSOR PROPERTY").setClass("section-title"))
+    var cursorDemo = UI.view().setClass("cursor-demo")
+    cursorDemo.set("height", 120)
+    var cursorDefault = UI.view().setClass("cursor-box cursor-default")
+    cursorDefault.set("direction", "column")
+    cursorDefault.set("align", "center")
+    cursorDefault.set("justify", "center")
+    cursorDefault.add(boxTextCentered("Default"))
+    var cursorPointer = UI.view().setClass("cursor-box cursor-pointer")
+    cursorPointer.set("direction", "column")
+    cursorPointer.set("align", "center")
+    cursorPointer.set("justify", "center")
+    cursorPointer.add(boxTextCentered("Pointer"))
+    var cursorText = UI.view().setClass("cursor-box cursor-text")
+    cursorText.set("direction", "column")
+    cursorText.set("align", "center")
+    cursorText.set("justify", "center")
+    cursorText.add(boxTextCentered("Text"))
+    var cursorMove = UI.view().setClass("cursor-box cursor-move")
+    cursorMove.set("direction", "column")
+    cursorMove.set("align", "center")
+    cursorMove.set("justify", "center")
+    cursorMove.add(boxTextCentered("Move"))
+    cursorDemo.add(cursorDefault)
+    cursorDemo.add(cursorPointer)
+    cursorDemo.add(cursorText)
+    cursorDemo.add(cursorMove)
+    rightPanel.add(cursorDemo)
+    
+    // Transform: Translate
+    rightPanel.add(UI.text("11. TRANSFORM: TRANSLATE").setClass("section-title"))
+    var translateDemo = UI.view().setClass("translate-demo")
+    translateDemo.set("direction", "row")
+    translateDemo.set("height", 86)
+    translateDemo.set("align", "end")
+    var translate0 = UI.view().setClass("translate-box translate-0")
+    translate0.set("direction", "column")
+    translate0.set("align", "center")
+    translate0.set("justify", "center")
+    translate0.add(boxTextCentered("0px"))
+    var translateX = UI.view().setClass("translate-box translate-x")
+    translateX.set("direction", "column")
+    translateX.set("align", "center")
+    translateX.set("justify", "center")
+    translateX.add(boxTextCentered("+10px"))
+    var translateY = UI.view().setClass("translate-box translate-y")
+    translateY.set("direction", "column")
+    translateY.set("align", "center")
+    translateY.set("justify", "center")
+    translateY.add(boxTextCentered("+5px"))
+    translateDemo.add(translate0)
+    translateDemo.add(translateX)
+    translateDemo.add(translateY)
+    rightPanel.add(translateDemo)
+    
+    // Transform: Scale
+    rightPanel.add(UI.text("12. TRANSFORM: SCALE").setClass("section-title"))
+    var scaleDemo = UI.view().setClass("scale-demo")
+    scaleDemo.set("direction", "row")
+    scaleDemo.set("height", 112)
+    scaleDemo.set("align", "center")
+    scaleDemo.set("justify", "center")
+    var scale075 = UI.view().setClass("scale-box scale-075")
+    scale075.set("direction", "column")
+    scale075.set("align", "center")
+    scale075.set("justify", "center")
+    scale075.add(boxTextCentered("0.75x"))
+    var scale100 = UI.view().setClass("scale-box scale-100")
+    scale100.set("direction", "column")
+    scale100.set("align", "center")
+    scale100.set("justify", "center")
+    scale100.add(boxTextCentered("1.0x"))
+    var scale125 = UI.view().setClass("scale-box scale-125")
+    scale125.set("direction", "column")
+    scale125.set("align", "center")
+    scale125.set("justify", "center")
+    scale125.add(boxTextCentered("1.25x"))
+    scaleDemo.add(scale075)
+    scaleDemo.add(scale100)
+    scaleDemo.add(scale125)
+    rightPanel.add(scaleDemo)
+    
+    // Box Shadow
+    rightPanel.add(UI.text("13. BOX-SHADOW (INSET & OUTER)").setClass("section-title"))
+    var shadowDemo = UI.view().setClass("shadow-demo")
+    shadowDemo.set("direction", "row")
+    var shadowOuter = UI.view().setClass("shadow-box shadow-outer")
+    shadowOuter.set("direction", "column")
+    shadowOuter.set("align", "center")
+    shadowOuter.set("justify", "center")
+    shadowOuter.add(boxTextCentered("Outer shadow"))
+    var shadowInset = UI.view().setClass("shadow-box shadow-inset")
+    shadowInset.set("direction", "column")
+    shadowInset.set("align", "center")
+    shadowInset.set("justify", "center")
+    shadowInset.add(boxTextCentered("Inset shadow"))
+    shadowDemo.add(shadowOuter)
+    shadowDemo.add(shadowInset)
+    rightPanel.add(shadowDemo)
+    
+    // Border Radius
+    rightPanel.add(UI.text("14. BORDER-RADIUS").setClass("section-title"))
+    var brDemo = UI.view().setClass("br-demo")
+    brDemo.set("direction", "row")
+    var br0 = UI.view().setClass("br-box br-0")
+    br0.set("direction", "column")
+    br0.set("align", "center")
+    br0.set("justify", "center")
+    br0.add(boxTextCentered("0px"))
+    var br8 = UI.view().setClass("br-box br-8")
+    br8.set("direction", "column")
+    br8.set("align", "center")
+    br8.set("justify", "center")
+    br8.add(boxTextCentered("8px"))
+    var br16 = UI.view().setClass("br-box br-16")
+    br16.set("direction", "column")
+    br16.set("align", "center")
+    br16.set("justify", "center")
+    br16.add(boxTextCentered("16px"))
+    var brCircle = UI.view().setClass("br-box br-circle")
+    brCircle.set("direction", "column")
+    brCircle.set("align", "center")
+    brCircle.set("justify", "center")
+    brCircle.add(boxTextCentered("50%"))
+    brDemo.add(br0)
+    brDemo.add(br8)
+    brDemo.add(br16)
+    brDemo.add(brCircle)
+    rightPanel.add(brDemo)
+    
+    // Gradients
+    rightPanel.add(UI.text("15. MULTI-LAYER GRADIENTS").setClass("section-title"))
+    var gradDemo = UI.view().setClass("gradient-demo")
+    gradDemo.set("direction", "row")
+    var grad1 = UI.view().setClass("gradient-box gradient-layer-1")
+    grad1.add(UI.text("3-Layer Linear"))
+    var grad2 = UI.view().setClass("gradient-box gradient-layer-2")
+    grad2.add(UI.text("Radial Gradient"))
+    var grad3 = UI.view().setClass("gradient-box gradient-layer-3")
+    grad3.add(UI.text("Repeating Gradient"))
+    gradDemo.add(grad1)
+    gradDemo.add(grad2)
+    gradDemo.add(grad3)
+    rightPanel.add(gradDemo)
+    
+    // Combined Effects
+    rightPanel.add(UI.text("16. COMBINED EFFECTS").setClass("section-title"))
+    var combinedDemo = UI.view().setClass("combined-demo")
+    combinedDemo.set("direction", "row")
+    var combined1 = UI.view().setClass("combined-box combined-1")
+    combined1.add(UI.text("Position + Scale"))
+    var combined2 = UI.view().setClass("combined-box combined-2")
+    combined2.add(UI.text("Brightness + Transform"))
+    var combined3 = UI.view().setClass("combined-box combined-3")
+    combined3.add(UI.text("Saturate + Translate"))
+    combinedDemo.add(combined1)
+    combinedDemo.add(combined2)
+    combinedDemo.add(combined3)
+    rightPanel.add(combinedDemo)
+
+    layout.add(leftPanel)
+    layout.add(rightPanel)
+
+    root.add(header)
+    root.add(layout)
+    return root
+end
+
+def onPrimary(payload: any) -> void:
+    compact = compact == false
+    if compact:
+        statusText = "Primary activo: modo compacto"
+    else:
+        statusText = "Primary activo: modo normal"
+    end
+    win.reconcile(buildRoot())
+end
+
+def onSecondary(payload: any) -> void:
+    altTheme = altTheme == false
+    if altTheme:
+        statusText = "Secondary activo: tema alterno"
+    else:
+        statusText = "Secondary activo: tema base"
+    end
+    win.reconcile(buildRoot())
+end
+
+def onDateInput(payload: map<string, any>) -> void:
+    if payload != nil && payload["source"] != nil && payload["component"] != nil && payload["value"] != nil:
+        lastDateValue = payload["value"]
+        statusText = "📅 Date Input: " + payload["value"] + " (component: " + payload["component"] + ")"
+    end
+end
+
+def onDateChange(payload: map<string, any>) -> void:
+    if payload != nil && payload["source"] != nil && payload["value"] != nil:
+        lastDateValue = payload["value"]
+        statusText = "✅ Date Changed: " + payload["value"] + " (timestamp: " + payload["timestamp"] + ")"
+    end
+end
+
+def onDatePicker(payload: map<string, any>) -> void:
+    if payload != nil && payload["source"] != nil && payload["value"] != nil:
+        statusText = "🗓️ Date Picker opened for: " + payload["value"]
+    end
+end
+
+def onTimeInput(payload: map<string, any>) -> void:
+    if payload != nil && payload["source"] != nil && payload["component"] != nil && payload["value"] != nil:
+        lastTimeValue = payload["value"]
+        statusText = "⏱️ Time Input: " + payload["value"] + " (component: " + payload["component"] + ")"
+    end
+end
+
+def onTimeChange(payload: map<string, any>) -> void:
+    if payload != nil && payload["source"] != nil && payload["value"] != nil:
+        lastTimeValue = payload["value"]
+        statusText = "✅ Time Changed: " + payload["value"] + " (timestamp: " + payload["timestamp"] + ")"
+    end
+end
+
+def onTimePicker(payload: map<string, any>) -> void:
+    if payload != nil && payload["source"] != nil && payload["value"] != nil:
+        statusText = "🕒 Time Picker opened for: " + payload["value"]
+    end
+end
+
+win.debug({
+    frames: true,
+    fpscounter: true,
+    gpu: true,
+    render: true
+})
+win.root(buildRoot())
+win.print("ui_demo/demo_print_output.png")
+win.on("demo.primary", onPrimary)
+win.on("demo.secondary", onSecondary)
+win.on("demo.dateinput", onDateInput)
+win.on("demo.datechange", onDateChange)
+win.on("demo.datepicker", onDatePicker)
+win.on("demo.timeinput", onTimeInput)
+win.on("demo.timechange", onTimeChange)
+win.on("demo.timepicker", onTimePicker)
+
+println("[ui-demo-pf] running")
+win.show()
+app.run()

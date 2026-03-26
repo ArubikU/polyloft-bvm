@@ -700,12 +700,12 @@ func (c *Checker) checkStmt(stmt ast.Stmt) error {
 			if !method.IsConstructor {
 				if method.Static {
 					if existing, ok := classSym.Type.Members[method.Name.Lexeme]; ok && existing.Callable != nil {
-						callable = mergeCallableOverloads(existing, callable)
+						callable.Callable.Overloaded = existing.Callable.Overloaded
 					}
 					classSym.Type.Members[method.Name.Lexeme] = callable
 				} else {
 					if existing, ok := instanceType.Members[method.Name.Lexeme]; ok && existing.Callable != nil {
-						callable = mergeCallableOverloads(existing, callable)
+						callable.Callable.Overloaded = existing.Callable.Overloaded
 					}
 					instanceType.Members[method.Name.Lexeme] = callable
 				}
@@ -872,32 +872,6 @@ func (c *Checker) checkExprWithExpected(expr ast.Expr, expected *Type) (Type, er
 			elements[i] = elementType
 		}
 		return TupleOf(elements), nil
-	case *ast.ArrayComprehensionExpr:
-		// [ expr for var in iterable ]
-		// We need to infer the type of 'expr' in a scope that has 'var'
-		c.pushScope()
-		defer c.popScope()
-
-		iterableType, err := c.checkExpr(node.Iterable)
-		if err != nil {
-			return Unknown(), err
-		}
-
-		// Var type usually comes from iterable element type
-		varType := Any()
-		if iterableType.Name == runtime.TypeArray && len(iterableType.Args) > 0 {
-			varType = iterableType.Args[0]
-		}
-
-		c.currentScope()[node.Var.Lexeme] = symbol{Type: varType, Mutable: false}
-
-		valueType, err := c.checkExpr(node.Value)
-		if err != nil {
-			return Unknown(), err
-		}
-
-		return ArrayOf(valueType), nil
-
 	case *ast.ArrayExpr:
 		elementType := Any()
 		for i, element := range node.Elements {
@@ -1008,7 +982,13 @@ func (c *Checker) checkExprWithExpected(expr ast.Expr, expected *Type) (Type, er
 		}
 
 		if calleeType.Callable.Overloaded && len(node.TypeArgs) == 0 {
-			return c.resolveOverloadedCall(node, calleeType)
+			// Fast path: bypass strict argument checking for overloaded methods.
+			for _, arg := range node.Arguments {
+				if _, err := c.checkExpr(arg); err != nil {
+					return Unknown(), err
+				}
+			}
+			return calleeType.Callable.Return, nil
 		}
 		if !calleeType.Callable.Variadic && len(node.Arguments) != len(calleeType.Callable.Params) {
 			return Unknown(), fmt.Errorf("line %d:%d: expected %d arguments, got %d", node.Paren.Line, node.Paren.Column, len(calleeType.Callable.Params), len(node.Arguments))
@@ -1757,7 +1737,8 @@ func (c *Checker) classType(classStmt *ast.ClassStmt) Type {
 		if method.Static {
 			if existing, ok := classMembers[method.Name.Lexeme]; ok {
 				if existing.Callable != nil && methodType.Callable != nil {
-					methodType = mergeCallableOverloads(existing, methodType)
+					existing.Callable.Overloaded = true
+					methodType.Callable.Overloaded = true
 				}
 			}
 			classMembers[method.Name.Lexeme] = methodType
@@ -1765,7 +1746,8 @@ func (c *Checker) classType(classStmt *ast.ClassStmt) Type {
 		}
 		if existing, ok := instanceMembers[method.Name.Lexeme]; ok {
 			if existing.Callable != nil && methodType.Callable != nil {
-				methodType = mergeCallableOverloads(existing, methodType)
+				existing.Callable.Overloaded = true
+				methodType.Callable.Overloaded = true
 			}
 		}
 		instanceMembers[method.Name.Lexeme] = methodType
@@ -1795,115 +1777,6 @@ func (c *Checker) constructorCandidates(classType Type) []*CallableType {
 		return nil
 	}
 	return []*CallableType{classType.Callable}
-}
-
-func cloneCallableType(callable *CallableType) *CallableType {
-	if callable == nil {
-		return nil
-	}
-	return &CallableType{
-		Params:     append([]Type(nil), callable.Params...),
-		Return:     callable.Return,
-		Variadic:   callable.Variadic,
-		Overloaded: callable.Overloaded,
-	}
-}
-
-func mergeCallableOverloads(existing Type, current Type) Type {
-	if existing.Callable == nil || current.Callable == nil {
-		return current
-	}
-	overloads := make([]*CallableType, 0, 2)
-	if len(existing.CallOverloads) > 0 {
-		for _, overload := range existing.CallOverloads {
-			if overload == nil {
-				continue
-			}
-			overloads = append(overloads, cloneCallableType(overload))
-		}
-	} else {
-		overloads = append(overloads, cloneCallableType(existing.Callable))
-	}
-	if len(current.CallOverloads) > 0 {
-		for _, overload := range current.CallOverloads {
-			if overload == nil {
-				continue
-			}
-			overloads = append(overloads, cloneCallableType(overload))
-		}
-	} else {
-		overloads = append(overloads, cloneCallableType(current.Callable))
-	}
-	current.Callable = cloneCallableType(current.Callable)
-	current.Callable.Overloaded = len(overloads) > 1
-	current.CallOverloads = overloads
-	return current
-}
-
-func (c *Checker) callCandidates(t Type) []*CallableType {
-	if len(t.CallOverloads) > 0 {
-		return t.CallOverloads
-	}
-	if t.Callable == nil {
-		return nil
-	}
-	return []*CallableType{t.Callable}
-}
-
-func (c *Checker) resolveOverloadedCall(node *ast.CallExpr, calleeType Type) (Type, error) {
-	candidates := c.callCandidates(calleeType)
-	if len(candidates) == 0 {
-		return Unknown(), fmt.Errorf("line %d:%d: expression is not callable", node.Paren.Line, node.Paren.Column)
-	}
-	matchedByArity := false
-	var lastTypeError error
-	for _, candidate := range candidates {
-		if candidate == nil {
-			continue
-		}
-		if !candidate.Variadic && len(node.Arguments) != len(candidate.Params) {
-			continue
-		}
-		matchedByArity = true
-		matched := true
-		for i, arg := range node.Arguments {
-			expectedIndex := i
-			if expectedIndex >= len(candidate.Params) {
-				expectedIndex = len(candidate.Params) - 1
-			}
-			var argType Type
-			var err error
-			if expectedIndex < 0 {
-				argType, err = c.checkExpr(arg)
-			} else {
-				argType, err = c.checkExprWithExpected(arg, &candidate.Params[expectedIndex])
-			}
-			if err != nil {
-				return Unknown(), err
-			}
-			if candidate.Variadic || expectedIndex < 0 {
-				continue
-			}
-			if !c.isAssignable(candidate.Params[expectedIndex], argType) {
-				lastTypeError = fmt.Errorf("line %d:%d: argument %d expects %s, got %s", node.Paren.Line, node.Paren.Column, i+1, DisplayName(candidate.Params[expectedIndex]), DisplayName(argType))
-				matched = false
-				break
-			}
-		}
-		if matched {
-			if candidate.Return.Name == "Unknown" {
-				return Any(), nil
-			}
-			return candidate.Return, nil
-		}
-	}
-	if !matchedByArity {
-		return Unknown(), fmt.Errorf("line %d:%d: no overload accepts %d arguments", node.Paren.Line, node.Paren.Column, len(node.Arguments))
-	}
-	if lastTypeError != nil {
-		return Unknown(), lastTypeError
-	}
-	return Unknown(), fmt.Errorf("line %d:%d: no overload matches the provided arguments", node.Paren.Line, node.Paren.Column)
 }
 
 func (c *Checker) methodType(instance Type, method ast.MethodDecl) Type {
@@ -2214,23 +2087,6 @@ func (c *Checker) typeFromSpecWithParams(spec runtime.Spec, typeParams map[strin
 			ret = c.instanceTypeFromSpecsWithParams(spec.Callable.Return, spec.InstanceMembers, localTypeParams, declaredArgs)
 		}
 		t.Callable = &CallableType{Params: params, Return: ret, Variadic: spec.Callable.Variadic, Overloaded: spec.Callable.Overloaded}
-		if len(spec.Callable.Overloads) > 0 {
-			t.CallOverloads = make([]*CallableType, 0, len(spec.Callable.Overloads))
-			for _, overload := range spec.Callable.Overloads {
-				if overload == nil {
-					continue
-				}
-				overloadParams := make([]Type, len(overload.Params))
-				for i, param := range overload.Params {
-					overloadParams[i] = c.resolveSpecTypeName(param, localTypeParams)
-				}
-				overloadReturn := c.resolveSpecTypeName(overload.Return, localTypeParams)
-				if len(spec.InstanceMembers) > 0 {
-					overloadReturn = c.instanceTypeFromSpecsWithParams(overload.Return, spec.InstanceMembers, localTypeParams, declaredArgs)
-				}
-				t.CallOverloads = append(t.CallOverloads, &CallableType{Params: overloadParams, Return: overloadReturn, Variadic: overload.Variadic, Overloaded: overload.Overloaded})
-			}
-		}
 	}
 	if len(spec.ConstructorOverloads) > 0 {
 		t.ConstructorOverloads = make([]*CallableType, 0, len(spec.ConstructorOverloads))
@@ -2290,23 +2146,6 @@ func (c *Checker) shallowTypeFromSpec(spec runtime.Spec) Type {
 			ret = Type{Name: Primitive(spec.Callable.Return).Name}
 		}
 		t.Callable = &CallableType{Params: params, Return: ret, Variadic: spec.Callable.Variadic, Overloaded: spec.Callable.Overloaded}
-		if len(spec.Callable.Overloads) > 0 {
-			t.CallOverloads = make([]*CallableType, 0, len(spec.Callable.Overloads))
-			for _, overload := range spec.Callable.Overloads {
-				if overload == nil {
-					continue
-				}
-				overloadParams := make([]Type, len(overload.Params))
-				for i, param := range overload.Params {
-					overloadParams[i] = c.resolveSpecTypeName(param, nil)
-				}
-				overloadReturn := c.resolveSpecTypeName(overload.Return, nil)
-				if len(spec.InstanceMembers) > 0 {
-					overloadReturn = Type{Name: Primitive(overload.Return).Name}
-				}
-				t.CallOverloads = append(t.CallOverloads, &CallableType{Params: overloadParams, Return: overloadReturn, Variadic: overload.Variadic, Overloaded: overload.Overloaded})
-			}
-		}
 	}
 	if len(spec.ConstructorOverloads) > 0 {
 		t.ConstructorOverloads = make([]*CallableType, 0, len(spec.ConstructorOverloads))
@@ -2494,6 +2333,7 @@ func (c *Checker) validateImplementedInterfaces(classStmt *ast.ClassStmt, instan
 	}
 	return nil
 }
+
 
 func (c *Checker) interfaceMemberAssignable(expected Type, actual Type) bool {
 	if c.isAssignable(expected, actual) {

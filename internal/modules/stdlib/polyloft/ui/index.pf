@@ -7,6 +7,7 @@ native def app_permissions(nativeApp: any) -> map<string, any>
 native def app_allow_profile(nativeApp: any, profile: string) -> void
 native def app_set_name(nativeApp: any, name: string) -> void
 native def app_set_icon(nativeApp: any, path: string) -> bool
+native def app_load_font(nativeApp: any, pathOrUrl: string) -> bool
 native def app_platform(nativeApp: any) -> string
 native def app_event_channel(nativeApp: any, capacity: int) -> any
 native def app_emit_event(nativeApp: any, name: string, payload: any) -> bool
@@ -41,6 +42,8 @@ native def app_attach_stylesheet(nativeApp: any, nativeSS: any) -> void
 native def app_quit(nativeApp: any) -> void
 native def window_close(nativeWindow: any) -> bool
 native def window_set_headless(nativeWindow: any, headless: bool) -> bool
+native def window_debug(nativeWindow: any, config: any) -> bool
+native def window_debug_profile(nativeWindow: any, flags: map<string, any>) -> bool
 
 native def window_new(nativeApp: any, title: string, width: int, height: int) -> any
 native def window_set_title(nativeWindow: any, title: string) -> bool
@@ -54,6 +57,7 @@ native def window_reconcile(nativeWindow: any, nativeNode: any) -> map<string, a
 native def window_last_patch_json(nativeWindow: any) -> string
 native def window_last_transition_json(nativeWindow: any) -> string
 native def window_show(nativeWindow: any) -> bool
+native def window_print(nativeWindow: any, path: string) -> bool
 
 public class StyleSheet:
 	var _native: any
@@ -63,7 +67,11 @@ public class StyleSheet:
 	end
 
 	StyleSheet(nativeSS: any):
-		this._native = nativeSS
+		if nativeSS == nil:
+			this._native = stylesheet_new()
+		else:
+			this._native = nativeSS
+		end
 	end
 
 	// parse(css) – load CSS from a string.
@@ -106,6 +114,26 @@ public class UINode:
 		return this
 	end
 
+	// DOM-like alias: setAttribute(name, value)
+	def setAttribute(name: string, value: any) -> UINode:
+		return this.set(name, value)
+	end
+
+	// DOM-like alias: appendChild(node)
+	def appendChild(child: UINode) -> UINode:
+		return this.add(child)
+	end
+
+	// DOM-like alias: className("a b c")
+	def className(className: string) -> UINode:
+		return this.setClass(className)
+	end
+
+	// DOM-like helper: textContent(value)
+	def textContent(content: string) -> UINode:
+		return this.set("text", content)
+	end
+
 	// style(prop, val) – inline CSS property, highest priority.
 	// Accepts standard CSS names: "color", "background-color", "font-size",
 	// "font-weight", "font-style", "text-align", "padding", "width", "height", etc.
@@ -141,6 +169,47 @@ public class UINode:
 		return node
 	end
 
+	// span is the canonical alias of Text (same behavior as text currently).
+	static def span(content: string) -> UINode:
+		return UINode.text(content)
+	end
+
+	static def label(content: string) -> UINode:
+		let node = UINode.text(content)
+		node.set("tag", "label")
+		return node
+	end
+
+	static def p(content: string) -> UINode:
+		let node = UINode.text(content)
+		node.set("tag", "p")
+		return node
+	end
+
+	static def h1(content: string) -> UINode:
+		let node = UINode.text(content)
+		node.set("tag", "h1")
+		return node
+	end
+
+	static def h2(content: string) -> UINode:
+		let node = UINode.text(content)
+		node.set("tag", "h2")
+		return node
+	end
+
+	static def h3(content: string) -> UINode:
+		let node = UINode.text(content)
+		node.set("tag", "h3")
+		return node
+	end
+
+	static def h4(content: string) -> UINode:
+		let node = UINode.text(content)
+		node.set("tag", "h4")
+		return node
+	end
+
 	static def button(label: string) -> UINode:
 		let node = UINode("Button")
 		node.set("text", label)
@@ -148,7 +217,85 @@ public class UINode:
 	end
 
 	static def input() -> UINode:
-		return UINode("Input")
+		return UINode.input("text")
+	end
+
+	static def input(inputType: string) -> UINode:
+		let node = UINode("Input")
+		node.set("type", inputType)
+		return node
+	end
+
+	static def img(src: string) -> UINode:
+		let node = UINode("Native")
+		node.set("component", "image")
+		node.set("src", src)
+		return node
+	end
+
+	static def image(src: string) -> UINode:
+		return UINode.img(src)
+	end
+
+	// DOM-like factory: createElement(tag)
+	static def createElement(tag: string) -> UINode:
+		let t = tag
+		if t == "div" || t == "section" || t == "article" || t == "main" || t == "aside" || t == "header" || t == "footer" || t == "nav":
+			return UINode.view()
+		end
+		if t == "span":
+			return UINode.span("")
+		end
+		if t == "label":
+			return UINode.label("")
+		end
+		if t == "p":
+			return UINode.p("")
+		end
+		if t == "h1":
+			return UINode.h1("")
+		end
+		if t == "h2":
+			return UINode.h2("")
+		end
+		if t == "h3":
+			return UINode.h3("")
+		end
+		if t == "h4":
+			return UINode.h4("")
+		end
+		if t == "button":
+			return UINode.button("")
+		end
+		if t == "input":
+			return UINode.input("text")
+		end
+		if t == "textarea":
+			return UINode.input("textarea")
+		end
+		if t == "img" || t == "image":
+			return UINode.img("")
+		end
+		return UINode(tag)
+	end
+
+	static def createTextNode(content: string) -> UINode:
+		return UINode.text(content)
+	end
+end
+
+public class UIDocument:
+	def createElement(tag: string) -> UINode:
+		return UINode.createElement(tag)
+	end
+
+	def createTextNode(content: string) -> UINode:
+		return UINode.createTextNode(content)
+	end
+
+	def append(parent: UINode, child: UINode) -> UINode:
+		parent.add(child)
+		return parent
 	end
 end
 
@@ -206,6 +353,10 @@ public class UIWindow:
 		return window_show(this._native)
 	end
 
+	def print(path: string) -> bool:
+		return window_print(this._native, path)
+	end
+
 	// close() – hide and close this window.
 	def close() -> bool:
 		return window_close(this._native)
@@ -215,6 +366,17 @@ public class UIWindow:
 	// Build a custom title bar as UINode children for a fully custom chrome.
 	def setHeadless(enabled: bool) -> bool:
 		return window_set_headless(this._native, enabled)
+	end
+
+	// debug(true) – draw debug overlays for node bounds, interaction areas and scroll clips.
+	// debug({"frames": true, "fpscounter": true}) – lightweight profiler overlay.
+	def debug(config: any) -> bool:
+		return window_debug(this._native, config)
+	end
+
+	// Alias explícito para perfilador.
+	def debugProfile(flags: map<string, any>) -> bool:
+		return window_debug_profile(this._native, flags)
 	end
 end
 
@@ -237,6 +399,10 @@ public class UIApp:
 
 	def setIcon(path: string) -> bool:
 		return app_set_icon(this._native, path)
+	end
+
+	def loadFont(pathOrUrl: string) -> bool:
+		return app_load_font(this._native, pathOrUrl)
 	end
 
 	def setPermission(name: string, allowed: bool) -> bool:
@@ -356,6 +522,10 @@ public class UI:
 		return UINode(kind)
 	end
 
+	static def document() -> UIDocument:
+		return UIDocument()
+	end
+
 	static def view() -> UINode:
 		return UINode.view()
 	end
@@ -364,12 +534,62 @@ public class UI:
 		return UINode.text(content)
 	end
 
+	static def span(content: string) -> UINode:
+		return UINode.span(content)
+	end
+
+	static def label(content: string) -> UINode:
+		return UINode.label(content)
+	end
+
+	static def p(content: string) -> UINode:
+		return UINode.p(content)
+	end
+
+	static def h1(content: string) -> UINode:
+		return UINode.h1(content)
+	end
+
+	static def h2(content: string) -> UINode:
+		return UINode.h2(content)
+	end
+
+	static def h3(content: string) -> UINode:
+		return UINode.h3(content)
+	end
+
+	static def h4(content: string) -> UINode:
+		return UINode.h4(content)
+	end
+
 	static def button(label: string) -> UINode:
 		return UINode.button(label)
 	end
 
 	static def input() -> UINode:
-		return UINode.input()
+		return UINode.input("text")
+	end
+
+	static def input(inputType: string) -> UINode:
+		return UINode.input(inputType)
+	end
+
+	static def icon(name: string) -> UINode:
+		let node = UINode("Native")
+		node.set("component", "icon")
+		node.set("name", name)
+		return node
+	end
+
+	static def image(src: string) -> UINode:
+		let node = UINode("Native")
+		node.set("component", "image")
+		node.set("src", src)
+		return node
+	end
+
+	static def img(src: string) -> UINode:
+		return UI.image(src)
 	end
 
 	static def nativeComponent(component: string) -> UINode:
@@ -381,7 +601,7 @@ public class UI:
 	// stylesheet() – create a new empty StyleSheet.
 	// Call app.attachStylesheet(ss) to make it active for all nodes.
 	static def stylesheet() -> StyleSheet:
-		return StyleSheet()
+		return StyleSheet(nil)
 	end
 
 	static def post(app: UIApp, callback: any, payload: any, priority: int) -> int:
@@ -390,5 +610,161 @@ public class UI:
 
 	static def runOnUiThread(app: UIApp, maxTasks: int) -> int:
 		return app.runOnUiThread(maxTasks)
+	end
+
+	static def print(window: UIWindow, path: string) -> bool:
+		return window.print(path)
+	end
+end
+
+public class UIContext:
+	var _values: map<string, any>
+	var _watchers: map<string, any>
+
+	UIContext():
+		this._values = {}
+		this._watchers = {}
+	end
+
+	def set(key: string, value: any) -> UIContext:
+		this._values[key] = value
+		var watcher = this._watchers[key]
+		if watcher != nil:
+			watcher(key, value, this)
+		end
+		return this
+	end
+
+	def get(key: string) -> any:
+		return this._values[key]
+	end
+
+	def has(key: string) -> bool:
+		return this._values[key] != nil
+	end
+
+	def values() -> map<string, any>:
+		return this._values
+	end
+
+	def subscribe(key: string, callback: any) -> UIContext:
+		this._watchers[key] = callback
+		return this
+	end
+end
+
+public class UIRouter:
+	var _window: UIWindow
+	var _routes: map<string, any>
+	var _current: string
+	var _context: UIContext
+	var _previous: string
+	var _onChange: any
+	var _params: map<string, any>
+
+	UIRouter(window: UIWindow):
+		this._window = window
+		this._routes = {}
+		this._current = ""
+		this._context = UIContext()
+		this._previous = ""
+		this._onChange = nil
+		this._params = {}
+	end
+
+	def context() -> UIContext:
+		return this._context
+	end
+
+	def register(path: string, builder: any) -> UIRouter:
+		this._routes[path] = builder
+		return this
+	end
+
+	def onChange(listener: any) -> UIRouter:
+		this._onChange = listener
+		return this
+	end
+
+	def current() -> string:
+		return this._current
+	end
+
+	def params() -> map<string, any>:
+		return this._params
+	end
+
+	def previous() -> string:
+		return this._previous
+	end
+
+	def _emit(payload: any) -> void:
+		if this._onChange != nil:
+			this._onChange(payload)
+		end
+	end
+
+	def navigate(path: string, payload: any) -> bool:
+		var builder = this._routes[path]
+		if builder == nil:
+			return false
+		end
+		var routeParams = {}
+		if payload != nil:
+			var maybeParams = payload["params"]
+			if maybeParams != nil:
+				routeParams = maybeParams
+			end
+		end
+		this._params = routeParams
+		var nextRoot = builder(payload, this._context, routeParams)
+		if nextRoot == nil:
+			nextRoot = builder(payload, this._context)
+		end
+		if nextRoot == nil:
+			return false
+		end
+		this._previous = this._current
+		this._current = path
+		this._window.reconcile(nextRoot)
+		this._emit({"path": path, "previous": this._previous, "params": this._params, "payload": payload})
+		return true
+	end
+
+	def replace(path: string, payload: any) -> bool:
+		var builder = this._routes[path]
+		if builder == nil:
+			return false
+		end
+		var routeParams = {}
+		if payload != nil:
+			var maybeParams = payload["params"]
+			if maybeParams != nil:
+				routeParams = maybeParams
+			end
+		end
+		this._params = routeParams
+		var nextRoot = builder(payload, this._context, routeParams)
+		if nextRoot == nil:
+			nextRoot = builder(payload, this._context)
+		end
+		if nextRoot == nil:
+			return false
+		end
+		this._current = path
+		this._window.reconcile(nextRoot)
+		this._emit({"path": path, "previous": this._previous, "params": this._params, "payload": payload, "replace": true})
+		return true
+	end
+
+	def back(payload: any) -> bool:
+		if this._previous == "":
+			return false
+		end
+		return this.replace(this._previous, payload)
+	end
+
+	def start(path: string, payload: any) -> bool:
+		return this.navigate(path, payload)
 	end
 end

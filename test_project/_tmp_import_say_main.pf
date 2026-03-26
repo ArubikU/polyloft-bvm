@@ -1,0 +1,3 @@
+import util { Greeter, helper, twice }
+let greeter = Greeter("Hi ")
+println(greeter.say("Ana"))

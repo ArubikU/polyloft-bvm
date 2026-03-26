@@ -173,11 +173,17 @@ func lowerBytecode(fn *bytecode.Function) ([]irInstruction, []value.Value, []any
 	constantIndex := make(map[string]uint16)
 	metadataIndex := make(map[string]uint16)
 	offsetToIndex := make(map[int]int)
+	targetStackDepth := make(map[int]int)
 	type jumpPatch struct {
 		irIndex    int
 		targetByte int
 	}
 	patches := make([]jumpPatch, 0)
+	recordTargetDepth := func(target int, depth int) {
+		if existing, ok := targetStackDepth[target]; !ok || depth > existing {
+			targetStackDepth[target] = depth
+		}
+	}
 	addMetadata := func(key string, entry any) uint16 {
 		if idx, exists := metadataIndex[key]; exists {
 			return idx
@@ -189,6 +195,9 @@ func lowerBytecode(fn *bytecode.Function) ([]irInstruction, []value.Value, []any
 	}
 
 	for offset := 0; offset < len(code); {
+		if depth, ok := targetStackDepth[offset]; ok && depth > stackDepth {
+			stackDepth = depth
+		}
 		op := bytecode.Op(code[offset])
 		offsetToIndex[offset] = len(ir)
 		switch op {
@@ -514,21 +523,27 @@ func lowerBytecode(fn *bytecode.Function) ([]irInstruction, []value.Value, []any
 				return nil, nil, nil, false, 0, false, "truncated JUMP"
 			}
 			ir = append(ir, irInstruction{opcode: irJump})
-			patches = append(patches, jumpPatch{irIndex: len(ir) - 1, targetByte: offset + 3 + int(readUint16(code[offset+1:]))})
+			target := offset + 3 + int(readUint16(code[offset+1:]))
+			patches = append(patches, jumpPatch{irIndex: len(ir) - 1, targetByte: target})
+			recordTargetDepth(target, stackDepth)
 			offset += 3
 		case bytecode.OpJumpIfFalse:
 			if offset+2 >= len(code) || stackDepth < 1 {
 				return nil, nil, nil, false, 0, false, "invalid JUMP_IF_FALSE"
 			}
 			ir = append(ir, irInstruction{opcode: irJumpIfFalse})
-			patches = append(patches, jumpPatch{irIndex: len(ir) - 1, targetByte: offset + 3 + int(readUint16(code[offset+1:]))})
+			target := offset + 3 + int(readUint16(code[offset+1:]))
+			patches = append(patches, jumpPatch{irIndex: len(ir) - 1, targetByte: target})
+			recordTargetDepth(target, stackDepth)
 			offset += 3
 		case bytecode.OpLoop:
 			if offset+2 >= len(code) {
 				return nil, nil, nil, false, 0, false, "truncated LOOP"
 			}
 			ir = append(ir, irInstruction{opcode: irJump})
-			patches = append(patches, jumpPatch{irIndex: len(ir) - 1, targetByte: offset + 3 - int(readUint16(code[offset+1:]))})
+			target := offset + 3 - int(readUint16(code[offset+1:]))
+			patches = append(patches, jumpPatch{irIndex: len(ir) - 1, targetByte: target})
+			recordTargetDepth(target, stackDepth)
 			offset += 3
 		case bytecode.OpReturn:
 			if stackDepth < 1 {

@@ -1059,8 +1059,6 @@ func (p *Parser) classFieldDeclaration(kind ast.VariableKind) (ast.FieldDecl, er
 		if err != nil {
 			return ast.FieldDecl{}, err
 		}
-	} else if kind == ast.VariableFinal {
-		return ast.FieldDecl{}, fmt.Errorf("line %d:%d: 'final' field '%s' must be initialized on declaration", name.Line, name.Column, name.Lexeme)
 	}
 	return ast.FieldDecl{Kind: kind, Name: name, Type: typeRef, Value: valueExpr}, nil
 }
@@ -2215,60 +2213,16 @@ func (p *Parser) primary() (ast.Expr, error) {
 		return &ast.LiteralExpr{Value: p.previous().Lexeme}, nil
 	}
 	if p.match(token.LeftBracket) {
+		elements := make([]ast.Expr, 0)
 		p.skipNewlines()
-		if p.check(token.RightBracket) {
-			p.advance()
-			return &ast.ArrayExpr{Elements: []ast.Expr{}}, nil
-		}
-
-		// Look ahead to check if it's a comprehension: [ expr for ... ]
-		// We use or() specifically to avoid over-consuming 'for' if it's reachable via high-level expression rules.
-		first, err := p.or()
-		if err != nil {
-			return nil, err
-		}
-
-		if p.match(token.For) {
-			// List comprehension: [ expr for var in iterable ]
-			varName, err := p.consume(token.Identifier, "expected variable name after 'for'")
-			if err != nil {
-				return nil, err
-			}
-
-			if _, err := p.consume(token.In, "expected 'in' after variable name"); err != nil {
-				return nil, err
-			}
-
-			iterable, err := p.expression()
-			if err != nil {
-				return nil, err
-			}
-
-			if _, err := p.consume(token.RightBracket, "expected ']' after comprehension"); err != nil {
-				return nil, err
-			}
-
-			return &ast.ArrayComprehensionExpr{
-				Value:    first,
-				Var:      varName,
-				Iterable: iterable,
-			}, nil
-		}
-
-		// Normal array: [ e1, e2, ... ] (supports multiline)
-		elements := []ast.Expr{first}
-		if p.match(token.Comma) {
-			p.skipNewlines()
+		if !p.check(token.RightBracket) {
 			for {
-				p.skipNewlines()
-				if p.check(token.RightBracket) {
-					break
-				}
 				element, err := p.expression()
 				if err != nil {
 					return nil, err
 				}
 				elements = append(elements, element)
+				p.skipNewlines()
 				if !p.match(token.Comma) {
 					break
 				}
@@ -2283,8 +2237,10 @@ func (p *Parser) primary() (ast.Expr, error) {
 	}
 	if p.match(token.LeftBrace) {
 		entries := make([]ast.MapEntry, 0)
+		p.skipNewlines()
 		if !p.check(token.RightBrace) {
 			for {
+				p.skipNewlines()
 				var key string
 				if p.match(token.Identifier) {
 					key = p.previous().Lexeme
@@ -2302,11 +2258,14 @@ func (p *Parser) primary() (ast.Expr, error) {
 					return nil, err
 				}
 				entries = append(entries, ast.MapEntry{Key: key, Value: valueExpr})
+				p.skipNewlines()
 				if !p.match(token.Comma) {
 					break
 				}
+				p.skipNewlines()
 			}
 		}
+		p.skipNewlines()
 		if _, err := p.consume(token.RightBrace, "expected '}' after map literal"); err != nil {
 			return nil, err
 		}

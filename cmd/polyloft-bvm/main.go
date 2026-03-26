@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	gioapp "gioui.org/app"
 	"github.com/ArubikU/polyloft-bvm/internal/bytecode"
 	"github.com/ArubikU/polyloft-bvm/internal/diagnostic"
 	"github.com/ArubikU/polyloft-bvm/internal/modules"
@@ -20,7 +21,16 @@ type runOptions struct {
 	jitLog       bool
 }
 
+
 func main() {
+	go func() {
+		defer os.Exit(0)
+		mainImpl()
+	}()
+	gioapp.Main()
+}
+
+func mainImpl() {
 	if len(os.Args) >= 2 && os.Args[1] == "types" {
 		fatal(typesTarget(os.Args[2:]))
 		return

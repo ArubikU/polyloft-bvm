@@ -577,6 +577,10 @@ func TupleOf(elements []Type) Type {
 }
 
 func (t Type) IsAssignableFrom(other Type) bool {
+	if other.Name == runtime.TypeNil {
+		// Polyloft nullable semantics: nil can be assigned to any declared type.
+		return true
+	}
 	if len(t.Union) > 0 {
 		if len(other.Union) > 0 {
 			for _, source := range other.Union {
@@ -719,6 +723,22 @@ func isBooleanCompatibleType(name string) bool {
 	}
 }
 
+// containsBooleanCompatibleType returns true if t is a bool/Boolean primitive,
+// or if t is a union type that contains at least one bool/Boolean member.
+// This allows map-access results (whose static type is a value-union) to be
+// used in boolean contexts just like a concrete bool can.
+func containsBooleanCompatibleType(t Type) bool {
+	if isBooleanCompatibleType(t.Name) {
+		return true
+	}
+	for _, member := range t.Union {
+		if isBooleanCompatibleType(member.Name) {
+			return true
+		}
+	}
+	return false
+}
+
 func isTextComparableType(name string) bool {
 	switch name {
 	case runtime.TypeChar, runtime.TypeString, "Char":
@@ -765,6 +785,13 @@ func (t Type) SupportsIndexing() bool {
 	case runtime.TypeAny, runtime.TypeString, runtime.TypeArray, runtime.TypeTuple, runtime.TypeMap:
 		return true
 	}
+	if len(t.Union) > 0 {
+		for _, member := range t.Union {
+			if member.SupportsIndexing() {
+				return true
+			}
+		}
+	}
 	getter, hasGetter := t.Members["__get"]
 	return hasGetter && getter.Callable != nil && len(getter.Callable.Params) == 1
 }
@@ -808,6 +835,9 @@ func (t Type) IndexKeyType() Type {
 	case runtime.TypeAny:
 		return Any()
 	default:
+		if len(t.Union) > 0 {
+			return Any()
+		}
 		getter := t.Members["__get"]
 		if getter.Callable != nil && len(getter.Callable.Params) == 1 {
 			return getter.Callable.Params[0]
@@ -843,6 +873,9 @@ func (t Type) IndexValueType() Type {
 	case runtime.TypeTuple, runtime.TypeAny:
 		return Any()
 	default:
+		if len(t.Union) > 0 {
+			return Any()
+		}
 		getter := t.Members["__get"]
 		if getter.Callable != nil {
 			return getter.Callable.Return.IterableItemType()

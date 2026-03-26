@@ -1,0 +1,103 @@
+native def now_millis() -> int
+native def now_iso() -> String
+native def zone_default() -> String
+native def zone_offset_minutes(zone: String) -> int
+native def now_in_zone_iso(zone: String) -> String
+native def date_today(zone: String) -> String
+native def date_from_millis(millis: int, zone: String) -> String
+native def time_from_millis(millis: int, zone: String) -> String
+native def datetime_from_millis(millis: int, zone: String) -> String
+native def parts(millis: int, zone: String) -> map
+native def parse_iso(isoText: String) -> int
+
+public class Date:
+	static def now() -> int:
+		return now_millis()
+	end
+
+	static def nowIso() -> String:
+		return now_iso()
+	end
+
+	static def parseIso(isoText: String) -> int:
+		return parse_iso(isoText)
+	end
+
+	static def today() -> String:
+		return date_today("local")
+	end
+
+	static def today(zone: String) -> String:
+		return date_today(zone)
+	end
+
+	static def fromMillis(millis: int) -> String:
+		return date_from_millis(millis, "local")
+	end
+
+	static def fromMillis(millis: int, zone: String) -> String:
+		return date_from_millis(millis, zone)
+	end
+
+	static def dateTime(millis: int) -> String:
+		return datetime_from_millis(millis, "local")
+	end
+
+	static def dateTime(millis: int, zone: String) -> String:
+		return datetime_from_millis(millis, zone)
+	end
+
+	static def parts(millis: int) -> map:
+		return parts(millis, "local")
+	end
+
+	static def parts(millis: int, zone: String) -> map:
+		return parts(millis, zone)
+	end
+end
+
+public class Time:
+	static def now() -> int:
+		return now_millis()
+	end
+
+	static def nowIso() -> String:
+		return now_iso()
+	end
+
+	static def localZone() -> String:
+		return zone_default()
+	end
+
+	static def offsetMinutes(zone: String) -> int:
+		return zone_offset_minutes(zone)
+	end
+
+	static def nowInZone(zone: String) -> String:
+		return now_in_zone_iso(zone)
+	end
+
+	static def fromMillis(millis: int) -> String:
+		return time_from_millis(millis, "local")
+	end
+
+	static def fromMillis(millis: int, zone: String) -> String:
+		return time_from_millis(millis, zone)
+	end
+
+	static def dateTime(millis: int) -> String:
+		return datetime_from_millis(millis, "local")
+	end
+
+	static def dateTime(millis: int, zone: String) -> String:
+		return datetime_from_millis(millis, zone)
+	end
+
+	static def parts(millis: int) -> map:
+		return parts(millis, "local")
+	end
+
+	static def parts(millis: int, zone: String) -> map:
+		return parts(millis, zone)
+	end
+end

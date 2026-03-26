@@ -12,7 +12,6 @@ import (
 
 	"github.com/ArubikU/polyloft-bvm/internal/bytecode"
 	"github.com/ArubikU/polyloft-bvm/internal/diagnostic"
-	"github.com/ArubikU/polyloft-bvm/internal/jit"
 	bvmruntime "github.com/ArubikU/polyloft-bvm/internal/runtime"
 	"github.com/ArubikU/polyloft-bvm/internal/value"
 )
@@ -50,8 +49,6 @@ type VM struct {
 	builtinArgs     []value.Value
 	globalSlotNames []string
 	callbackMu      sync.Mutex
-	jitEngine       *jit.Engine
-	jitRuntime      jit.RuntimeContext
 }
 
 func New(stdout io.Writer) *VM {
@@ -92,52 +89,18 @@ func (vm *VM) Globals() map[string]value.Value {
 	return vm.globals
 }
 
-// isInsideClassMethod returns true if any frame in the current call stack is a
-// method (or constructor) whose receiver's class matches owner. Used to allow
-// 'const' field writes from inside the class (any method, not just ctor).
-func (vm *VM) isInsideClassMethod(owner *value.Class) bool {
-	for i := len(vm.frames) - 1; i >= 0; i-- {
-		f := vm.frames[i]
-		if f.receiver != nil && f.receiver.Class == owner {
-			return true
-		}
-	}
-	return false
-}
-
-// isInsideClassConstructor returns true if there is a constructor (init) frame
-// in the stack whose receiver belongs to owner. Used for 'final' fields, which
-// may only be written during initial construction.
-func (vm *VM) isInsideClassConstructor(owner *value.Class) bool {
-	for i := len(vm.frames) - 1; i >= 0; i-- {
-		f := vm.frames[i]
-		if f.init && f.receiver != nil && f.receiver.Class == owner {
-			return true
-		}
-	}
-	return false
-}
-
-func (vm *VM) JITStats() jit.Stats {
-	if vm.jitEngine == nil {
-		return jit.Stats{}
-	}
-	return vm.jitEngine.Stats()
-}
-
+// SetJITWarmupThreshold is kept for CLI compatibility.
+// The current VM runtime does not wire JIT execution through this type.
 func (vm *VM) SetJITWarmupThreshold(threshold int) {
-	if vm.jitEngine == nil {
-		vm.jitEngine = jit.NewEngineWithThreshold(threshold)
-		return
-	}
-	vm.jitEngine.SetWarmupThreshold(threshold)
+	_ = vm
+	_ = threshold
 }
 
-func (vm *VM) SetJITLogger(w io.Writer) {
-	if vm.jitEngine == nil {
-		vm.jitEngine = jit.NewEngine()
-	}
-	vm.jitEngine.SetLogger(w)
+// SetJITLogger is kept for CLI compatibility.
+// The current VM runtime does not wire JIT execution through this type.
+func (vm *VM) SetJITLogger(logger io.Writer) {
+	_ = vm
+	_ = logger
 }
 
 func (vm *VM) Run(fn *bytecode.Function) (value.Value, error) {
@@ -266,7 +229,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if current.Kind != value.Number || current.NumberKind != value.NumberInt {
 				return value.NilValue(), fmt.Errorf("ADD_CONST_LOCAL_INT expects int local")
 			}
-			vm.localSet(frame, slot, value.IntValue(current.Int+increment))
+			vm.localSet(frame, slot, value.IntValue(int64(current.Num)+increment))
 		case bytecode.OpJumpIfLocalLessEqualIntConstFalse:
 			slot := vm.readByte(frame)
 			constant := frame.fn.Chunk.Constants[vm.readUint16(frame)]
@@ -276,7 +239,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				return value.NilValue(), fmt.Errorf("JUMP_IF_LOCAL_LE_INT_CONST_FALSE expects int constant")
 			}
 			current := vm.localGet(frame, slot)
-			if current.Kind != value.Number || (current.NumberKind == value.NumberInt && current.Int > limit) || (current.NumberKind != value.NumberInt && current.Num > float64(limit)) {
+			if current.Kind != value.Number || current.Num > float64(limit) {
 				frame.ip += int(offset)
 			}
 		case bytecode.OpJumpIfLocalDivisibleByIntConstFalse:
@@ -288,7 +251,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				return value.NilValue(), fmt.Errorf("JUMP_IF_LOCAL_DIVISIBLE_INT_CONST_FALSE expects non-zero int constant")
 			}
 			current := vm.localGet(frame, slot)
-			if current.Kind != value.Number || (current.NumberKind == value.NumberInt && current.Int%divisor != 0) || (current.NumberKind != value.NumberInt && (current.Num != math.Trunc(current.Num) || int64(current.Num)%divisor != 0)) {
+			if current.Kind != value.Number || current.Num != math.Trunc(current.Num) || int64(current.Num)%divisor != 0 {
 				frame.ip += int(offset)
 			}
 		case bytecode.OpGetCapture:
@@ -394,6 +357,16 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				vm.push(value.StringValue(leftText + rightText))
 				continue
 			}
+			// array concatenation support
+			if la, ok := left.Object.(*value.Array); ok {
+				if ra, ok2 := right.Object.(*value.Array); ok2 {
+					elems := make([]value.Value, len(la.Elements)+len(ra.Elements))
+					copy(elems, la.Elements)
+					copy(elems[len(la.Elements):], ra.Elements)
+					vm.push(value.ObjectValue(&value.Array{Elements: elems}))
+					continue
+				}
+			}
 			if result, ok, err := vm.tryBinaryOperator(left, right, bytecode.OpAdd); err != nil {
 				return value.NilValue(), err
 			} else if ok {
@@ -420,6 +393,14 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 					continue
 				}
 				return value.NilValue(), raised
+			}
+		case bytecode.OpModNum:
+			if err := vm.binaryNumberOp(bytecode.OpModNum, func(a, b float64) float64 { return math.Mod(a, b) }); err != nil {
+				if handled, raised := vm.handleRaised(baseDepth, frame, err); handled {
+					continue
+				} else {
+					return value.NilValue(), raised
+				}
 			}
 		case bytecode.OpMod:
 			if err := vm.binaryNumberOp(bytecode.OpMod, func(a, b float64) float64 { return math.Mod(a, b) }); err != nil {
@@ -449,7 +430,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				return value.NilValue(), fmt.Errorf("NEGATE expects number")
 			}
 			if operand.Kind == value.Number && operand.NumberKind == value.NumberInt {
-				vm.push(value.IntValue(-operand.Int))
+				vm.push(value.IntValue(-int64(numericValue)))
 			} else {
 				vm.push(value.FloatValue(-numericValue))
 			}
@@ -472,11 +453,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if !ok {
 				return value.NilValue(), fmt.Errorf("CAST_INT expects number")
 			}
-			if operand.Kind == value.Number && operand.NumberKind == value.NumberInt {
-				vm.push(value.IntValue(operand.Int))
-			} else {
-				vm.push(value.IntValue(int64(numericValue)))
-			}
+			vm.push(value.IntValue(int64(numericValue)))
 		case bytecode.OpCastFloat:
 			operand := vm.pop()
 			numericValue, ok := vm.numericOperand(operand)
@@ -503,31 +480,23 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			offset := vm.readUint16(frame)
 			frame.ip -= int(offset)
 		case bytecode.OpAddNum:
-			if err := vm.binaryTypedNumberOp(bytecode.OpAddNum); err != nil {
+			if err := vm.binaryNumberOp(bytecode.OpAddNum, func(a, b float64) float64 { return a + b }); err != nil {
 				return value.NilValue(), err
 			}
 		case bytecode.OpSubNum:
-			if err := vm.binaryTypedNumberOp(bytecode.OpSubNum); err != nil {
+			if err := vm.binaryNumberOp(bytecode.OpSubNum, func(a, b float64) float64 { return a - b }); err != nil {
 				return value.NilValue(), err
 			}
 		case bytecode.OpMulNum:
-			if err := vm.binaryTypedNumberOp(bytecode.OpMulNum); err != nil {
+			if err := vm.binaryNumberOp(bytecode.OpMulNum, func(a, b float64) float64 { return a * b }); err != nil {
 				return value.NilValue(), err
 			}
 		case bytecode.OpPowNum:
-			if err := vm.binaryTypedNumberOp(bytecode.OpPowNum); err != nil {
+			if err := vm.binaryPowOp(bytecode.OpPowNum); err != nil {
 				return value.NilValue(), err
 			}
 		case bytecode.OpDivNum:
-			if err := vm.binaryTypedNumberOp(bytecode.OpDivNum); err != nil {
-				handled, raised := vm.handleRaised(baseDepth, frame, err)
-				if handled {
-					continue
-				}
-				return value.NilValue(), raised
-			}
-		case bytecode.OpModNum:
-			if err := vm.binaryTypedNumberOp(bytecode.OpModNum); err != nil {
+			if err := vm.binaryNumberOp(bytecode.OpDivNum, func(a, b float64) float64 { return a / b }); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					continue
@@ -559,21 +528,6 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				return value.NilValue(), fmt.Errorf("ADD_LOCAL_MUL_THIS_FIELD expects numbers")
 			}
 			vm.localSet(frame, targetSlot, value.NumberValue(target.Num+multiplier.Num*factor.Num))
-		case bytecode.OpAddLocalMulLocal:
-			targetSlot := vm.readByte(frame)
-			leftSlot := vm.readByte(frame)
-			rightSlot := vm.readByte(frame)
-			target := vm.localGet(frame, targetSlot)
-			left := vm.localGet(frame, leftSlot)
-			right := vm.localGet(frame, rightSlot)
-			if target.Kind != value.Number || left.Kind != value.Number || right.Kind != value.Number {
-				return value.NilValue(), fmt.Errorf("ADD_LOCAL_MUL_LOCAL expects numbers")
-			}
-			if target.NumberKind == value.NumberInt && left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-				vm.localSet(frame, targetSlot, value.IntValue(target.Int+left.Int*right.Int))
-				continue
-			}
-			vm.localSet(frame, targetSlot, value.NumberValue(target.Num+left.Num*right.Num))
 		case bytecode.OpClosure:
 			idx := vm.readUint16(frame)
 			fn := frame.fn.Chunk.Constants[idx].(*bytecode.Function)
@@ -614,10 +568,10 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				return value.NilValue(), fmt.Errorf("CALL_CONST_LOCAL_SUB_INT expects int constant")
 			}
 			current := vm.localGet(frame, slot)
-			if current.Kind != value.Number || current.NumberKind != value.NumberInt {
+			if current.Kind != value.Number || current.Num != math.Trunc(current.Num) {
 				return value.NilValue(), fmt.Errorf("CALL_CONST_LOCAL_SUB_INT expects int local")
 			}
-			if err := vm.callKnownValueWithArgs(callable, value.IntValue(current.Int-subValue)); err != nil {
+			if err := vm.callKnownValueWithArgs(callable, value.IntValue(int64(current.Num)-subValue)); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					continue
@@ -632,10 +586,10 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				return value.NilValue(), fmt.Errorf("CALL_SELF_LOCAL_SUB_INT expects int constant")
 			}
 			current := vm.localGet(frame, slot)
-			if current.Kind != value.Number || current.NumberKind != value.NumberInt {
+			if current.Kind != value.Number || current.Num != math.Trunc(current.Num) {
 				return value.NilValue(), fmt.Errorf("CALL_SELF_LOCAL_SUB_INT expects int local")
 			}
-			if err := vm.callSelfLocalSubInt(frame, current.Int-subValue); err != nil {
+			if err := vm.callSelfLocalSubInt(frame, int64(current.Num)-subValue); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					continue
@@ -842,30 +796,6 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if slot < 0 || slot >= len(instance.Fields) {
 				return value.NilValue(), fmt.Errorf("invalid field slot %d for %s", slot, instance.Class.Name)
 			}
-			// Enforce const/final field immutability
-			if slot < len(instance.Class.FieldOrder) {
-				fieldName := instance.Class.FieldOrder[slot]
-				if fieldDef, ok := instance.Class.Fields[fieldName]; ok && !fieldDef.Mutable {
-					owner, _, _, _ := instance.Class.LookupFieldOwner(fieldName)
-					if owner == nil {
-						owner = instance.Class
-					}
-					if fieldDef.IsFinal {
-						// final fields cannot be set from outside a constructor (they won't appear in external OpSetField)
-						if !vm.isInsideClassConstructor(owner) {
-							return value.NilValue(), fmt.Errorf("TypeError: cannot assign to final field %s.%s", instance.Class.Name, fieldName)
-						}
-						if inner, ok := assigned.AsInstance(); ok {
-							inner.Frozen = true
-						}
-					} else {
-						// const: only writable from inside the class
-						if !vm.isInsideClassMethod(owner) {
-							return value.NilValue(), fmt.Errorf("TypeError: cannot assign to const field %s.%s from outside the class", instance.Class.Name, fieldName)
-						}
-					}
-				}
-			}
 			instance.Fields[slot] = assigned
 		case bytecode.OpSetThisField:
 			slot := int(vm.readByte(frame))
@@ -878,26 +808,6 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 			if slot < 0 || slot >= len(frame.receiver.Fields) {
 				return value.NilValue(), fmt.Errorf("invalid field slot %d for %s", slot, frame.receiver.Class.Name)
-			}
-			// Enforce const/final field immutability for this.field = val
-			if slot < len(frame.receiver.Class.FieldOrder) {
-				fieldName := frame.receiver.Class.FieldOrder[slot]
-				if fieldDef, ok := frame.receiver.Class.Fields[fieldName]; ok && !fieldDef.Mutable {
-					owner, _, _, _ := frame.receiver.Class.LookupFieldOwner(fieldName)
-					if owner == nil {
-						owner = frame.receiver.Class
-					}
-					if fieldDef.IsFinal {
-						// final: only writable from a constructor
-						if !vm.isInsideClassConstructor(owner) {
-							return value.NilValue(), fmt.Errorf("TypeError: cannot assign to final field %s.%s (not in constructor)", frame.receiver.Class.Name, fieldName)
-						}
-						if inner, ok := assigned.AsInstance(); ok {
-							inner.Frozen = true
-						}
-					}
-					// const: always allowed from inside the class (no isInit check needed)
-				}
 			}
 			frame.receiver.Fields[slot] = assigned
 		case bytecode.OpGetProperty:
@@ -972,39 +882,12 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				}
 				return value.NilValue(), fmt.Errorf("cannot assign property %s on %s", name, object.String())
 			}
-			if owner, slot, fieldDef, exists := instance.Class.LookupFieldOwner(name); exists {
-				// Visibility check
+			if owner, _, fieldDef, exists := instance.Class.LookupFieldOwner(name); exists {
 				if err := vm.ensureAccess(owner, fieldDef.Visibility); err != nil {
 					return value.NilValue(), err
 				}
-				if instance.Frozen {
-					return value.NilValue(), fmt.Errorf("TypeError: cannot assign to field %s.%s — instance is frozen", instance.Class.Name, name)
-				}
-				if !fieldDef.Mutable {
-					if fieldDef.IsFinal {
-						// final: only writable inside the owner's constructor
-						if !vm.isInsideClassConstructor(owner) {
-							return value.NilValue(), fmt.Errorf("TypeError: cannot assign to final field %s.%s", instance.Class.Name, name)
-						}
-					} else {
-						// const: writable from any method of the owner class
-						if !vm.isInsideClassMethod(owner) {
-							return value.NilValue(), fmt.Errorf("TypeError: cannot assign to const field %s.%s from outside the class", instance.Class.Name, name)
-						}
-					}
-					// Authorized — write directly to the slot, bypassing SetField's Mutable guard
-					instance.Fields[slot] = assigned
-					// For final fields holding an object, freeze it for deep immutability
-					if fieldDef.IsFinal {
-						if inner, ok := assigned.AsInstance(); ok {
-							inner.Frozen = true
-						}
-					}
-				} else {
-					// Mutable field — normal path
-					instance.Fields[slot] = assigned
-				}
-			} else {
+			}
+			if !instance.SetField(name, assigned) {
 				return value.NilValue(), fmt.Errorf("instance %s has no field %s", instance.Class.Name, name)
 			}
 		case bytecode.OpWrapInterface:
@@ -1331,7 +1214,6 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			object := vm.pop()
 			array, ok := object.AsArray()
 			if !ok {
-				fmt.Printf("VM SET_INDEX_ARRAY: obj is %v (type %T), kind is %d\n", object, object, object.Kind)
 				return value.NilValue(), fmt.Errorf("SET_INDEX_ARRAY expects array")
 			}
 			if index.Kind != value.Number {
@@ -1348,7 +1230,6 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			object := vm.pop()
 			m, ok := object.AsMap()
 			if !ok {
-				fmt.Printf("VM SET_INDEX_MAP: obj is %v (type %T), kind is %d\n", object, object, object.Kind)
 				return value.NilValue(), fmt.Errorf("SET_INDEX_MAP expects map")
 			}
 			if index.Kind != value.String {
@@ -1361,22 +1242,6 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				instance.Frozen = true
 			}
 			vm.push(frozen)
-		case bytecode.OpSwap:
-			b := vm.pop()
-			a := vm.pop()
-			vm.push(b)
-			vm.push(a)
-		case bytecode.OpSwapTwo:
-			// Swaps top two values with the two values below them
-			// [A, B, C, D] -> [C, D, A, B]
-			d := vm.pop()
-			c := vm.pop()
-			b := vm.pop()
-			a := vm.pop()
-			vm.push(c)
-			vm.push(d)
-			vm.push(a)
-			vm.push(b)
 		case bytecode.OpCallSuper:
 			argc := int(vm.readByte(frame))
 			if err := vm.callSuper(argc); err != nil {
@@ -1387,10 +1252,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				return value.NilValue(), raised
 			}
 		case bytecode.OpReturn:
-			result := value.NilValue()
-			if len(vm.stack) > frame.stackBase {
-				result = vm.pop()
-			}
+			result := vm.pop()
 			if frame.init && frame.receiver != nil {
 				result = value.ObjectValue(frame.receiver)
 			}
@@ -1417,11 +1279,6 @@ func (vm *VM) invokeInstanceMethod(receiver *value.Instance, fn *bytecode.Functi
 	}
 	if fn.Arity != len(args) {
 		return value.NilValue(), fmt.Errorf("%s expects %d args, got %d", fn.Name, fn.Arity, len(args))
-	}
-	if result, ok, err := vm.tryJITCall(fn, receiver, args); err != nil {
-		return value.NilValue(), err
-	} else if ok {
-		return result, nil
 	}
 	baseDepth := len(vm.frames)
 	child := vm.acquireFrame(fn, nil, receiver, false)
@@ -1466,16 +1323,12 @@ func (vm *VM) call(argc int) error {
 		if fn.Arity != argc {
 			return fmt.Errorf("%s expects %d args, got %d", fn.Name, fn.Arity, argc)
 		}
-		if result, ok, err := vm.tryJITCall(fn, bound.Receiver, args); err != nil {
-			return err
-		} else if ok {
-			vm.discardCallFromStack(argc)
-			vm.push(result)
-			return nil
-		}
 		child := vm.acquireFrame(fn, nil, bound.Receiver, false)
 		vm.localSet(child, 0, value.ObjectValue(bound.Receiver))
-		vm.moveStackArgsToLocals(child, 1, argc, true)
+		for i := argc - 1; i >= 0; i-- {
+			vm.localSet(child, byte(i+1), vm.pop())
+		}
+		vm.pop()
 		child.stackBase = len(vm.stack)
 		vm.frames = append(vm.frames, child)
 		return nil
@@ -1535,7 +1388,10 @@ func (vm *VM) call(argc int) error {
 		}
 		child := vm.acquireFrame(ctor, nil, instance, true)
 		vm.localSet(child, 0, value.ObjectValue(instance))
-		vm.moveStackArgsToLocals(child, 1, argc, true)
+		for i := argc - 1; i >= 0; i-- {
+			vm.localSet(child, byte(i+1), vm.pop())
+		}
+		vm.pop()
 		child.stackBase = len(vm.stack)
 		vm.frames = append(vm.frames, child)
 		return nil
@@ -1570,15 +1426,11 @@ func (vm *VM) call(argc int) error {
 		if fn.Arity != argc {
 			return fmt.Errorf("%s expects %d args, got %d", fn.Name, fn.Arity, argc)
 		}
-		if result, ok, err := vm.tryJITCallByArity(fn, nil, argc, true); err != nil {
-			return err
-		} else if ok {
-			vm.discardCallFromStack(argc)
-			vm.push(result)
-			return nil
-		}
 		child := vm.acquireFrame(fn, closure, nil, false)
-		vm.moveStackArgsToLocals(child, 0, argc, true)
+		for i := argc - 1; i >= 0; i-- {
+			vm.localSet(child, byte(i), vm.pop())
+		}
+		vm.pop()
 		child.stackBase = len(vm.stack)
 		vm.frames = append(vm.frames, child)
 		return nil
@@ -1591,16 +1443,12 @@ func (vm *VM) call(argc int) error {
 	if fn.Arity != argc {
 		return fmt.Errorf("%s expects %d args, got %d", fn.Name, fn.Arity, argc)
 	}
-	if result, ok, err := vm.tryJITCallByArity(fn, nil, argc, true); err != nil {
-		return err
-	} else if ok {
-		vm.discardCallFromStack(argc)
-		vm.push(result)
-		return nil
-	}
 
 	child := vm.acquireFrame(fn, nil, nil, false)
-	vm.moveStackArgsToLocals(child, 0, argc, true)
+	for i := argc - 1; i >= 0; i-- {
+		vm.localSet(child, byte(i), vm.pop())
+	}
+	vm.pop()
 	child.stackBase = len(vm.stack)
 	vm.frames = append(vm.frames, child)
 	return nil
@@ -1650,17 +1498,10 @@ func (vm *VM) callKnownValue(callee value.Value, argc int) error {
 		if fn.Arity != argc {
 			return fmt.Errorf("%s expects %d args, got %d", fn.Name, fn.Arity, argc)
 		}
-		if result, ok, err := vm.tryJITCallByArity(fn, nil, argc, false); err != nil {
-			return err
-		} else if ok {
-			for i := 0; i < argc; i++ {
-				vm.pop()
-			}
-			vm.push(result)
-			return nil
-		}
 		child := vm.acquireFrame(fn, closure, nil, false)
-		vm.moveStackArgsToLocals(child, 0, argc, false)
+		for i := argc - 1; i >= 0; i-- {
+			vm.localSet(child, byte(i), vm.pop())
+		}
 		child.stackBase = len(vm.stack)
 		vm.frames = append(vm.frames, child)
 		return nil
@@ -1669,17 +1510,10 @@ func (vm *VM) callKnownValue(callee value.Value, argc int) error {
 		if fn.Arity != argc {
 			return fmt.Errorf("%s expects %d args, got %d", fn.Name, fn.Arity, argc)
 		}
-		if result, ok, err := vm.tryJITCallByArity(fn, nil, argc, false); err != nil {
-			return err
-		} else if ok {
-			for i := 0; i < argc; i++ {
-				vm.pop()
-			}
-			vm.push(result)
-			return nil
-		}
 		child := vm.acquireFrame(fn, nil, nil, false)
-		vm.moveStackArgsToLocals(child, 0, argc, false)
+		for i := argc - 1; i >= 0; i-- {
+			vm.localSet(child, byte(i), vm.pop())
+		}
 		child.stackBase = len(vm.stack)
 		vm.frames = append(vm.frames, child)
 		return nil
@@ -1728,7 +1562,9 @@ func (vm *VM) callKnownValue(callee value.Value, argc int) error {
 		}
 		child := vm.acquireFrame(ctor, nil, instance, true)
 		vm.localSet(child, 0, value.ObjectValue(instance))
-		vm.moveStackArgsToLocals(child, 1, argc, false)
+		for i := argc - 1; i >= 0; i-- {
+			vm.localSet(child, byte(i+1), vm.pop())
+		}
 		child.stackBase = len(vm.stack)
 		vm.frames = append(vm.frames, child)
 		return nil
@@ -2332,20 +2168,9 @@ func (vm *VM) invoke(name string, argc int) error {
 		if err := vm.ensureAccess(owner, owner.MethodVisibility[name]); err != nil {
 			return err
 		}
-		if slot, _, ok := instance.Class.LookupMethodSlot(name); ok {
-			if result, ok, err := vm.tryFastMethodCall(instance, slot, args); err != nil {
-				return err
-			} else if ok {
-				vm.stack[len(vm.stack)-1-argc] = result
-				for i := 0; i < argc; i++ {
-					vm.pop()
-				}
-				return nil
-			}
-		}
 		if argc == 0 {
 			if slot, _, ok := instance.Class.LookupMethodSlot(name); ok {
-				if result, ok, err := vm.tryFastMethodCall(instance, slot, args); err != nil {
+				if result, ok, err := vm.tryFastMethodCall(instance, slot); err != nil {
 					return err
 				} else if ok {
 					vm.stack[len(vm.stack)-1] = result
@@ -2363,54 +2188,6 @@ func (vm *VM) invoke(name string, argc int) error {
 		return vm.call(argc)
 	}
 	if class, ok := receiver.AsClass(); ok {
-		if owner, plan, ok := class.LookupFastStaticMethod(name, argc); ok {
-			if err := vm.ensureAccess(owner, owner.StaticVisibility[name]); err != nil {
-				return err
-			}
-			args := vm.peekArgs(argc)
-			result, err := vm.evalFastMethodExpr(nil, args, plan.Expr)
-			if err != nil {
-				return err
-			}
-			vm.stack[len(vm.stack)-1-argc] = result
-			for i := 0; i < argc; i++ {
-				vm.pop()
-			}
-			return nil
-		}
-		if overloads := class.StaticMethodOverloads[name]; len(overloads) <= 1 {
-			if len(overloads) == 1 {
-				fn := overloads[0]
-				if fn != nil && fn.Arity == argc {
-					owner := class
-					for current := class; current != nil; current = current.Superclass {
-						for _, candidate := range current.StaticMethodOverloads[name] {
-							if candidate == fn {
-								owner = current
-								break
-							}
-						}
-					}
-					if err := vm.ensureAccess(owner, owner.StaticVisibility[name]); err != nil {
-						return err
-					}
-					vm.stack[len(vm.stack)-1-argc] = value.ObjectValue(fn)
-					return vm.call(argc)
-				}
-			}
-			for current := class; current != nil; current = current.Superclass {
-				if fn, ok := current.StaticMethods[name]; ok {
-					if err := vm.ensureAccess(current, current.StaticVisibility[name]); err != nil {
-						return err
-					}
-					if fn.Arity != argc {
-						return fmt.Errorf("%s expects %d args, got %d", fn.Name, fn.Arity, argc)
-					}
-					vm.stack[len(vm.stack)-1-argc] = value.ObjectValue(fn)
-					return vm.call(argc)
-				}
-			}
-		}
 		args := vm.peekArgs(argc)
 		fn, owner, exists := vm.resolveStaticOverload(class, name, args)
 		if exists {
@@ -2443,55 +2220,43 @@ func (vm *VM) invokeMethodSlot(slot int, argc int) error {
 	if !ok {
 		return fmt.Errorf("instance %s has no method slot %d", instance.Class.Name, slot)
 	}
-	args := vm.peekArgs(argc)
-	if result, ok, err := vm.tryFastMethodCall(instance, slot, args); err != nil {
-		return err
-	} else if ok {
-		vm.stack[len(vm.stack)-1-argc] = result
-		for i := 0; i < argc; i++ {
-			vm.pop()
+	if argc == 0 {
+		if result, ok, err := vm.tryFastMethodCall(instance, slot); err != nil {
+			return err
+		} else if ok {
+			vm.stack[len(vm.stack)-1] = result
+			return nil
 		}
-		return nil
 	}
 	return vm.callMethod(instance, fn, instance.Class, argc)
 }
 
-func (vm *VM) tryFastMethodCall(receiver *value.Instance, slot int, args []value.Value) (value.Value, bool, error) {
+func (vm *VM) tryFastMethodCall(receiver *value.Instance, slot int) (value.Value, bool, error) {
 	plan, ok := receiver.Class.LookupFastMethodBySlot(slot)
-	if !ok || plan == nil || plan.Arity != len(args) {
+	if !ok || plan == nil || plan.Arity != 0 {
 		return value.NilValue(), false, nil
 	}
-	result, err := vm.evalFastMethodExpr(receiver, args, plan.Expr)
+	result, err := vm.evalFastMethodExpr(receiver, plan.Expr)
 	if err != nil {
 		return value.NilValue(), false, err
 	}
 	return result, true, nil
 }
 
-func (vm *VM) evalFastMethodExpr(receiver *value.Instance, args []value.Value, expr *value.FastMethodExpr) (value.Value, error) {
+func (vm *VM) evalFastMethodExpr(receiver *value.Instance, expr *value.FastMethodExpr) (value.Value, error) {
 	if expr == nil {
 		return value.NilValue(), fmt.Errorf("invalid fast method expression")
 	}
 	switch expr.Kind {
 	case value.FastMethodExprNumber:
 		return value.NumberValue(expr.Number), nil
-	case value.FastMethodExprLiteral:
-		return expr.Literal, nil
-	case value.FastMethodExprParam:
-		if expr.ParamIndex < 0 || expr.ParamIndex >= len(args) {
-			return value.NilValue(), fmt.Errorf("invalid fast method param index %d", expr.ParamIndex)
-		}
-		return args[expr.ParamIndex], nil
 	case value.FastMethodExprField:
-		if receiver == nil {
-			return value.NilValue(), fmt.Errorf("fast method field access requires receiver")
-		}
 		if expr.FieldSlot < 0 || expr.FieldSlot >= len(receiver.Fields) {
 			return value.NilValue(), fmt.Errorf("invalid fast method field slot %d for %s", expr.FieldSlot, receiver.Class.Name)
 		}
 		return receiver.Fields[expr.FieldSlot], nil
 	case value.FastMethodExprNegate:
-		left, err := vm.evalFastMethodExpr(receiver, args, expr.Left)
+		left, err := vm.evalFastMethodExpr(receiver, expr.Left)
 		if err != nil {
 			return value.NilValue(), err
 		}
@@ -2500,11 +2265,11 @@ func (vm *VM) evalFastMethodExpr(receiver *value.Instance, args []value.Value, e
 		}
 		return value.NumberValue(-left.Num), nil
 	case value.FastMethodExprAdd, value.FastMethodExprSub, value.FastMethodExprMul, value.FastMethodExprDiv:
-		left, err := vm.evalFastMethodExpr(receiver, args, expr.Left)
+		left, err := vm.evalFastMethodExpr(receiver, expr.Left)
 		if err != nil {
 			return value.NilValue(), err
 		}
-		right, err := vm.evalFastMethodExpr(receiver, args, expr.Right)
+		right, err := vm.evalFastMethodExpr(receiver, expr.Right)
 		if err != nil {
 			return value.NilValue(), err
 		}
@@ -2530,16 +2295,12 @@ func (vm *VM) callMethod(receiver *value.Instance, fn *bytecode.Function, owner 
 	if fn.Arity != argc {
 		return fmt.Errorf("%s expects %d args, got %d", fn.Name, fn.Arity, argc)
 	}
-	if result, ok, err := vm.tryJITCallByArity(fn, receiver, argc, true); err != nil {
-		return err
-	} else if ok {
-		vm.discardCallFromStack(argc)
-		vm.push(result)
-		return nil
-	}
 	child := vm.acquireFrame(fn, nil, receiver, false)
 	vm.localSet(child, 0, value.ObjectValue(receiver))
-	vm.moveStackArgsToLocals(child, 1, argc, true)
+	for i := argc - 1; i >= 0; i-- {
+		vm.localSet(child, byte(i+1), vm.pop())
+	}
+	vm.pop()
 	child.stackBase = len(vm.stack)
 	_ = owner
 	vm.frames = append(vm.frames, child)
@@ -2550,69 +2311,15 @@ func (vm *VM) callMethodDirect(receiver *value.Instance, fn *bytecode.Function, 
 	if fn.Arity != argc {
 		return fmt.Errorf("%s expects %d args, got %d", fn.Name, fn.Arity, argc)
 	}
-	if result, ok, err := vm.tryJITCallByArity(fn, receiver, argc, false); err != nil {
-		return err
-	} else if ok {
-		for i := 0; i < argc; i++ {
-			vm.pop()
-		}
-		vm.push(result)
-		return nil
-	}
 	child := vm.acquireFrame(fn, nil, receiver, false)
 	vm.localSet(child, 0, value.ObjectValue(receiver))
-	vm.moveStackArgsToLocals(child, 1, argc, false)
+	for i := argc - 1; i >= 0; i-- {
+		vm.localSet(child, byte(i+1), vm.pop())
+	}
 	child.stackBase = len(vm.stack)
 	_ = owner
 	vm.frames = append(vm.frames, child)
 	return nil
-}
-
-func (vm *VM) tryJITCall(fn *bytecode.Function, receiver *value.Instance, args []value.Value) (value.Value, bool, error) {
-	if vm.jitEngine == nil || fn == nil {
-		return value.NilValue(), false, nil
-	}
-	// JIT for top-level scripts is currently slower than the VM dispatch loop for
-	// long-running benchmark-style loops. Keep JIT focused on callable functions.
-	if fn.Name == "<script>" {
-		return value.NilValue(), false, nil
-	}
-	vm.jitRuntime.GlobalSlots = vm.globalSlots
-	vm.jitRuntime.GlobalDefined = vm.globalDefined
-	return vm.jitEngine.TryExecuteWithContext(fn, receiver, args, &vm.jitRuntime)
-}
-
-func (vm *VM) tryJITCallByArity(fn *bytecode.Function, receiver *value.Instance, argc int, calleeOnStack bool) (value.Value, bool, error) {
-	if vm.jitEngine == nil || fn == nil {
-		return value.NilValue(), false, nil
-	}
-	if fn.Name == "<script>" {
-		return value.NilValue(), false, nil
-	}
-	_ = calleeOnStack
-	args := vm.peekArgs(argc)
-	vm.jitRuntime.GlobalSlots = vm.globalSlots
-	vm.jitRuntime.GlobalDefined = vm.globalDefined
-	return vm.jitEngine.TryExecuteWithContext(fn, receiver, args, &vm.jitRuntime)
-}
-
-func (vm *VM) discardCallFromStack(argc int) {
-	for i := 0; i < argc; i++ {
-		vm.pop()
-	}
-	vm.pop()
-}
-
-func (vm *VM) moveStackArgsToLocals(child *frame, startSlot byte, argc int, popCallee bool) {
-	if argc > 0 {
-		start := len(vm.stack) - argc
-		dst := int(startSlot)
-		copy(child.locals[dst:dst+argc], vm.stack[start:])
-		vm.stack = vm.stack[:start]
-	}
-	if popCallee {
-		vm.pop()
-	}
 }
 
 func (vm *VM) callSuper(argc int) error {
@@ -2641,7 +2348,9 @@ func (vm *VM) callSuper(argc int) error {
 	}
 	child := vm.acquireFrame(ctor, nil, currentFrame.receiver, true)
 	vm.localSet(child, 0, value.ObjectValue(currentFrame.receiver))
-	vm.moveStackArgsToLocals(child, 1, argc, false)
+	for i := argc - 1; i >= 0; i-- {
+		vm.localSet(child, byte(i+1), vm.pop())
+	}
 	child.stackBase = len(vm.stack)
 	vm.frames = append(vm.frames, child)
 	return nil
@@ -2672,14 +2381,11 @@ func (vm *VM) invokeSuper(name string, argc int) error {
 }
 
 func (vm *VM) peekArgs(argc int) []value.Value {
-	if argc <= 0 {
-		return nil
+	args := make([]value.Value, argc)
+	for i := 0; i < argc; i++ {
+		args[i] = vm.peek(argc - 1 - i)
 	}
-	start := len(vm.stack) - argc
-	if start < 0 {
-		return nil
-	}
-	return vm.stack[start:]
+	return args
 }
 
 func (vm *VM) resolveMethodOverload(class *value.Class, name string, args []value.Value) (*bytecode.Function, *value.Class, bool) {
@@ -2858,12 +2564,6 @@ func (vm *VM) initFastRange(frame *frame, currentSlot, endSlot, stepSlot byte, a
 		if end.Kind != value.Number {
 			return fmt.Errorf("range expects numeric arguments")
 		}
-		if end.NumberKind == value.NumberInt {
-			vm.localSet(frame, currentSlot, value.IntValue(-1))
-			vm.localSet(frame, endSlot, end)
-			vm.localSet(frame, stepSlot, value.IntValue(1))
-			return nil
-		}
 		vm.localSet(frame, currentSlot, value.NumberValue(-1))
 		vm.localSet(frame, endSlot, end)
 		vm.localSet(frame, stepSlot, value.NumberValue(1))
@@ -2873,16 +2573,6 @@ func (vm *VM) initFastRange(frame *frame, currentSlot, endSlot, stepSlot byte, a
 		start := vm.pop()
 		if start.Kind != value.Number || end.Kind != value.Number {
 			return fmt.Errorf("range expects numeric arguments")
-		}
-		if start.NumberKind == value.NumberInt && end.NumberKind == value.NumberInt {
-			step := int64(1)
-			if start.Int > end.Int {
-				step = -1
-			}
-			vm.localSet(frame, currentSlot, value.IntValue(start.Int-step))
-			vm.localSet(frame, endSlot, end)
-			vm.localSet(frame, stepSlot, value.IntValue(step))
-			return nil
 		}
 		step := 1.0
 		if start.Num > end.Num {
@@ -2903,17 +2593,6 @@ func (vm *VM) rangeNextFast(frame *frame, currentSlot, endSlot, stepSlot byte) (
 	step := vm.localGet(frame, stepSlot)
 	if current.Kind != value.Number || end.Kind != value.Number || step.Kind != value.Number {
 		return false, fmt.Errorf("fast range expects numeric locals")
-	}
-	if current.NumberKind == value.NumberInt && end.NumberKind == value.NumberInt && step.NumberKind == value.NumberInt {
-		next := current.Int + step.Int
-		if step.Int > 0 && next >= end.Int {
-			return false, nil
-		}
-		if step.Int < 0 && next <= end.Int {
-			return false, nil
-		}
-		vm.localSet(frame, currentSlot, value.IntValue(next))
-		return true, nil
 	}
 	next := current.Num + step.Num
 	if step.Num > 0 && next >= end.Num {
@@ -3048,9 +2727,6 @@ func (vm *VM) push(v value.Value) {
 }
 
 func (vm *VM) pop() value.Value {
-	if len(vm.stack) == 0 {
-		return value.NilValue()
-	}
 	v := vm.stack[len(vm.stack)-1]
 	vm.stack = vm.stack[:len(vm.stack)-1]
 	return v
@@ -3256,8 +2932,8 @@ func (vm *VM) binaryNumberOp(operator bytecode.Op, op func(float64, float64) flo
 	right := vm.pop()
 	left := vm.pop()
 	if left.Kind == value.Number && right.Kind == value.Number && left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-		leftInt := left.Int
-		rightInt := right.Int
+		leftInt := int64(left.Num)
+		rightInt := int64(right.Num)
 		switch operator {
 		case bytecode.OpAdd, bytecode.OpAddNum:
 			vm.push(value.IntValue(leftInt + rightInt))
@@ -3268,13 +2944,6 @@ func (vm *VM) binaryNumberOp(operator bytecode.Op, op func(float64, float64) flo
 		case bytecode.OpMul, bytecode.OpMulNum:
 			vm.push(value.IntValue(leftInt * rightInt))
 			return nil
-		case bytecode.OpDiv, bytecode.OpDivNum:
-			if rightInt == 0 {
-				return diagnostic.Runtime("ValueError", "division by zero", vm.makeExceptionValue("ValueError", "division by zero"))
-			}
-			// In Polyloft/Python, true division yields float even for ints (1 / 2 = 0.5)
-			// But for big ints that divide cleanly, we could return Float or Int.
-			// Currently op(left, right) handles it float-wise. Let it fall through.
 		case bytecode.OpMod, bytecode.OpModNum:
 			if rightInt == 0 {
 				return diagnostic.Runtime("ValueError", "division by zero", vm.makeExceptionValue("ValueError", "division by zero"))
@@ -3314,8 +2983,8 @@ func (vm *VM) binaryPowOp(operator bytecode.Op) error {
 	right := vm.pop()
 	left := vm.pop()
 	if left.Kind == value.Number && right.Kind == value.Number && left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-		base := left.Int
-		exponent := right.Int
+		base := int64(left.Num)
+		exponent := int64(right.Num)
 		if exponent >= 0 {
 			if result, ok := powInt64SquareMultiply(base, exponent); ok {
 				vm.push(value.IntValue(result))
@@ -3344,76 +3013,6 @@ func (vm *VM) binaryPowOp(operator bytecode.Op) error {
 		return fmt.Errorf("numeric operation expects numbers")
 	}
 	vm.push(vm.numericResult(left, right, operator, math.Pow(leftNum, rightNum)))
-	return nil
-}
-
-func (vm *VM) binaryTypedNumberOp(operator bytecode.Op) error {
-	right := vm.pop()
-	left := vm.pop()
-	if left.Kind != value.Number || right.Kind != value.Number {
-		return fmt.Errorf("numeric operation expects numbers")
-	}
-
-	if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-		leftInt := left.Int
-		rightInt := right.Int
-		switch operator {
-		case bytecode.OpAddNum:
-			vm.push(value.IntValue(leftInt + rightInt))
-			return nil
-		case bytecode.OpSubNum:
-			vm.push(value.IntValue(leftInt - rightInt))
-			return nil
-		case bytecode.OpMulNum:
-			vm.push(value.IntValue(leftInt * rightInt))
-			return nil
-		case bytecode.OpDivNum:
-			if rightInt == 0 {
-				return diagnostic.Runtime("ValueError", "division by zero", vm.makeExceptionValue("ValueError", "division by zero"))
-			}
-			vm.push(value.FloatValue(float64(leftInt) / float64(rightInt)))
-			return nil
-		case bytecode.OpModNum:
-			if rightInt == 0 {
-				return diagnostic.Runtime("ValueError", "division by zero", vm.makeExceptionValue("ValueError", "division by zero"))
-			}
-			vm.push(value.IntValue(leftInt % rightInt))
-			return nil
-		case bytecode.OpPowNum:
-			if rightInt >= 0 {
-				if result, ok := powInt64SquareMultiply(leftInt, rightInt); ok {
-					vm.push(value.IntValue(result))
-					return nil
-				}
-			}
-			vm.push(value.FloatValue(math.Pow(float64(leftInt), float64(rightInt))))
-			return nil
-		}
-	}
-
-	leftNum := left.Num
-	rightNum := right.Num
-	if (operator == bytecode.OpDivNum || operator == bytecode.OpModNum) && rightNum == 0 {
-		return diagnostic.Runtime("ValueError", "division by zero", vm.makeExceptionValue("ValueError", "division by zero"))
-	}
-	var result float64
-	switch operator {
-	case bytecode.OpAddNum:
-		result = leftNum + rightNum
-	case bytecode.OpSubNum:
-		result = leftNum - rightNum
-	case bytecode.OpMulNum:
-		result = leftNum * rightNum
-	case bytecode.OpDivNum:
-		result = leftNum / rightNum
-	case bytecode.OpModNum:
-		result = math.Mod(leftNum, rightNum)
-	case bytecode.OpPowNum:
-		result = math.Pow(leftNum, rightNum)
-	default:
-		return fmt.Errorf("unsupported numeric typed op %d", operator)
-	}
-	vm.push(vm.numericResult(left, right, operator, result))
 	return nil
 }
 
@@ -3574,6 +3173,12 @@ func (vm *VM) numericResult(left value.Value, right value.Value, operator byteco
 	if operator == bytecode.OpDiv || operator == bytecode.OpDivNum {
 		return value.FloatValue(result)
 	}
+	if operator == bytecode.OpPow || operator == bytecode.OpPowNum {
+		if left.Kind == value.Number && right.Kind == value.Number && left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt && right.Num >= 0 {
+			return value.IntValue(int64(result))
+		}
+		return value.FloatValue(result)
+	}
 	if left.Kind == value.Number && right.Kind == value.Number && left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
 		return value.IntValue(int64(result))
 	}
@@ -3590,7 +3195,7 @@ func (vm *VM) binaryCompare(operator bytecode.Op, numberOp func(float64, float64
 		}
 	}
 	if left.Kind == value.Number && right.Kind == value.Number && left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-		vm.push(value.BoolValue(numberOp(float64(left.Int), float64(right.Int))))
+		vm.push(value.BoolValue(numberOp(float64(int64(left.Num)), float64(int64(right.Num)))))
 		return nil
 	}
 	leftNum, ok := vm.numericOperand(left)
@@ -3629,8 +3234,8 @@ func (vm *VM) binaryNumericCompareOp(operator bytecode.Op) error {
 	right := vm.pop()
 	left := vm.pop()
 	if left.Kind == value.Number && right.Kind == value.Number && left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-		leftInt := left.Int
-		rightInt := right.Int
+		leftInt := int64(left.Num)
+		rightInt := int64(right.Num)
 		switch operator {
 		case bytecode.OpLessNum:
 			vm.push(value.BoolValue(leftInt < rightInt))

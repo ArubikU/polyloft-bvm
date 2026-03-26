@@ -1,0 +1,4 @@
+import polyloft.maps { HashMap }
+
+let map = HashMap<string, int>()
+println(map.entries())

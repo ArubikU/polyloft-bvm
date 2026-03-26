@@ -44,6 +44,150 @@ app.run()
 
 The lower-level global `Ui` runtime module still exists for interoperability, but user code should prefer `import polyloft.ui`.
 
+## HTML / CSS Mental Model
+
+If you come from web UI, the simplest way to think about Polyloft UI is:
+
+- `UI.view()` behaves like a `<div>`.
+- `UI.text(...)` behaves like a text node or `<span>`.
+- `UI.button(...)` behaves like a `<button>`.
+- `UI.input(type)` behaves like `<input type="...">` and dispatches to native widgets by `type`.
+- `UI.nativeComponent("slider")` behaves like `<input type="range">` (still available for explicit native control).
+
+Example:
+
+```polyloft
+var card = UI.view()           // like <div class="card">
+card.setClass("card")
+
+var title = UI.text("Build Status")   // like <span class="title">...</span>
+title.setClass("title")
+
+card.add(title)
+```
+
+## Styling Modes
+
+Two styling modes are supported today.
+
+### 1. CSS File / StyleSheet
+
+```polyloft
+var ss = UI.stylesheet()
+ss.loadFile("example_project/src/styles.css")
+app.attachStylesheet(ss)
+
+var title = UI.text("Hello")
+title.setClass("title")
+```
+
+```css
+.title {
+    color: #e8e8e8;
+    font-size: 24px;
+    text-align: center;
+}
+```
+
+### 2. Inline CSS-Like Style
+
+```polyloft
+var title = UI.text("Hello")
+title.style("color", "#e8e8e8")
+title.style("font-size", "24px")
+title.style("text-align", "center")
+```
+
+Inline styles win over class styles.
+
+## Currently Supported CSS Subset
+
+Supported now in the native Go renderer:
+
+- `color`
+- `background-color`
+- `background`
+- `font-size`
+- `font-weight`
+- `font-style`
+- `font-family` (monospace detection)
+- `text-align`
+- `text-transform`
+- `letter-spacing`
+- `width` (`px`, `%`, `vw`)
+- `height` (`px`, `%`, `vh`)
+- `min-width`
+- `max-width`
+- `min-height`
+- `max-height`
+- `padding`, `padding-top/right/bottom/left`
+- `margin`, `margin-top/right/bottom/left`
+- `gap`
+- `row-gap`
+- `column-gap`
+- `flex`
+- `flex-direction` (alias to `direction`)
+- `justify-content` (alias to `justify`)
+- `align-items` (alias to `align`)
+- `place-items` (grid shorthand)
+- `align-self` (item-level override)
+- `justify-self` (grid item-level override)
+- `display` (`none`)
+- `visibility` (`hidden`)
+- `opacity`
+- `border`
+- `border-width`
+- `border-color`
+- `border-radius`
+- `:hover` class selectors (`.btn:hover`)
+
+Supported formats now:
+
+- colors: `#RGB`, `#RGBA`, `#RRGGBB`, `#RRGGBBAA`, `rgb(...)`, `rgba(...)`, named colors (`white`, `black`, `red`, `green`, `blue`, `yellow`, `gray`, `transparent`)
+- lengths: number string, `px`, `%`, `vw`, `vh`
+- font-weight: `bold`, `bolder`, `700`, `800`, `900`
+- font-style: `italic`, `oblique`
+- text-align: `left`, `center`, `right`, `end`
+
+Notes:
+
+- `display:none` removes rendering for the node.
+- `visibility:hidden` keeps layout but hides drawing.
+- `border` shorthand supports patterns like `1px solid #30363d`.
+- `margin` and `padding` support 1-4 value shorthand.
+
+## Input Type Dispatch
+
+`UI.input(type)` maps to native controls:
+
+- `UI.input("text")` -> single-line entry
+- `UI.input("password")` -> password entry
+- `UI.input("textarea")` / `UI.input("multiline")` -> multiline entry
+- `UI.input("range")` / `UI.input("slider")` -> slider
+- `UI.input("checkbox")` -> checkbox
+- `UI.input("select")` -> dropdown
+
+If no type is provided, `UI.input()` defaults to `text`.
+
+Still primarily prop-based for layout:
+
+- `direction`
+- `justify`
+- `align`
+- `gap`
+- `flex`
+- `width`
+- `height`
+- `padx`
+- `pady`
+
+That means the current model is:
+
+- typography/colors: CSS-like
+- layout: mixed CSS-like intent, but mostly explicit node props
+
+This is intentional for now and can be expanded gradually.
+
 ## Permissions
 
 Permissions are explicit and can be adjusted per app.
