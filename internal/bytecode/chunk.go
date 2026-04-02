@@ -1,6 +1,7 @@
 package bytecode
 
 import (
+	"bytes"
 	"encoding/gob"
 	"fmt"
 	"io"
@@ -56,13 +57,24 @@ func NewChunk() *Chunk {
 // WriteTo serializes the function (including its chunk and constants) to a writer
 // using gob encoding. This is used by the CLI "dump -o" command to produce
 // .pfbc files.
-func (f *Function) WriteTo(w io.Writer) error {
+func (f *Function) WriteTo(w io.Writer) (int64, error) {
 	registerGobTypes()
 	// sanitize constants recursively so gob never sees a nil interface element
 	for i, c := range f.Chunk.Constants {
 		f.Chunk.Constants[i] = sanitizeConst(c)
 	}
-	return gob.NewEncoder(w).Encode(f)
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(f); err != nil {
+		return 0, err
+	}
+	n, err := w.Write(buf.Bytes())
+	if err != nil {
+		return int64(n), err
+	}
+	if n != buf.Len() {
+		return int64(n), io.ErrShortWrite
+	}
+	return int64(n), nil
 }
 
 // sanitizeConst walks through a constant value and replaces any nil entries

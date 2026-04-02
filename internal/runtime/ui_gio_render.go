@@ -215,98 +215,98 @@ func initRenderConfig() {
 
 // gioWindowState holds per-window Gio rendering state that persists between frames.
 type gioWindowState struct {
-	shaper            *text.Shaper
-	tags              map[string]*pointerTag
-	handlers          map[string]func()
-	propsForPath      map[string]map[string]any
-	cssForPath        map[string]map[string]string
-	scrollOffsets     map[string]image.Point // per-element scroll position, persists across frames
-	scrollCarry       map[string]f32.Point   // fractional scroll accumulation for high-res devices
-	scrollHits        map[string]scrollHitInfo
-	scrollFocusPath   string
-	scrollDragPath    string
-	scrollDragAxis    string
-	scrollDragGrab    int
-	boundsForPath     map[string]image.Rectangle
-	lastPointer       map[string]image.Point
-	pointerPos        image.Point
-	pointerKnown      bool
-	editors           map[string]*widget.Editor
-	inputValues       map[string]string
-	inputExternal     map[string]string
-	inputScrollX      map[string]int
-	inputContentW     map[string]int
-	inputVisibleW     map[string]int
-	sliderValues      map[string]float64
-	boolValues        map[string]bool
-	inputFocused      map[string]bool // Track if input path has focus
-	focusedInputPath  string
-	pickerModalOpen   string // path of open picker, empty if none
-	pickerType        string // "date" or "time"
-	pickerValue       string // current selected value in picker
-	frameViewW        int
-	frameViewH        int
-	frameViewportRect image.Rectangle
-	frameViewport48   image.Rectangle
-	frameViewport96   image.Rectangle
-	frameHoverState   map[string]bool
-	frameActiveState  map[string]bool
-	frameDebug        bool
-	frameStyleSheet   *styleSheet
-	frameNumber       int64
+	shaper             *text.Shaper
+	tags               map[string]*pointerTag
+	handlers           map[string]func()
+	propsForPath       map[string]map[string]any
+	cssForPath         map[string]map[string]string
+	scrollOffsets      map[string]image.Point // per-element scroll position, persists across frames
+	scrollCarry        map[string]f32.Point   // fractional scroll accumulation for high-res devices
+	scrollHits         map[string]scrollHitInfo
+	scrollFocusPath    string
+	scrollDragPath     string
+	scrollDragAxis     string
+	scrollDragGrab     int
+	boundsForPath      map[string]image.Rectangle
+	lastPointer        map[string]image.Point
+	pointerPos         image.Point
+	pointerKnown       bool
+	editors            map[string]*widget.Editor
+	inputValues        map[string]string
+	inputExternal      map[string]string
+	inputScrollX       map[string]int
+	inputContentW      map[string]int
+	inputVisibleW      map[string]int
+	sliderValues       map[string]float64
+	boolValues         map[string]bool
+	inputFocused       map[string]bool // Track if input path has focus
+	focusedInputPath   string
+	pickerModalOpen    string // path of open picker, empty if none
+	pickerType         string // "date" or "time"
+	pickerValue        string // current selected value in picker
+	frameViewW         int
+	frameViewH         int
+	frameViewportRect  image.Rectangle
+	frameViewport48    image.Rectangle
+	frameViewport96    image.Rectangle
+	frameHoverState    map[string]bool
+	frameActiveState   map[string]bool
+	frameDebug         bool
+	frameStyleSheet    *styleSheet
+	frameNumber        int64
 	profileSampleFrame bool
-	frameCursorPath   string
-	frameCursorValue  string
-	profileComponents bool
-	profileFull       bool
-	resolvedCSS       map[string]resolvedCSSCacheEntry
-	zChildrenHint     map[string]zChildrenHintCacheEntry
+	frameCursorPath    string
+	frameCursorValue   string
+	profileComponents  bool
+	profileFull        bool
+	resolvedCSS        map[string]resolvedCSSCacheEntry
+	zChildrenHint      map[string]zChildrenHintCacheEntry
 }
 
 func newGioWindowState() *gioWindowState {
 	return &gioWindowState{
-		shaper:            text.NewShaper(text.WithCollection(gofont.Collection())),
-		tags:              make(map[string]*pointerTag),
-		handlers:          make(map[string]func()),
-		propsForPath:      make(map[string]map[string]any),
-		cssForPath:        make(map[string]map[string]string),
-		scrollOffsets:     make(map[string]image.Point),
-		scrollCarry:       make(map[string]f32.Point),
-		scrollHits:        make(map[string]scrollHitInfo),
-		boundsForPath:     make(map[string]image.Rectangle),
-		lastPointer:       make(map[string]image.Point),
-		pointerPos:        image.Point{},
-		pointerKnown:      false,
-		editors:           make(map[string]*widget.Editor),
-		inputValues:       make(map[string]string),
-		inputExternal:     make(map[string]string),
-		inputScrollX:      make(map[string]int),
-		inputContentW:     make(map[string]int),
-		inputVisibleW:     make(map[string]int),
-		sliderValues:      make(map[string]float64),
-		boolValues:        make(map[string]bool),
-		inputFocused:      make(map[string]bool),
-		focusedInputPath:  "",
-		pickerModalOpen:   "",
-		pickerType:        "",
-		pickerValue:       "",
-		frameViewW:        0,
-		frameViewH:        0,
-		frameViewportRect: image.Rectangle{},
-		frameViewport48:   image.Rectangle{},
-		frameViewport96:   image.Rectangle{},
-		frameHoverState:   make(map[string]bool),
-		frameActiveState:  make(map[string]bool),
-		frameDebug:        false,
-		frameStyleSheet:   nil,
-		frameNumber:       0,
+		shaper:             text.NewShaper(text.WithCollection(gofont.Collection())),
+		tags:               make(map[string]*pointerTag),
+		handlers:           make(map[string]func()),
+		propsForPath:       make(map[string]map[string]any),
+		cssForPath:         make(map[string]map[string]string),
+		scrollOffsets:      make(map[string]image.Point),
+		scrollCarry:        make(map[string]f32.Point),
+		scrollHits:         make(map[string]scrollHitInfo),
+		boundsForPath:      make(map[string]image.Rectangle),
+		lastPointer:        make(map[string]image.Point),
+		pointerPos:         image.Point{},
+		pointerKnown:       false,
+		editors:            make(map[string]*widget.Editor),
+		inputValues:        make(map[string]string),
+		inputExternal:      make(map[string]string),
+		inputScrollX:       make(map[string]int),
+		inputContentW:      make(map[string]int),
+		inputVisibleW:      make(map[string]int),
+		sliderValues:       make(map[string]float64),
+		boolValues:         make(map[string]bool),
+		inputFocused:       make(map[string]bool),
+		focusedInputPath:   "",
+		pickerModalOpen:    "",
+		pickerType:         "",
+		pickerValue:        "",
+		frameViewW:         0,
+		frameViewH:         0,
+		frameViewportRect:  image.Rectangle{},
+		frameViewport48:    image.Rectangle{},
+		frameViewport96:    image.Rectangle{},
+		frameHoverState:    make(map[string]bool),
+		frameActiveState:   make(map[string]bool),
+		frameDebug:         false,
+		frameStyleSheet:    nil,
+		frameNumber:        0,
 		profileSampleFrame: false,
-		frameCursorPath:   "",
-		frameCursorValue:  "",
-		profileComponents: false,
-		profileFull:       false,
-		resolvedCSS:       make(map[string]resolvedCSSCacheEntry),
-		zChildrenHint:     make(map[string]zChildrenHintCacheEntry),
+		frameCursorPath:    "",
+		frameCursorValue:   "",
+		profileComponents:  false,
+		profileFull:        false,
+		resolvedCSS:        make(map[string]resolvedCSSCacheEntry),
+		zChildrenHint:      make(map[string]zChildrenHintCacheEntry),
 	}
 }
 
@@ -2963,8 +2963,8 @@ func drawShadowRasterSlice(ops *op.Ops, img *image.NRGBA, src image.Rectangle, d
 	if src.Dx() <= 0 || src.Dy() <= 0 || dst.Dx() <= 0 || dst.Dy() <= 0 {
 		return
 	}
-	part, ok := img.SubImage(src).(image.Image)
-	if !ok || part == nil {
+	part := img.SubImage(src)
+	if part == nil {
 		return
 	}
 	clipStack := clip.Rect(dst).Push(ops)

@@ -175,7 +175,7 @@ func generateReport(results []BenchmarkResult, passed, total int, totalPy, total
 	}
 
 	report := "# Polyloft BVM vs Python Stress Test Benchmark\n\n"
-	report += fmt.Sprintf("## Summary\n")
+	report += "## Summary\n"
 	report += fmt.Sprintf("- **Tests Passed:** %d / %d\n", passed, total)
 	report += fmt.Sprintf("- **Total Python Internal Time (passed):** %.0f ms\n", totalPy)
 	report += fmt.Sprintf("- **Total Polyloft Internal Time (passed):** %.0f ms\n", totalPf)

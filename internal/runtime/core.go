@@ -177,6 +177,7 @@ func InstallCoreGlobals(registry *Registry, stdout io.Writer) {
 	registry.DefineModule(BuildJsonModule())
 	registry.DefineModule(BuildIoModule())
 	registry.DefineModule(BuildMathModule())
+	registry.DefineModule(BuildTimeModule())
 	registry.DefineModule(BuildCryptoModule())
 	registry.DefineModule(BuildCollectionsModule())
 	registry.DefineModule(BuildConcurrentModule())

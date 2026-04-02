@@ -1,0 +1,18 @@
+{
+  "fps": 8.82855709526346,
+  "frames": 176,
+  "gpu_enabled": true,
+  "heap_mb": 44.97120666503906,
+  "low_power": false,
+  "profile_flags": [
+    "fpscounter"
+  ],
+  "render_avg_ms": 27.412609090909108,
+  "render_max_ms": 98.0165,
+  "render_ms": 12.1427,
+  "slow_frames": 170,
+  "timestamp": "2026-03-20T18:54:30.6096325-05:00",
+  "window_height": 950,
+  "window_title": "UI Demo PF",
+  "window_width": 1400
+}

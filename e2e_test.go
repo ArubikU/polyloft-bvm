@@ -2715,7 +2715,7 @@ println(x)
 	if err != nil {
 		t.Fatalf("create pfbc: %v", err)
 	}
-	if err := fn.WriteTo(f); err != nil {
+	if _, err := fn.WriteTo(f); err != nil {
 		t.Fatalf("write pfbc: %v", err)
 	}
 	f.Close()

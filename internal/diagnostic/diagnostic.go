@@ -2,8 +2,8 @@ package diagnostic
 
 import (
 	"fmt"
-	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/ArubikU/polyloft-bvm/internal/value"
@@ -12,10 +12,10 @@ import (
 type Kind string
 
 const (
-	KindParse   Kind = "ParseError"
-	KindCheck   Kind = "TypeError"
-	KindCompile Kind = "CompileError"
-	KindRuntime Kind = "RuntimeError"
+	KindParse   Kind = "parse"
+	KindCheck   Kind = "check"
+	KindCompile Kind = "compile"
+	KindRuntime Kind = "runtime"
 )
 
 type StackFrame struct {
@@ -24,33 +24,34 @@ type StackFrame struct {
 }
 
 type Error struct {
-	Kind      Kind
-	TypeName  string
-	Message   string
-	File      string
-	Line      int
-	Column    int
-	Hint      string
-	Source    string
-	Stack     []StackFrame
-	HasCatch  bool
-	Catch     value.Value
-	Cause     error
-	Printable string
+	Kind     Kind
+	TypeName string
+	Message  string
+	Path     string
+	Source   string
+	Line     int
+	Column   int
+	Hint     string
+	Stack    []StackFrame
+
+	Catch    value.Value
+	HasCatch bool
+
+	Cause error
 }
 
 func (e *Error) Error() string {
 	if e == nil {
-		return ""
+		return "<nil>"
 	}
-	if e.Printable != "" {
-		return e.Printable
-	}
-	if e.TypeName != "" {
-		return fmt.Sprintf("%s: %s", e.TypeName, e.Message)
-	}
-	if e.Kind != "" {
-		return fmt.Sprintf("%s: %s", e.Kind, e.Message)
+	if e.Path != "" {
+		if e.Line > 0 && e.Column > 0 {
+			return fmt.Sprintf("%s:%d:%d: %s", e.Path, e.Line, e.Column, e.Message)
+		}
+		if e.Line > 0 {
+			return fmt.Sprintf("%s:%d: %s", e.Path, e.Line, e.Message)
+		}
+		return fmt.Sprintf("%s: %s", e.Path, e.Message)
 	}
 	if e.Message != "" {
 		return e.Message
@@ -58,145 +59,141 @@ func (e *Error) Error() string {
 	if e.Cause != nil {
 		return e.Cause.Error()
 	}
-	return "unknown error"
+	return "diagnostic error"
+}
+
+func (e *Error) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
 }
 
 func (e *Error) CatchValue() value.Value {
-	if e == nil {
-		return value.NilValue()
-	}
-	if e.HasCatch {
+	if e != nil && e.HasCatch {
 		return e.Catch
 	}
-	return value.StringValue(e.Message)
+	if e != nil {
+		return value.StringValue(e.Message)
+	}
+	return value.NilValue()
 }
 
-func Wrap(err error, kind Kind, file string, source string) error {
+func Runtime(typeName string, message string, catch value.Value) *Error {
+	if strings.TrimSpace(typeName) == "" {
+		typeName = "RuntimeError"
+	}
+	return &Error{
+		Kind:     KindRuntime,
+		TypeName: typeName,
+		Message:  strings.TrimSpace(message),
+		Catch:    catch,
+		HasCatch: true,
+	}
+}
+
+func Wrap(err error, kind Kind, path string, source string) error {
 	if err == nil {
 		return nil
 	}
-	if diag, ok := err.(*Error); ok {
-		if diag.Kind == "" {
-			diag.Kind = kind
+	if de, ok := err.(*Error); ok {
+		cloned := *de
+		if cloned.Kind == "" {
+			cloned.Kind = kind
 		}
-		if diag.File == "" {
-			diag.File = file
+		if cloned.TypeName == "" {
+			cloned.TypeName = string(cloned.Kind)
 		}
-		if diag.Source == "" {
-			diag.Source = source
+		if cloned.Path == "" {
+			cloned.Path = path
 		}
-		if diag.TypeName == "" && diag.Kind != "" {
-			diag.TypeName = string(diag.Kind)
+		if cloned.Source == "" {
+			cloned.Source = source
 		}
-		return diag
+		if cloned.Line == 0 {
+			line, col := extractLineColumn(cloned.Message)
+			cloned.Line = line
+			cloned.Column = col
+		}
+		if cloned.Message == "" && cloned.Cause != nil {
+			cloned.Message = cloned.Cause.Error()
+		}
+		if cloned.Cause == nil {
+			cloned.Cause = err
+		}
+		return &cloned
 	}
-	line, col, message := extractLocation(err.Error())
+
+	message := strings.TrimSpace(err.Error())
+	line, col := extractLineColumn(message)
 	return &Error{
 		Kind:     kind,
 		TypeName: string(kind),
 		Message:  message,
-		File:     file,
+		Path:     path,
+		Source:   source,
 		Line:     line,
 		Column:   col,
-		Source:   source,
 		Cause:    err,
 	}
-}
-
-func Runtime(typeName string, message string, catch value.Value) *Error {
-	if typeName == "" {
-		typeName = string(KindRuntime)
-	}
-	return &Error{Kind: KindRuntime, TypeName: typeName, Message: message, Catch: catch, HasCatch: true}
 }
 
 func Format(err error) string {
 	if err == nil {
 		return ""
 	}
-	diag, ok := err.(*Error)
+	de, ok := err.(*Error)
 	if !ok {
 		return err.Error()
 	}
-	parts := make([]string, 0, 6)
-	header := diag.TypeName
-	if header == "" {
-		header = string(diag.Kind)
+
+	parts := make([]string, 0, 8)
+	kind := strings.TrimSpace(string(de.Kind))
+	if kind != "" {
+		parts = append(parts, fmt.Sprintf("[%s] %s", strings.ToUpper(kind), de.Message))
+	} else {
+		parts = append(parts, de.Message)
 	}
-	if header == "" {
-		header = "Error"
-	}
-	parts = append(parts, fmt.Sprintf("%s: %s", header, diag.Message))
-	if diag.File != "" || diag.Line > 0 {
-		location := diag.File
-		if location != "" {
-			location = filepath.ToSlash(location)
+
+	if de.Path != "" {
+		if de.Line > 0 && de.Column > 0 {
+			parts = append(parts, fmt.Sprintf("at %s:%d:%d", de.Path, de.Line, de.Column))
+		} else if de.Line > 0 {
+			parts = append(parts, fmt.Sprintf("at %s:%d", de.Path, de.Line))
+		} else {
+			parts = append(parts, fmt.Sprintf("at %s", de.Path))
 		}
-		if diag.Line > 0 {
-			location = fmt.Sprintf("%s:%d", location, diag.Line)
-			if diag.Column > 0 {
-				location = fmt.Sprintf("%s:%d", location, diag.Column)
-			}
-		}
-		parts = append(parts, "at "+strings.TrimPrefix(location, ":"))
 	}
-	if context := formatContext(diag.Source, diag.Line, diag.Column); context != "" {
-		parts = append(parts, context)
+
+	if de.Hint != "" {
+		parts = append(parts, "hint: "+de.Hint)
 	}
-	if diag.Hint != "" {
-		parts = append(parts, "hint: "+diag.Hint)
-	}
-	if len(diag.Stack) > 0 {
-		stack := make([]string, 0, len(diag.Stack)+1)
-		stack = append(stack, "stack trace:")
-		for _, frame := range diag.Stack {
+
+	if len(de.Stack) > 0 {
+		parts = append(parts, "stack:")
+		for _, frame := range de.Stack {
 			if frame.Line > 0 {
-				stack = append(stack, fmt.Sprintf("  %s:%d", frame.Function, frame.Line))
-				continue
+				parts = append(parts, fmt.Sprintf("  at %s:%d", frame.Function, frame.Line))
+			} else {
+				parts = append(parts, fmt.Sprintf("  at %s", frame.Function))
 			}
-			stack = append(stack, "  "+frame.Function)
 		}
-		parts = append(parts, strings.Join(stack, "\n"))
 	}
+
 	return strings.Join(parts, "\n")
 }
 
-var linePattern = regexp.MustCompile(`^line\s+(\d+):(\d+):\s*(.*)$`)
+var lineColRegex = regexp.MustCompile(`line\s+(\d+)(?::(\d+))?`)
 
-func extractLocation(message string) (int, int, string) {
-	match := linePattern.FindStringSubmatch(strings.TrimSpace(message))
-	if len(match) != 4 {
-		return 0, 0, strings.TrimSpace(message)
+func extractLineColumn(message string) (int, int) {
+	m := lineColRegex.FindStringSubmatch(strings.ToLower(message))
+	if len(m) == 0 {
+		return 0, 0
 	}
-	var line int
-	var col int
-	fmt.Sscanf(match[1], "%d", &line)
-	fmt.Sscanf(match[2], "%d", &col)
-	return line, col, strings.TrimSpace(match[3])
-}
-
-func formatContext(source string, line int, column int) string {
-	if source == "" || line <= 0 {
-		return ""
+	line, _ := strconv.Atoi(m[1])
+	col := 0
+	if len(m) > 2 && m[2] != "" {
+		col, _ = strconv.Atoi(m[2])
 	}
-	lines := strings.Split(source, "\n")
-	if line > len(lines) {
-		return ""
-	}
-	text := lines[line-1]
-	pointer := ""
-	if column > 0 {
-		pointer = strings.Repeat(" ", max(column-1, 0)) + "^"
-	}
-	if pointer == "" {
-		return fmt.Sprintf("%4d | %s", line, text)
-	}
-	return fmt.Sprintf("%4d | %s\n     | %s", line, text, pointer)
-}
-
-func max(left int, right int) int {
-	if left > right {
-		return left
-	}
-	return right
+	return line, col
 }

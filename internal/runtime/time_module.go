@@ -96,20 +96,20 @@ func timeArgsMillis(v value.Value) (int64, error) {
 func timePartsMap(t time.Time) value.Value {
 	zoneName, zoneOffsetSec := t.Zone()
 	entries := map[string]value.Value{
-		"year":         value.IntValue(int64(t.Year())),
-		"month":        value.IntValue(int64(t.Month())),
-		"day":          value.IntValue(int64(t.Day())),
-		"hour":         value.IntValue(int64(t.Hour())),
-		"minute":       value.IntValue(int64(t.Minute())),
-		"second":       value.IntValue(int64(t.Second())),
-		"millisecond":  value.IntValue(int64(t.Nanosecond() / int(time.Millisecond))),
-		"weekday":      value.IntValue(int64(t.Weekday())),
-		"zone":         value.StringValue(zoneName),
+		"year":          value.IntValue(int64(t.Year())),
+		"month":         value.IntValue(int64(t.Month())),
+		"day":           value.IntValue(int64(t.Day())),
+		"hour":          value.IntValue(int64(t.Hour())),
+		"minute":        value.IntValue(int64(t.Minute())),
+		"second":        value.IntValue(int64(t.Second())),
+		"millisecond":   value.IntValue(int64(t.Nanosecond() / int(time.Millisecond))),
+		"weekday":       value.IntValue(int64(t.Weekday())),
+		"zone":          value.StringValue(zoneName),
 		"offsetMinutes": value.IntValue(int64(zoneOffsetSec / 60)),
-		"unixMillis":   value.IntValue(t.UnixMilli()),
-		"isoDate":      value.StringValue(t.Format("2006-01-02")),
-		"isoTime":      value.StringValue(t.Format("15:04:05")),
-		"isoDateTime":  value.StringValue(t.Format(time.RFC3339Nano)),
+		"unixMillis":    value.IntValue(t.UnixMilli()),
+		"isoDate":       value.StringValue(t.Format("2006-01-02")),
+		"isoTime":       value.StringValue(t.Format("15:04:05")),
+		"isoDateTime":   value.StringValue(t.Format(time.RFC3339Nano)),
 	}
 	return value.ObjectValue(&value.Map{Entries: entries})
 }
