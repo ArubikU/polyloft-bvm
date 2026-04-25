@@ -16,8 +16,7 @@ import (
 	"sync"
 	"time"
 
-	gioapp "gioui.org/app"
-	"gioui.org/io/system"
+	"github.com/ArubikU/giocss"
 	"github.com/ArubikU/polyloft-bvm/internal/value"
 )
 
@@ -28,61 +27,73 @@ type uiNode struct {
 }
 
 type uiWindow struct {
-	Title                 string
-	Width                 int
-	Height                int
-	Root                  *uiNode
-	Visible               bool
-	Callbacks             map[string]value.Value
-	app                   *uiApp
-	lastTree              *uiNode
-	lastPatch             []map[string]any
-	lastFx                []map[string]any
-	mu                    sync.Mutex
-	gioWin                *gioapp.Window
-	headless              bool
-	debug                 bool
-	debugProfile          map[string]bool
-	debugProfilerPath     string
-	debugFrames           int64
-	debugFPS              float64
-	debugFPSFrames        int64
-	debugFPSLastAt        time.Time
-	debugFrameRenderMS    float64
-	debugFrameRenderAvgMS float64
-	debugFrameRenderMaxMS float64
-	debugSlowFrames       int64
-	debugHeapMB           float64
-	debugComponents       map[string]*debugComponentStat
-	hoverState            map[string]bool
-	activeState           map[string]bool
-	renderState           map[string]uiRenderState
-	nextRenderState       map[string]uiRenderState
+	Title             string
+	Width             int
+	Height            int
+	Root              *uiNode
+	Visible           bool
+	Callbacks         map[string]value.Value
+	app               *uiApp
+	lastTree          *uiNode
+	lastPatch         []map[string]any
+	lastFx            []map[string]any
+	mu                sync.Mutex
+	gioRuntime        *giocss.WindowRuntime
+	headless          bool
+	debug             bool
+	debugProfile      map[string]bool
+	debugProfilerPath string
 }
 
-func parseWindowDebugProfile(flagsMap *value.Map) (map[string]bool, string) {
-	profile := make(map[string]bool, len(flagsMap.Entries))
-	profilerPath := ""
-	for key, v := range flagsMap.Entries {
-		name := strings.ToLower(strings.TrimSpace(key))
-		if name == "" {
-			continue
-		}
-		switch name {
-		case "profiler_path", "profilerpath", "profile_path", "dump_path":
-			if v.Kind == value.String || v.Kind == value.Char {
-				profilerPath = strings.TrimSpace(v.String())
-			}
-		default:
-			profile[name] = v.IsTruthy()
-		}
+func (w *uiWindow) nativeRuntime() *giocss.WindowRuntime {
+	if w == nil {
+		return nil
 	}
-	return profile, profilerPath
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.gioRuntime
 }
 
-type uiRenderState struct {
-	CSS    map[string]string
-	Layout map[string]int
+func (w *uiWindow) setNativeRuntime(gr *giocss.WindowRuntime) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	w.gioRuntime = gr
+	w.mu.Unlock()
+}
+
+func (w *uiWindow) closeNativeWindow() {
+	if gr := w.nativeRuntime(); gr != nil {
+		gr.Close()
+	}
+}
+
+func (w *uiWindow) invalidateNativeWindow() {
+	if gr := w.nativeRuntime(); gr != nil {
+		gr.Invalidate()
+	}
+}
+
+func (w *uiWindow) applyDebugConfig() {
+	if w == nil {
+		return
+	}
+	gr := w.nativeRuntime()
+	if gr == nil {
+		return
+	}
+	w.mu.Lock()
+	debug := w.debug
+	profile := make(map[string]bool, len(w.debugProfile))
+	for key, enabled := range w.debugProfile {
+		profile[key] = enabled
+	}
+	profilerPath := w.debugProfilerPath
+	w.mu.Unlock()
+	gr.SetDebug(debug)
+	gr.SetDebugProfile(profile, profilerPath)
+	gr.Invalidate()
 }
 
 type uiTask struct {
@@ -112,6 +123,8 @@ type uiApp struct {
 	stylesheet  *styleSheet
 }
 
+type styleSheet = giocss.StyleSheet
+
 func newUIApp(backend string) *uiApp {
 	if strings.TrimSpace(backend) == "" {
 		backend = "headless"
@@ -131,7 +144,7 @@ func newUIApp(backend string) *uiApp {
 		channels:   make(map[string]*channelHandle),
 		tasks:      make([]*uiTask, 0, 16),
 		loopCancel: make(chan struct{}),
-		stylesheet: newStyleSheet(),
+		stylesheet: giocss.NewStyleSheet(),
 	}
 	if backend == "tk" || backend == "go" || backend == "native" {
 		app.permissions["process_exec"] = false
@@ -143,6 +156,23 @@ func currentUIPlatform() string {
 	return strings.ToLower(goruntime.GOOS) + "/" + strings.ToLower(goruntime.GOARCH)
 }
 
+func (app *uiApp) snapshotWindows() []*uiWindow {
+	if app == nil {
+		return nil
+	}
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	return append([]*uiWindow(nil), app.windows...)
+}
+
+func (app *uiApp) quit() {
+	for _, win := range app.snapshotWindows() {
+		if win != nil {
+			win.closeNativeWindow()
+		}
+	}
+}
+
 func (app *uiApp) setName(name string) {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "" {
@@ -150,48 +180,16 @@ func (app *uiApp) setName(name string) {
 	}
 	app.mu.Lock()
 	app.defaultName = trimmed
-	windows := append([]*uiWindow(nil), app.windows...)
 	app.mu.Unlock()
-	for _, window := range windows {
+	for _, window := range app.snapshotWindows() {
 		if window == nil {
 			continue
 		}
 		window.Title = trimmed
-		window.mu.Lock()
-		gw := window.gioWin
-		window.mu.Unlock()
-		if gw != nil {
-			gw.Option(gioapp.Title(trimmed))
+		if gr := window.nativeRuntime(); gr != nil {
+			gr.SetTitle(trimmed)
 		}
 	}
-}
-
-func (app *uiApp) setIcon(path string) error {
-	trimmed := strings.TrimSpace(path)
-	if trimmed == "" {
-		return fmt.Errorf("icon path is empty")
-	}
-	app.mu.Lock()
-	app.defaultIcon = trimmed
-	app.mu.Unlock()
-	return nil
-}
-
-func (app *uiApp) loadFont(pathOrURL string) error {
-	app.mu.Lock()
-	app.fontPath = strings.TrimSpace(pathOrURL)
-	app.mu.Unlock()
-	return nil
-}
-
-func (app *uiApp) setPermission(name string, allowed bool) bool {
-	app.mu.Lock()
-	defer app.mu.Unlock()
-	if _, ok := app.permissions[name]; !ok {
-		return false
-	}
-	app.permissions[name] = allowed
-	return true
 }
 
 func (app *uiApp) hasPermission(name string) bool {
@@ -327,733 +325,12 @@ func cloneUINode(node *uiNode) *uiNode {
 	return copyNode
 }
 
-func uiNodePropString(node *uiNode, name string, fallback string) string {
-	if node == nil || node.Props == nil {
-		return fallback
-	}
-	if candidate, ok := node.Props[name]; ok {
-		text := strings.TrimSpace(candidate.String())
-		if text != "" {
-			return text
-		}
-	}
-	return fallback
-}
-
-func uiNodePropInt(node *uiNode, name string, fallback int) int {
-	if node == nil || node.Props == nil {
-		return fallback
-	}
-	if candidate, ok := node.Props[name]; ok {
-		if candidate.Kind == value.Number {
-			if candidate.NumberKind == value.NumberInt {
-				return int(candidate.Int)
-			}
-			return int(candidate.Num)
-		}
-	}
-	return fallback
-}
-
-func uiNodePropFloat(node *uiNode, name string, fallback float64) float64 {
-	if node == nil || node.Props == nil {
-		return fallback
-	}
-	if candidate, ok := node.Props[name]; ok {
-		if candidate.Kind == value.Number {
-			if candidate.NumberKind == value.NumberInt {
-				return float64(candidate.Int)
-			}
-			return candidate.Num
-		}
-	}
-	return fallback
-}
-
-func uiNodeKey(node *uiNode, path string) string {
-	if node == nil {
-		return path
-	}
-	if key := strings.TrimSpace(uiNodePropString(node, "key", "")); key != "" {
-		return key
-	}
-	if id := strings.TrimSpace(uiNodePropString(node, "id", "")); id != "" {
-		return id
-	}
-	return path
-}
-
-func uiNodeSignature(node *uiNode) string {
-	if node == nil {
-		return "nil"
-	}
-	payload := map[string]any{
-		"kind":     node.Kind,
-		"props":    uiValueToNative(value.ObjectValue(&value.Map{Entries: node.Props})),
-		"children": len(node.Children),
-	}
-	b, _ := json.Marshal(payload)
-	return string(b)
-}
-
-func uiNodeSelfSignature(node *uiNode) string {
-	if node == nil {
-		return "nil"
-	}
-	props := make(map[string]any, len(node.Props))
-	for key, candidate := range node.Props {
-		props[key] = uiValueToNative(candidate)
-	}
-	payload := map[string]any{
-		"kind":  node.Kind,
-		"props": props,
-	}
-	b, _ := json.Marshal(payload)
-	return string(b)
-}
-
-func uiChildStableKey(node *uiNode, index int) string {
-	if node == nil {
-		return fmt.Sprintf("#%d", index)
-	}
-	if key := strings.TrimSpace(uiNodePropString(node, "key", "")); key != "" {
-		return key
-	}
-	if id := strings.TrimSpace(uiNodePropString(node, "id", "")); id != "" {
-		return id
-	}
-	return fmt.Sprintf("#%d", index)
-}
-
-func flattenUINodes(node *uiNode, path string, out map[string]string, kinds map[string]string) {
-	if node == nil {
-		return
-	}
-	key := uiNodeKey(node, path)
-	out[key] = uiNodeSignature(node)
-	kinds[key] = node.Kind
-	for index, child := range node.Children {
-		flattenUINodes(child, fmt.Sprintf("%s/%d", key, index), out, kinds)
-	}
-}
-
 func reconcileTrees(oldRoot *uiNode, newRoot *uiNode) ([]map[string]any, []map[string]any) {
-	patches := make([]map[string]any, 0, 16)
-	fx := make([]map[string]any, 0, 16)
-	var walk func(oldNode *uiNode, newNode *uiNode, path string)
-	walk = func(oldNode *uiNode, newNode *uiNode, path string) {
-		if oldNode == nil && newNode == nil {
-			return
-		}
-		if oldNode == nil {
-			patches = append(patches, map[string]any{"op": "add", "path": path, "kind": newNode.Kind})
-			fx = append(fx, map[string]any{"type": "fade-in", "path": path, "durationMs": 140})
-			return
-		}
-		if newNode == nil {
-			patches = append(patches, map[string]any{"op": "remove", "path": path, "kind": oldNode.Kind})
-			fx = append(fx, map[string]any{"type": "fade-out", "path": path, "durationMs": 120})
-			return
-		}
-
-		if oldNode.Kind != newNode.Kind || uiNodeSelfSignature(oldNode) != uiNodeSelfSignature(newNode) {
-			patches = append(patches, map[string]any{"op": "update", "path": path, "kind": newNode.Kind})
-			fx = append(fx, map[string]any{"type": "morph", "path": path, "durationMs": 120})
-		}
-
-		oldByKey := make(map[string]*uiNode, len(oldNode.Children))
-		newByKey := make(map[string]*uiNode, len(newNode.Children))
-		oldIndex := make(map[string]int, len(oldNode.Children))
-		newIndex := make(map[string]int, len(newNode.Children))
-		for i, child := range oldNode.Children {
-			key := uiChildStableKey(child, i)
-			oldByKey[key] = child
-			oldIndex[key] = i
-		}
-		for i, child := range newNode.Children {
-			key := uiChildStableKey(child, i)
-			newByKey[key] = child
-			newIndex[key] = i
-		}
-
-		for i, child := range newNode.Children {
-			key := uiChildStableKey(child, i)
-			nextPath := path + "/" + key
-			oldChild := oldByKey[key]
-			if oldChild == nil {
-				walk(nil, child, nextPath)
-				continue
-			}
-			if oldIndex[key] != i {
-				patches = append(patches, map[string]any{
-					"op":     "move",
-					"path":   nextPath,
-					"kind":   child.Kind,
-					"from":   oldIndex[key],
-					"to":     i,
-					"parent": path,
-				})
-				fx = append(fx, map[string]any{"type": "move", "path": nextPath, "from": oldIndex[key], "to": i, "durationMs": 180})
-			}
-			walk(oldChild, child, nextPath)
-		}
-
-		for i, child := range oldNode.Children {
-			key := uiChildStableKey(child, i)
-			if _, ok := newByKey[key]; !ok {
-				walk(child, nil, path+"/"+key)
-			}
-		}
-	}
-
-	walk(oldRoot, newRoot, "root")
-	return patches, fx
+	return giocss.ReconcileTrees(toGiocssNode(oldRoot), toGiocssNode(newRoot))
 }
 
 func layoutNodeToNative(node *uiNode, width int, height int, ss *styleSheet) map[string]any {
-	if node == nil {
-		return map[string]any{}
-	}
-	rootCSS := resolveNodeStyle(node, ss, width)
-	if width <= 0 {
-		width = nodeLayoutLength(node, rootCSS, "width", "width", 800, 800, 600, 800)
-	}
-	if height <= 0 {
-		height = nodeLayoutLength(node, rootCSS, "height", "height", 600, width, 600, 600)
-	}
-	return layoutNodeToNativeWithBox(node, 0, 0, width, height, width, height, ss, nil)
-}
-
-func layoutNodeToNativeWithBox(node *uiNode, x int, y int, width int, height int, viewportW int, viewportH int, ss *styleSheet, parentCSS map[string]string) map[string]any {
-	if node == nil {
-		return map[string]any{}
-	}
-	css := resolveNodeStyle(node, ss, viewportW)
-	css = mergeInheritedTextCSS(css, parentCSS)
-	paddingX := uiNodePropInt(node, "padx", uiNodePropInt(node, "padding", 0))
-	paddingY := uiNodePropInt(node, "pady", uiNodePropInt(node, "padding", 0))
-	paddingTop := nodeLayoutLength(node, css, "paddingTop", "padding-top", height, viewportW, viewportH, paddingY)
-	paddingRight := nodeLayoutLength(node, css, "paddingRight", "padding-right", width, viewportW, viewportH, paddingX)
-	paddingBottom := nodeLayoutLength(node, css, "paddingBottom", "padding-bottom", height, viewportW, viewportH, paddingY)
-	paddingLeft := nodeLayoutLength(node, css, "paddingLeft", "padding-left", width, viewportW, viewportH, paddingX)
-	direction := nodeLayoutString(node, css, "direction", "direction", strings.ToLower(uiNodePropString(node, "layout", "column")))
-	if direction != "row" {
-		direction = "column"
-	}
-	justify := nodeLayoutString(node, css, "justify", "justify", "start")
-	align := nodeLayoutString(node, css, "align", "align", "stretch")
-	gap := nodeLayoutLength(node, css, "gap", "gap", max(width, height), viewportW, viewportH, 0)
-	rowGap := nodeLayoutLength(node, css, "rowGap", "row-gap", max(width, height), viewportW, viewportH, gap)
-	columnGap := nodeLayoutLength(node, css, "columnGap", "column-gap", max(width, height), viewportW, viewportH, gap)
-
-	contentWidth := width - paddingLeft - paddingRight
-	contentHeight := height - paddingTop - paddingBottom
-	if contentWidth < 0 {
-		contentWidth = 0
-	}
-	if contentHeight < 0 {
-		contentHeight = 0
-	}
-
-	children := make([]any, 0, len(node.Children))
-	if len(node.Children) > 0 {
-		displayMode := strings.ToLower(strings.TrimSpace(css["display"]))
-		if displayMode == "grid" {
-			if strings.TrimSpace(css["justify"]) == "" {
-				justify = "stretch"
-			}
-			if strings.TrimSpace(css["align"]) == "" {
-				align = "stretch"
-			}
-			containerJustify := strings.ToLower(strings.TrimSpace(css["justify-content"]))
-			if containerJustify == "" {
-				containerJustify = strings.ToLower(strings.TrimSpace(css["justify"]))
-			}
-			if containerJustify == "" {
-				containerJustify = "start"
-			}
-			itemJustifyDefault := strings.ToLower(strings.TrimSpace(css["justify-items"]))
-			if itemJustifyDefault == "" {
-				itemJustifyDefault = "stretch"
-			}
-			if place := strings.Fields(strings.ToLower(strings.TrimSpace(css["place-items"]))); len(place) > 0 {
-				align = place[0]
-				if len(place) > 1 {
-					itemJustifyDefault = place[1]
-				} else {
-					itemJustifyDefault = place[0]
-				}
-			}
-			if itemJustifyDefault == "start" {
-				itemJustifyDefault = "left"
-			}
-			if itemJustifyDefault == "end" {
-				itemJustifyDefault = "right"
-			}
-			gridColGap := columnGap
-			gridRowGap := rowGap
-			colTracks := parseGridTrackSpec(css["grid-template-columns"], contentWidth, viewportW, viewportH)
-			autoRows := strings.TrimSpace(css["grid-template-rows"]) == ""
-			rowTracks := parseGridTrackSpec(css["grid-template-rows"], contentHeight, viewportW, viewportH)
-			// Subtract column gap space before distributing fr tracks so that
-			// sum(tracks) + (numCols-1)*gap = contentWidth (no overflow).
-			{
-				hint := len(colTracks)
-				if hint > 1 {
-					adj := max(1, contentWidth-(hint-1)*gridColGap)
-					colTracks = parseGridTrackSpec(css["grid-template-columns"], adj, viewportW, viewportH)
-				}
-			}
-			if autoRows {
-				rowTracks = make([]int, 0)
-			}
-			colStarts := make([]int, len(colTracks))
-			cursorX := x + paddingLeft
-			for i, cw := range colTracks {
-				colStarts[i] = cursorX
-				cursorX += cw + gridColGap
-			}
-			gridTracksWidth := 0
-			for _, cw := range colTracks {
-				gridTracksWidth += cw
-			}
-			if len(colTracks) > 1 {
-				gridTracksWidth += (len(colTracks) - 1) * gridColGap
-			}
-			if gridTracksWidth < contentWidth {
-				extra := contentWidth - gridTracksWidth
-				offX := 0
-				if containerJustify == "center" {
-					offX = extra / 2
-				} else if containerJustify == "end" || containerJustify == "right" {
-					offX = extra
-				}
-				if offX > 0 {
-					for i := range colStarts {
-						colStarts[i] += offX
-					}
-				}
-			}
-			rowCursor := y + paddingTop
-			rowIndex := 0
-			colIndex := 0
-			if len(rowTracks) == 0 {
-				if autoRows {
-					rowTracks = append(rowTracks, 0)
-				} else {
-					rowTracks = append(rowTracks, max(48, contentHeight))
-				}
-			}
-			for _, child := range node.Children {
-				childCSS := resolveNodeStyle(child, ss, viewportW)
-				childCSS = mergeInheritedTextCSS(childCSS, css)
-				if strings.EqualFold(strings.TrimSpace(childCSS["display"]), "none") {
-					continue
-				}
-				intrinsicW, intrinsicH := intrinsicNodeSizeWithInherited(child, ss, viewportW, viewportH, css)
-				span := cssGridSpan(childCSS["grid-column"])
-				if span < 1 {
-					span = 1
-				}
-				if span > len(colTracks) {
-					span = len(colTracks)
-				}
-				if colIndex+span > len(colTracks) {
-					rowIndex++
-					colIndex = 0
-				}
-				if rowIndex > 0 && rowIndex > len(rowTracks)-1 {
-					if autoRows {
-						rowTracks = append(rowTracks, 0)
-					} else {
-						rowTracks = append(rowTracks, max(48, contentHeight/max(1, (len(node.Children)+len(colTracks)-1)/len(colTracks))))
-					}
-				}
-				childX := colStarts[colIndex]
-				childW := 0
-				for ci := 0; ci < span && colIndex+ci < len(colTracks); ci++ {
-					childW += colTracks[colIndex+ci]
-					if ci < span-1 {
-						childW += gridColGap
-					}
-				}
-				childH := rowTracks[rowIndex]
-				if autoRows {
-					if intrinsicH > 0 {
-						childH = max(childH, intrinsicH)
-					}
-					if childH <= 0 {
-						childH = 48
-					}
-					rowTracks[rowIndex] = childH
-				} else if childH <= 0 {
-					childH = intrinsicH
-				}
-				if childW <= 0 {
-					childW = intrinsicW
-				}
-				childY := rowCursor
-				for ri := 0; ri < rowIndex; ri++ {
-					childY += rowTracks[ri] + gridRowGap
-				}
-				slotW := childW
-				slotH := childH
-				itemJustify := strings.ToLower(strings.TrimSpace(childCSS["justify-self"]))
-				if itemJustify == "" || itemJustify == "auto" {
-					itemJustify = itemJustifyDefault
-				}
-				itemAlign := strings.ToLower(strings.TrimSpace(childCSS["align-self"]))
-				if itemAlign == "" || itemAlign == "auto" {
-					itemAlign = align
-				}
-				renderW := slotW
-				renderH := slotH
-				explicitW := nodeLayoutLength(child, childCSS, "width", "width", slotW, viewportW, viewportH, -1)
-				explicitH := nodeLayoutLength(child, childCSS, "height", "height", slotH, viewportW, viewportH, -1)
-				if itemJustify != "stretch" && intrinsicW > 0 {
-					renderW = min(slotW, intrinsicW)
-				}
-				if itemAlign != "stretch" && intrinsicH > 0 {
-					renderH = min(slotH, intrinsicH)
-				}
-				if itemJustify == "stretch" && explicitW > 0 && explicitW < slotW {
-					renderW = explicitW
-				}
-				if itemAlign == "stretch" && explicitH > 0 && explicitH < slotH {
-					renderH = explicitH
-				}
-				renderX := childX
-				renderY := childY
-				if itemJustify == "center" {
-					renderX += max(0, (slotW-renderW)/2)
-				} else if itemJustify == "right" || itemJustify == "end" {
-					renderX += max(0, slotW-renderW)
-				} else if itemJustify == "stretch" && renderW < slotW {
-					renderX += max(0, (slotW-renderW)/2)
-				}
-				if itemAlign == "center" {
-					renderY += max(0, (slotH-renderH)/2)
-				} else if itemAlign == "end" || itemAlign == "bottom" {
-					renderY += max(0, slotH-renderH)
-				} else if itemAlign == "stretch" && renderH < slotH {
-					renderY += max(0, (slotH-renderH)/2)
-				}
-				children = append(children, layoutNodeToNativeWithBox(child, renderX, renderY, renderW, renderH, viewportW, viewportH, ss, css))
-				colIndex += span
-				if colIndex >= len(colTracks) {
-					rowIndex++
-					colIndex = 0
-				}
-			}
-			props := make(map[string]any, len(node.Props))
-			for key, candidate := range node.Props {
-				props[key] = uiValueToNative(candidate)
-			}
-			return map[string]any{
-				"kind":     node.Kind,
-				"props":    props,
-				"layout":   map[string]any{"x": x, "y": y, "width": width, "height": height},
-				"children": children,
-			}
-		}
-
-		mainSize := contentHeight
-		crossSize := contentWidth
-		mainGap := rowGap
-		crossGap := columnGap
-		if direction == "row" {
-			mainSize = contentWidth
-			crossSize = contentHeight
-			mainGap = columnGap
-			crossGap = rowGap
-		}
-
-		mainLens := make([]int, len(node.Children))
-		crossLens := make([]int, len(node.Children))
-		mainMarginBefore := make([]int, len(node.Children))
-		mainMarginAfter := make([]int, len(node.Children))
-		crossMarginBefore := make([]int, len(node.Children))
-		crossMarginAfter := make([]int, len(node.Children))
-		fixedMain := 0
-		totalFlex := 0.0
-		for i, child := range node.Children {
-			childCSS := resolveNodeStyle(child, ss, viewportW)
-			childCSS = mergeInheritedTextCSS(childCSS, css)
-			if strings.EqualFold(strings.TrimSpace(childCSS["display"]), "none") {
-				continue
-			}
-			intrinsicW, intrinsicH := intrinsicNodeSizeWithInherited(child, ss, viewportW, viewportH, css)
-			itemAlignPref := strings.ToLower(strings.TrimSpace(childCSS["align-self"]))
-			if itemAlignPref == "" || itemAlignPref == "auto" {
-				itemAlignPref = align
-			}
-			if direction == "row" {
-				mainMarginBefore[i] = nodeLayoutLength(child, childCSS, "marginLeft", "margin-left", mainSize, viewportW, viewportH, 0)
-				mainMarginAfter[i] = nodeLayoutLength(child, childCSS, "marginRight", "margin-right", mainSize, viewportW, viewportH, 0)
-				crossMarginBefore[i] = nodeLayoutLength(child, childCSS, "marginTop", "margin-top", crossSize, viewportW, viewportH, 0)
-				crossMarginAfter[i] = nodeLayoutLength(child, childCSS, "marginBottom", "margin-bottom", crossSize, viewportW, viewportH, 0)
-			} else {
-				mainMarginBefore[i] = nodeLayoutLength(child, childCSS, "marginTop", "margin-top", mainSize, viewportW, viewportH, 0)
-				mainMarginAfter[i] = nodeLayoutLength(child, childCSS, "marginBottom", "margin-bottom", mainSize, viewportW, viewportH, 0)
-				crossMarginBefore[i] = nodeLayoutLength(child, childCSS, "marginLeft", "margin-left", crossSize, viewportW, viewportH, 0)
-				crossMarginAfter[i] = nodeLayoutLength(child, childCSS, "marginRight", "margin-right", crossSize, viewportW, viewportH, 0)
-			}
-			flex := nodeLayoutFloat(child, childCSS, "flex", "flex", 0)
-			totalFlex += flex
-			if direction == "row" {
-				cw := nodeLayoutLength(child, childCSS, "width", "width", mainSize, viewportW, viewportH, -1)
-				hasExplicitMain := cw >= 0
-				if cw < 0 && flex <= 0 {
-					cw = intrinsicW
-				}
-				if cw >= 0 && (hasExplicitMain || flex <= 0) {
-					minW := nodeLayoutLength(child, childCSS, "minWidth", "min-width", mainSize, viewportW, viewportH, -1)
-					maxW := nodeLayoutLength(child, childCSS, "maxWidth", "max-width", mainSize, viewportW, viewportH, -1)
-					if minW >= 0 && cw < minW {
-						cw = minW
-					}
-					if maxW >= 0 && cw > maxW {
-						cw = maxW
-					}
-					mainLens[i] = cw
-					fixedMain += cw + mainMarginBefore[i] + mainMarginAfter[i]
-				}
-				ch := nodeLayoutLength(child, childCSS, "height", "height", crossSize, viewportW, viewportH, -1)
-				if ch < 0 && itemAlignPref != "stretch" {
-					ch = intrinsicH
-				}
-				if ch >= 0 {
-					minH := nodeLayoutLength(child, childCSS, "minHeight", "min-height", crossSize, viewportW, viewportH, -1)
-					maxH := nodeLayoutLength(child, childCSS, "maxHeight", "max-height", crossSize, viewportW, viewportH, -1)
-					if minH >= 0 && ch < minH {
-						ch = minH
-					}
-					if maxH >= 0 && ch > maxH {
-						ch = maxH
-					}
-					crossLens[i] = ch
-				}
-			} else {
-				ch := nodeLayoutLength(child, childCSS, "height", "height", mainSize, viewportW, viewportH, -1)
-				hasExplicitMain := ch >= 0
-				if ch < 0 && flex <= 0 {
-					ch = intrinsicH
-				}
-				if ch >= 0 && (hasExplicitMain || flex <= 0) {
-					minH := nodeLayoutLength(child, childCSS, "minHeight", "min-height", mainSize, viewportW, viewportH, -1)
-					maxH := nodeLayoutLength(child, childCSS, "maxHeight", "max-height", mainSize, viewportW, viewportH, -1)
-					if minH >= 0 && ch < minH {
-						ch = minH
-					}
-					if maxH >= 0 && ch > maxH {
-						ch = maxH
-					}
-					mainLens[i] = ch
-					fixedMain += ch + mainMarginBefore[i] + mainMarginAfter[i]
-				}
-				cw := nodeLayoutLength(child, childCSS, "width", "width", crossSize, viewportW, viewportH, -1)
-				if cw < 0 && itemAlignPref != "stretch" {
-					cw = intrinsicW
-				}
-				if cw >= 0 {
-					minW := nodeLayoutLength(child, childCSS, "minWidth", "min-width", crossSize, viewportW, viewportH, -1)
-					maxW := nodeLayoutLength(child, childCSS, "maxWidth", "max-width", crossSize, viewportW, viewportH, -1)
-					if minW >= 0 && cw < minW {
-						cw = minW
-					}
-					if maxW >= 0 && cw > maxW {
-						cw = maxW
-					}
-					crossLens[i] = cw
-				}
-			}
-		}
-
-		remaining := mainSize - fixedMain - (max(0, len(node.Children)-1) * mainGap)
-		if remaining < 0 {
-			remaining = 0
-		}
-		if totalFlex > 0 {
-			for i, child := range node.Children {
-				if mainLens[i] > 0 {
-					continue
-				}
-				childCSS := resolveNodeStyle(child, ss, viewportW)
-				flex := nodeLayoutFloat(child, childCSS, "flex", "flex", 0)
-				if flex > 0 {
-					mainLens[i] = int((float64(remaining) * flex) / totalFlex)
-				}
-			}
-		}
-
-		totalMainUsed := 0
-		for i, size := range mainLens {
-			totalMainUsed += size + mainMarginBefore[i] + mainMarginAfter[i]
-		}
-		totalMainUsed += max(0, len(node.Children)-1) * mainGap
-		extra := mainSize - totalMainUsed
-		if extra < 0 {
-			extra = 0
-		}
-
-		cursor := 0
-		crossLineOffset := 0
-		lineCrossMax := 0
-		effectiveGap := mainGap
-		wrap := strings.EqualFold(strings.TrimSpace(css["flex-wrap"]), "wrap")
-		if justify == "center" {
-			cursor = extra / 2
-		} else if justify == "end" {
-			cursor = extra
-		} else if justify == "space-between" && len(node.Children) > 1 {
-			effectiveGap = mainGap + (extra / (len(node.Children) - 1))
-		} else if justify == "space-around" && len(node.Children) > 0 {
-			effectiveGap = mainGap + (extra / len(node.Children))
-			cursor = effectiveGap / 2
-		}
-
-		for i, child := range node.Children {
-			childCSS := resolveNodeStyle(child, ss, viewportW)
-			childCSS = mergeInheritedTextCSS(childCSS, css)
-			if strings.EqualFold(strings.TrimSpace(childCSS["display"]), "none") {
-				continue
-			}
-			intrinsicW, intrinsicH := intrinsicNodeSizeWithInherited(child, ss, viewportW, viewportH, css)
-			aspectRatio, hasAspectRatio := parseAspectRatio(childCSS)
-			hasExplicitWidth := strings.TrimSpace(childCSS["width"]) != ""
-			hasExplicitHeight := strings.TrimSpace(childCSS["height"]) != ""
-			mainLen := mainLens[i]
-			if mainLen <= 0 {
-				if direction == "row" {
-					mainLen = max(120, intrinsicW)
-				} else {
-					mainLen = max(32, intrinsicH)
-				}
-			}
-			if direction == "row" {
-				minW := nodeLayoutLength(child, childCSS, "minWidth", "min-width", mainSize, viewportW, viewportH, -1)
-				maxW := nodeLayoutLength(child, childCSS, "maxWidth", "max-width", mainSize, viewportW, viewportH, -1)
-				if minW >= 0 && mainLen < minW {
-					mainLen = minW
-				}
-				if maxW >= 0 && mainLen > maxW {
-					mainLen = maxW
-				}
-			} else {
-				minH := nodeLayoutLength(child, childCSS, "minHeight", "min-height", mainSize, viewportW, viewportH, -1)
-				maxH := nodeLayoutLength(child, childCSS, "maxHeight", "max-height", mainSize, viewportW, viewportH, -1)
-				if minH >= 0 && mainLen < minH {
-					mainLen = minH
-				}
-				if maxH >= 0 && mainLen > maxH {
-					mainLen = maxH
-				}
-			}
-			crossLen := crossLens[i]
-			if crossLen <= 0 {
-				if align == "stretch" {
-					crossLen = crossSize
-				} else if direction == "column" {
-					crossLen = min(crossSize, max(intrinsicW, 32))
-				} else {
-					crossLen = max(intrinsicH, min(140, crossSize))
-				}
-			}
-			if direction == "row" {
-				minH := nodeLayoutLength(child, childCSS, "minHeight", "min-height", crossSize, viewportW, viewportH, -1)
-				maxH := nodeLayoutLength(child, childCSS, "maxHeight", "max-height", crossSize, viewportW, viewportH, -1)
-				if minH >= 0 && crossLen < minH {
-					crossLen = minH
-				}
-				if maxH >= 0 && crossLen > maxH {
-					crossLen = maxH
-				}
-			} else {
-				minW := nodeLayoutLength(child, childCSS, "minWidth", "min-width", crossSize, viewportW, viewportH, -1)
-				maxW := nodeLayoutLength(child, childCSS, "maxWidth", "max-width", crossSize, viewportW, viewportH, -1)
-				if minW >= 0 && crossLen < minW {
-					crossLen = minW
-				}
-				if maxW >= 0 && crossLen > maxW {
-					crossLen = maxW
-				}
-			}
-			itemAlign := strings.ToLower(strings.TrimSpace(childCSS["align-self"]))
-			if itemAlign == "" || itemAlign == "auto" {
-				itemAlign = align
-			}
-			if hasAspectRatio && aspectRatio > 0.001 {
-				if direction == "row" {
-					if !hasExplicitHeight && itemAlign != "stretch" {
-						crossLen = max(1, int(float64(mainLen)/aspectRatio))
-					}
-				} else {
-					if !hasExplicitWidth && itemAlign != "stretch" {
-						crossLen = max(1, int(float64(mainLen)*aspectRatio))
-					}
-				}
-			}
-			crossLen = max(1, crossLen-crossMarginBefore[i]-crossMarginAfter[i])
-			crossPos := 0
-			if itemAlign == "center" {
-				crossPos = (crossSize - crossLen) / 2
-			} else if itemAlign == "end" || itemAlign == "bottom" {
-				crossPos = crossSize - crossLen
-			}
-			if crossPos < 0 {
-				crossPos = 0
-			}
-
-			childX := x + paddingLeft
-			childY := y + paddingTop
-			childW := crossLen
-			childH := mainLen
-			if wrap && direction == "row" && cursor+mainMarginBefore[i]+mainLen+mainMarginAfter[i] > mainSize && cursor > 0 {
-				cursor = 0
-				crossLineOffset += lineCrossMax + crossGap
-				lineCrossMax = 0
-			}
-			if wrap && direction == "column" && cursor+mainMarginBefore[i]+mainLen+mainMarginAfter[i] > mainSize && cursor > 0 {
-				cursor = 0
-				crossLineOffset += lineCrossMax + crossGap
-				lineCrossMax = 0
-			}
-			if direction == "row" {
-				childX += cursor + mainMarginBefore[i]
-				childY += crossPos + crossMarginBefore[i] + crossLineOffset
-				childW = mainLen
-				childH = crossLen
-			} else {
-				childX += crossPos + crossMarginBefore[i] + crossLineOffset
-				childY += cursor + mainMarginBefore[i]
-				childW = crossLen
-				childH = mainLen
-			}
-			children = append(children, layoutNodeToNativeWithBox(child, childX, childY, childW, childH, viewportW, viewportH, ss, css))
-			if direction == "row" {
-				lineCrossMax = max(lineCrossMax, childH+crossMarginBefore[i]+crossMarginAfter[i])
-			} else {
-				lineCrossMax = max(lineCrossMax, childW+crossMarginBefore[i]+crossMarginAfter[i])
-			}
-			cursor += mainMarginBefore[i] + mainLen + mainMarginAfter[i] + effectiveGap
-		}
-	}
-
-	props := make(map[string]any, len(node.Props))
-	for key, candidate := range node.Props {
-		props[key] = uiValueToNative(candidate)
-	}
-	return map[string]any{
-		"kind":  node.Kind,
-		"props": props,
-		"layout": map[string]any{
-			"x":      x,
-			"y":      y,
-			"width":  width,
-			"height": height,
-		},
-		"children": children,
-	}
+	return giocss.LayoutNodeToNative(toGiocssNode(node), width, height, ss)
 }
 
 func (app *uiApp) post(callback value.Value, payload value.Value, priority int) (int64, error) {
@@ -1188,22 +465,6 @@ func newUINode(kind string) *uiNode {
 	return &uiNode{Kind: kind, Props: make(map[string]value.Value), Children: make([]*uiNode, 0, 4)}
 }
 
-func nodeToNative(node *uiNode) map[string]any {
-	children := make([]any, 0, len(node.Children))
-	for _, child := range node.Children {
-		children = append(children, nodeToNative(child))
-	}
-	props := make(map[string]any, len(node.Props))
-	for key, candidate := range node.Props {
-		props[key] = uiValueToNative(candidate)
-	}
-	return map[string]any{
-		"kind":     node.Kind,
-		"props":    props,
-		"children": children,
-	}
-}
-
 func uiValueToNative(candidate value.Value) any {
 	switch candidate.Kind {
 	case value.Nil:
@@ -1234,6 +495,33 @@ func uiValueToNative(candidate value.Value) any {
 		}
 	}
 	return candidate.String()
+}
+
+func resolveNodeStyle(node *uiNode, ss *styleSheet, viewportW int) map[string]string {
+	if node == nil {
+		return map[string]string{}
+	}
+	if ss == nil {
+		return giocss.ResolveNodeStyle(toGiocssNode(node), nil, viewportW)
+	}
+	return giocss.ResolveNodeStyle(toGiocssNode(node), ss, viewportW)
+}
+
+func toGiocssNode(node *uiNode) *giocss.Node {
+	if node == nil {
+		return nil
+	}
+	gNode := giocss.NewNode(node.Kind)
+	for key, candidate := range node.Props {
+		gNode.SetProp(key, uiValueToNative(candidate))
+	}
+	for _, child := range node.Children {
+		gChild := toGiocssNode(child)
+		if gChild != nil {
+			gNode.AddChild(gChild)
+		}
+	}
+	return gNode
 }
 
 func anyToMap(candidate any) map[string]any {
@@ -1389,6 +677,124 @@ func dispatchWindowEvent(window *uiWindow, eventName string, payload value.Value
 	return nil
 }
 
+func valueMapToNativeMap(mapped *value.Map) map[string]any {
+	if mapped == nil {
+		return map[string]any{}
+	}
+	result := make(map[string]any, len(mapped.Entries))
+	for key, entry := range mapped.Entries {
+		result[key] = uiValueToNative(entry)
+	}
+	return result
+}
+
+func ensureWindowRuntime(window *uiWindow) (*giocss.WindowRuntime, error) {
+	if window == nil {
+		return nil, fmt.Errorf("window is nil")
+	}
+	if existing := window.nativeRuntime(); existing != nil {
+		return existing, nil
+	}
+
+	window.mu.Lock()
+	if window.gioRuntime != nil {
+		runtime := window.gioRuntime
+		window.mu.Unlock()
+		return runtime, nil
+	}
+	window.mu.Unlock()
+
+	hooks := giocss.WindowRuntimeHooks{
+		Snapshot: func(size image.Point) giocss.WindowRuntimeSnapshot {
+			ss := giocss.NewStyleSheet()
+			if window.app != nil && window.app.stylesheet != nil {
+				ss = window.app.stylesheet
+			}
+			window.mu.Lock()
+			root := window.Root
+			windowW := window.Width
+			windowH := window.Height
+			window.mu.Unlock()
+			if windowW <= 0 {
+				windowW = size.X
+			}
+			if windowH <= 0 {
+				windowH = size.Y
+			}
+			if root == nil {
+				return giocss.WindowRuntimeSnapshot{
+					StyleSheet:   ss,
+					ScreenWidth:  windowW,
+					ScreenHeight: windowH,
+				}
+			}
+			layout := layoutNodeToNative(root, windowW, windowH, ss)
+			style := resolveNodeStyle(root, ss, windowW)
+			return giocss.WindowRuntimeSnapshot{
+				RootLayout:   layout,
+				RootCSS:      style,
+				StyleSheet:   ss,
+				ScreenWidth:  windowW,
+				ScreenHeight: windowH,
+			}
+		},
+		DispatchEvent: func(eventName string, payload map[string]any) error {
+			return dispatchWindowEvent(window, eventName, nativeToValue(payload))
+		},
+		EmitRuntimeError: func(err error) {
+			_ = dispatchWindowEvent(window, "error", value.StringValue(err.Error()))
+		},
+		OnClose: func() {
+			window.mu.Lock()
+			window.gioRuntime = nil
+			window.mu.Unlock()
+		},
+	}
+
+	title := strings.TrimSpace(window.Title)
+	if title == "" {
+		title = "Polyloft UI"
+	}
+	width := window.Width
+	height := window.Height
+	if width <= 0 {
+		width = 1024
+	}
+	if height <= 0 {
+		height = 768
+	}
+
+	runtime := giocss.NewWindowRuntime(giocss.WindowOptions{Title: title, Width: width, Height: height}, hooks)
+	window.mu.Lock()
+	if window.gioRuntime == nil {
+		window.gioRuntime = runtime
+		window.mu.Unlock()
+		window.applyDebugConfig()
+		return runtime, nil
+	}
+	existing := window.gioRuntime
+	window.mu.Unlock()
+	return existing, nil
+}
+
+func rerenderWindowRuntime(window *uiWindow) error {
+	runtime, err := ensureWindowRuntime(window)
+	if err != nil {
+		return err
+	}
+	runtime.Invalidate()
+	return nil
+}
+
+func openWindowRuntime(window *uiWindow) error {
+	runtime, err := ensureWindowRuntime(window)
+	if err != nil {
+		return err
+	}
+	runtime.Run()
+	return nil
+}
+
 func BuildUiModule() *RuntimeModule {
 	builder := NewModuleBuilder("Ui")
 
@@ -1405,7 +811,18 @@ func BuildUiModule() *RuntimeModule {
 		if !ok {
 			return value.NilValue(), fmt.Errorf("app_set_permission expects app handle")
 		}
-		return value.BoolValue(app.setPermission(args[1].String(), args[2].Bool)), nil
+		name := strings.TrimSpace(args[1].String())
+		if name == "" {
+			return value.BoolValue(false), nil
+		}
+		app.mu.Lock()
+		if _, exists := app.permissions[name]; !exists {
+			app.mu.Unlock()
+			return value.BoolValue(false), nil
+		}
+		app.permissions[name] = args[2].Bool
+		app.mu.Unlock()
+		return value.BoolValue(true), nil
 	})
 
 	builder.AddTypedFunction("app_has_permission", []string{TypeAny, TypeString}, TypeBool, false, func(args []value.Value) (value.Value, error) {
@@ -1447,9 +864,13 @@ func BuildUiModule() *RuntimeModule {
 		if !ok {
 			return value.NilValue(), fmt.Errorf("app_set_icon expects app handle")
 		}
-		if err := app.setIcon(args[1].String()); err != nil {
-			return value.NilValue(), err
+		path := strings.TrimSpace(args[1].String())
+		if path == "" {
+			return value.NilValue(), fmt.Errorf("icon path is empty")
 		}
+		app.mu.Lock()
+		app.defaultIcon = path
+		app.mu.Unlock()
 		return value.BoolValue(true), nil
 	})
 
@@ -1458,9 +879,9 @@ func BuildUiModule() *RuntimeModule {
 		if !ok {
 			return value.NilValue(), fmt.Errorf("app_load_font expects app handle")
 		}
-		if err := app.loadFont(args[1].String()); err != nil {
-			return value.NilValue(), err
-		}
+		app.mu.Lock()
+		app.fontPath = strings.TrimSpace(args[1].String())
+		app.mu.Unlock()
 		return value.BoolValue(true), nil
 	})
 
@@ -1680,16 +1101,12 @@ func BuildUiModule() *RuntimeModule {
 			title = app.defaultName
 		}
 		window := &uiWindow{
-			Title:           title,
-			Width:           int(args[2].Num),
-			Height:          int(args[3].Num),
-			Callbacks:       make(map[string]value.Value),
-			debugProfile:    make(map[string]bool),
-			hoverState:      make(map[string]bool),
-			activeState:     make(map[string]bool),
-			renderState:     make(map[string]uiRenderState),
-			nextRenderState: make(map[string]uiRenderState),
-			app:             app,
+			Title:        title,
+			Width:        int(args[2].Num),
+			Height:       int(args[3].Num),
+			Callbacks:    make(map[string]value.Value),
+			debugProfile: make(map[string]bool),
+			app:          app,
 		}
 		app.mu.Lock()
 		app.windows = append(app.windows, window)
@@ -1707,11 +1124,8 @@ func BuildUiModule() *RuntimeModule {
 			return value.BoolValue(false), nil
 		}
 		window.Title = title
-		window.mu.Lock()
-		gw2 := window.gioWin
-		window.mu.Unlock()
-		if gw2 != nil {
-			gw2.Option(gioapp.Title(title))
+		if gr := window.nativeRuntime(); gr != nil {
+			gr.SetTitle(title)
 		}
 		return value.BoolValue(true), nil
 	})
@@ -1726,9 +1140,9 @@ func BuildUiModule() *RuntimeModule {
 			return value.BoolValue(false), nil
 		}
 		if window.app != nil {
-			if err := window.app.setIcon(path); err != nil {
-				return value.NilValue(), err
-			}
+			window.app.mu.Lock()
+			window.app.defaultIcon = path
+			window.app.mu.Unlock()
 			return value.BoolValue(true), nil
 		}
 		return value.BoolValue(true), nil
@@ -1744,7 +1158,7 @@ func BuildUiModule() *RuntimeModule {
 			return value.NilValue(), fmt.Errorf("window_set_root expects node handle")
 		}
 		window.Root = node
-		if err := rerenderGioWindow(window); err != nil {
+		if err := rerenderWindowRuntime(window); err != nil {
 			return value.NilValue(), err
 		}
 		return value.NilValue(), nil
@@ -1826,7 +1240,7 @@ func BuildUiModule() *RuntimeModule {
 		window.lastFx = transitions
 		window.lastTree = cloneUINode(window.Root)
 		window.Root = node
-		if err := rerenderGioWindow(window); err != nil {
+		if err := rerenderWindowRuntime(window); err != nil {
 			return value.NilValue(), err
 		}
 		result := map[string]value.Value{
@@ -1905,9 +1319,7 @@ func BuildUiModule() *RuntimeModule {
 		}
 		// Gio backend
 		app.runOnUIThread(0)
-		app.mu.Lock()
-		windows := append([]*uiWindow(nil), app.windows...)
-		app.mu.Unlock()
+		windows := app.snapshotWindows()
 		var wg sync.WaitGroup
 		for _, window := range windows {
 			if !window.Visible {
@@ -1916,7 +1328,9 @@ func BuildUiModule() *RuntimeModule {
 			wg.Add(1)
 			go func(win *uiWindow) {
 				defer wg.Done()
-				openGioWindow(win)
+				if err := openWindowRuntime(win); err != nil {
+					_ = dispatchWindowEvent(win, "error", value.StringValue(err.Error()))
+				}
 			}(window)
 		}
 		wg.Wait()
@@ -1926,7 +1340,7 @@ func BuildUiModule() *RuntimeModule {
 	// â”€â”€â”€ StyleSheet natives â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 	builder.AddTypedFunction("stylesheet_new", []string{}, TypeAny, false, func(args []value.Value) (value.Value, error) {
-		return value.ObjectValue(newStyleSheet()), nil
+		return value.ObjectValue(giocss.NewStyleSheet()), nil
 	})
 
 	builder.AddTypedFunction("stylesheet_parse", []string{TypeAny, TypeString}, TypeInt, false, func(args []value.Value) (value.Value, error) {
@@ -1934,7 +1348,7 @@ func BuildUiModule() *RuntimeModule {
 		if !ok {
 			return value.NilValue(), fmt.Errorf("stylesheet_parse expects stylesheet handle")
 		}
-		n := ss.parseCSSText(args[1].String())
+		n := ss.ParseCSSText(args[1].String())
 		return value.IntValue(int64(n)), nil
 	})
 
@@ -1943,7 +1357,7 @@ func BuildUiModule() *RuntimeModule {
 		if !ok {
 			return value.NilValue(), fmt.Errorf("stylesheet_load_file expects stylesheet handle")
 		}
-		n, err := ss.loadFile(args[1].String())
+		n, err := ss.LoadFile(args[1].String())
 		if err != nil {
 			return value.NilValue(), err
 		}
@@ -1955,7 +1369,7 @@ func BuildUiModule() *RuntimeModule {
 		if !ok {
 			return value.NilValue(), fmt.Errorf("stylesheet_set expects stylesheet handle")
 		}
-		ss.setRule(args[1].String(), args[2].String(), args[3].String())
+		ss.SetRule(args[1].String(), args[2].String(), args[3].String())
 		return value.NilValue(), nil
 	})
 
@@ -1964,7 +1378,7 @@ func BuildUiModule() *RuntimeModule {
 		if !ok {
 			return value.NilValue(), fmt.Errorf("stylesheet_get expects stylesheet handle")
 		}
-		v, _ := ss.getRule(args[1].String(), args[2].String())
+		v, _ := ss.GetRule(args[1].String(), args[2].String())
 		return value.StringValue(v), nil
 	})
 
@@ -1979,10 +1393,9 @@ func BuildUiModule() *RuntimeModule {
 		}
 		app.mu.Lock()
 		app.stylesheet = ss
-		windows := append([]*uiWindow(nil), app.windows...)
 		app.mu.Unlock()
-		for _, win := range windows {
-			_ = rerenderGioWindow(win)
+		for _, win := range app.snapshotWindows() {
+			_ = rerenderWindowRuntime(win)
 		}
 		return value.NilValue(), nil
 	})
@@ -1994,19 +1407,7 @@ func BuildUiModule() *RuntimeModule {
 		if !ok {
 			return value.NilValue(), fmt.Errorf("app_quit expects app handle")
 		}
-		app.mu.Lock()
-		windows := append([]*uiWindow(nil), app.windows...)
-		app.mu.Unlock()
-		for _, win := range windows {
-			if win != nil {
-				win.mu.Lock()
-				gw := win.gioWin
-				win.mu.Unlock()
-				if gw != nil {
-					gw.Perform(system.ActionClose)
-				}
-			}
-		}
+		app.quit()
 		return value.NilValue(), nil
 	})
 
@@ -2016,12 +1417,7 @@ func BuildUiModule() *RuntimeModule {
 			return value.NilValue(), fmt.Errorf("window_close expects window handle")
 		}
 		window.Visible = false
-		window.mu.Lock()
-		gw := window.gioWin
-		window.mu.Unlock()
-		if gw != nil {
-			gw.Perform(system.ActionClose)
-		}
+		window.closeNativeWindow()
 		return value.BoolValue(true), nil
 	})
 
@@ -2050,7 +1446,7 @@ func BuildUiModule() *RuntimeModule {
 				window.mu.Unlock()
 				return value.NilValue(), fmt.Errorf("window_debug expects bool or map<string, any>")
 			}
-			profile, profilerPath := parseWindowDebugProfile(flagsMap)
+			profile, profilerPath := giocss.ParseDebugProfileConfig(valueMapToNativeMap(flagsMap))
 			window.debugProfile = profile
 			window.debugProfilerPath = profilerPath
 		default:
@@ -2058,7 +1454,8 @@ func BuildUiModule() *RuntimeModule {
 			return value.NilValue(), fmt.Errorf("window_debug expects bool or map<string, any>")
 		}
 		window.mu.Unlock()
-		if err := rerenderGioWindow(window); err != nil {
+		window.applyDebugConfig()
+		if err := rerenderWindowRuntime(window); err != nil {
 			return value.NilValue(), err
 		}
 		return value.BoolValue(true), nil
@@ -2073,13 +1470,14 @@ func BuildUiModule() *RuntimeModule {
 		if !ok || flagsMap == nil {
 			return value.NilValue(), fmt.Errorf("window_debug_profile expects map<string, any>")
 		}
-		profile, profilerPath := parseWindowDebugProfile(flagsMap)
+		profile, profilerPath := giocss.ParseDebugProfileConfig(valueMapToNativeMap(flagsMap))
 
 		window.mu.Lock()
 		window.debugProfile = profile
 		window.debugProfilerPath = profilerPath
 		window.mu.Unlock()
-		if err := rerenderGioWindow(window); err != nil {
+		window.applyDebugConfig()
+		if err := rerenderWindowRuntime(window); err != nil {
 			return value.NilValue(), err
 		}
 		return value.BoolValue(true), nil
