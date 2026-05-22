@@ -1,0 +1,18 @@
+class ObjectBox:
+    value: number
+    ObjectBox(v: number):
+        this.value = v
+    end
+end
+
+let started = Sys.time()
+let total = 0
+for i in range(0, 100000):
+    let temp = new ObjectBox(i)
+    total = total + temp.value
+end
+let ended = Sys.time()
+
+println("polyloft-bvm object instantiation benchmark")
+println("checksum=" + total)
+println("elapsed_ms=" + (ended - started))

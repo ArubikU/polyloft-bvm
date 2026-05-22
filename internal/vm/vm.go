@@ -328,15 +328,19 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 		case bytecode.OpAdd:
 			right := vm.pop()
 			left := vm.pop()
+			if left.Kind == value.Number && right.Kind == value.Number {
+				if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
+					vm.push(value.IntValue(int64(left.Num) + int64(right.Num)))
+					continue
+				}
+				vm.push(value.FloatValue(left.Num + right.Num))
+				continue
+			}
 			if leftNum, ok := vm.numericOperand(left); ok {
 				if rightNum, ok := vm.numericOperand(right); ok {
 					vm.push(vm.numericResult(left, right, bytecode.OpAdd, leftNum+rightNum))
 					continue
 				}
-			}
-			if left.Kind == value.Number && right.Kind == value.Number {
-				vm.push(vm.numericResult(left, right, bytecode.OpAdd, left.Num+right.Num))
-				continue
 			}
 			// string/char concatenation
 			if leftText, ok := textualOperand(left); ok {
@@ -375,10 +379,34 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 			return value.NilValue(), fmt.Errorf("ADD expects numbers or strings")
 		case bytecode.OpSub:
+			right := vm.pop()
+			left := vm.pop()
+			if left.Kind == value.Number && right.Kind == value.Number {
+				if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
+					vm.push(value.IntValue(int64(left.Num) - int64(right.Num)))
+					continue
+				}
+				vm.push(value.FloatValue(left.Num - right.Num))
+				continue
+			}
+			vm.push(left)
+			vm.push(right)
 			if err := vm.binaryNumberOp(bytecode.OpSub, func(a, b float64) float64 { return a - b }); err != nil {
 				return value.NilValue(), err
 			}
 		case bytecode.OpMul:
+			right := vm.pop()
+			left := vm.pop()
+			if left.Kind == value.Number && right.Kind == value.Number {
+				if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
+					vm.push(value.IntValue(int64(left.Num) * int64(right.Num)))
+					continue
+				}
+				vm.push(value.FloatValue(left.Num * right.Num))
+				continue
+			}
+			vm.push(left)
+			vm.push(right)
 			if err := vm.binaryNumberOp(bytecode.OpMul, func(a, b float64) float64 { return a * b }); err != nil {
 				return value.NilValue(), err
 			}
@@ -387,6 +415,17 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				return value.NilValue(), err
 			}
 		case bytecode.OpDiv:
+			right := vm.pop()
+			left := vm.pop()
+			if left.Kind == value.Number && right.Kind == value.Number {
+				if right.Num == 0 {
+					return value.NilValue(), fmt.Errorf("division by zero")
+				}
+				vm.push(value.FloatValue(left.Num / right.Num))
+				continue
+			}
+			vm.push(left)
+			vm.push(right)
 			if err := vm.binaryNumberOp(bytecode.OpDiv, func(a, b float64) float64 { return a / b }); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
@@ -480,14 +519,50 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			offset := vm.readUint16(frame)
 			frame.ip -= int(offset)
 		case bytecode.OpAddNum:
+			right := vm.pop()
+			left := vm.pop()
+			if left.Kind == value.Number && right.Kind == value.Number {
+				if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
+					vm.push(value.IntValue(int64(left.Num) + int64(right.Num)))
+					continue
+				}
+				vm.push(value.FloatValue(left.Num + right.Num))
+				continue
+			}
+			vm.push(left)
+			vm.push(right)
 			if err := vm.binaryNumberOp(bytecode.OpAddNum, func(a, b float64) float64 { return a + b }); err != nil {
 				return value.NilValue(), err
 			}
 		case bytecode.OpSubNum:
+			right := vm.pop()
+			left := vm.pop()
+			if left.Kind == value.Number && right.Kind == value.Number {
+				if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
+					vm.push(value.IntValue(int64(left.Num) - int64(right.Num)))
+					continue
+				}
+				vm.push(value.FloatValue(left.Num - right.Num))
+				continue
+			}
+			vm.push(left)
+			vm.push(right)
 			if err := vm.binaryNumberOp(bytecode.OpSubNum, func(a, b float64) float64 { return a - b }); err != nil {
 				return value.NilValue(), err
 			}
 		case bytecode.OpMulNum:
+			right := vm.pop()
+			left := vm.pop()
+			if left.Kind == value.Number && right.Kind == value.Number {
+				if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
+					vm.push(value.IntValue(int64(left.Num) * int64(right.Num)))
+					continue
+				}
+				vm.push(value.FloatValue(left.Num * right.Num))
+				continue
+			}
+			vm.push(left)
+			vm.push(right)
 			if err := vm.binaryNumberOp(bytecode.OpMulNum, func(a, b float64) float64 { return a * b }); err != nil {
 				return value.NilValue(), err
 			}
@@ -496,6 +571,17 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				return value.NilValue(), err
 			}
 		case bytecode.OpDivNum:
+			right := vm.pop()
+			left := vm.pop()
+			if left.Kind == value.Number && right.Kind == value.Number {
+				if right.Num == 0 {
+					return value.NilValue(), fmt.Errorf("division by zero")
+				}
+				vm.push(value.FloatValue(left.Num / right.Num))
+				continue
+			}
+			vm.push(left)
+			vm.push(right)
 			if err := vm.binaryNumberOp(bytecode.OpDivNum, func(a, b float64) float64 { return a / b }); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
@@ -765,49 +851,31 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 		case bytecode.OpGetField:
 			slot := int(vm.readByte(frame))
 			object := vm.pop()
-			instance, ok := object.AsInstance()
-			if !ok {
-				return value.NilValue(), fmt.Errorf("GET_FIELD expects instance")
+			if instance, ok := object.Object.(*value.Instance); ok {
+				vm.push(instance.Fields[slot])
+				continue
 			}
-			if slot < 0 || slot >= len(instance.Fields) {
-				return value.NilValue(), fmt.Errorf("invalid field slot %d for %s", slot, instance.Class.Name)
-			}
-			vm.push(instance.Fields[slot])
+			return value.NilValue(), fmt.Errorf("GET_FIELD expects instance")
 		case bytecode.OpGetThisField:
 			slot := int(vm.readByte(frame))
-			if frame.receiver == nil {
-				return value.NilValue(), fmt.Errorf("GET_THIS_FIELD expects receiver")
-			}
-			if slot < 0 || slot >= len(frame.receiver.Fields) {
-				return value.NilValue(), fmt.Errorf("invalid field slot %d for %s", slot, frame.receiver.Class.Name)
-			}
 			vm.push(frame.receiver.Fields[slot])
 		case bytecode.OpSetField:
 			slot := int(vm.readByte(frame))
 			assigned := vm.pop()
 			object := vm.pop()
-			instance, ok := object.AsInstance()
-			if !ok {
-				return value.NilValue(), fmt.Errorf("SET_FIELD expects instance")
+			if instance, ok := object.Object.(*value.Instance); ok {
+				if instance.Frozen {
+					return value.NilValue(), fmt.Errorf("instance %s is frozen", instance.Class.Name)
+				}
+				instance.Fields[slot] = assigned
+				continue
 			}
-			if instance.Frozen {
-				return value.NilValue(), fmt.Errorf("instance %s is frozen", instance.Class.Name)
-			}
-			if slot < 0 || slot >= len(instance.Fields) {
-				return value.NilValue(), fmt.Errorf("invalid field slot %d for %s", slot, instance.Class.Name)
-			}
-			instance.Fields[slot] = assigned
+			return value.NilValue(), fmt.Errorf("SET_FIELD expects instance")
 		case bytecode.OpSetThisField:
 			slot := int(vm.readByte(frame))
 			assigned := vm.pop()
-			if frame.receiver == nil {
-				return value.NilValue(), fmt.Errorf("SET_THIS_FIELD expects receiver")
-			}
 			if frame.receiver.Frozen {
 				return value.NilValue(), fmt.Errorf("instance %s is frozen", frame.receiver.Class.Name)
-			}
-			if slot < 0 || slot >= len(frame.receiver.Fields) {
-				return value.NilValue(), fmt.Errorf("invalid field slot %d for %s", slot, frame.receiver.Class.Name)
 			}
 			frame.receiver.Fields[slot] = assigned
 		case bytecode.OpGetProperty:
@@ -1349,33 +1417,35 @@ func (vm *VM) call(argc int) error {
 		if err := vm.ensureAccess(class, class.ConstructorVisibility); err != nil {
 			return err
 		}
-		args := vm.peekArgs(argc)
-		ctor := vm.selectBestOverload(class.ConstructorOverloads, args)
-		if ctor == nil && class.Constructor != nil && vm.overloadMatches(class.Constructor, args) {
-			ctor = class.Constructor
+		if fastCtor := class.FastConstructor; fastCtor != nil {
+			if fastCtor.Arity != argc {
+				return fmt.Errorf("%s expects %d args, got %d", class.Name, fastCtor.Arity, argc)
+			}
+			instance := class.NewInstance()
+			baseIdx := len(vm.stack) - argc
+			for i, slot := range fastCtor.FieldSlots {
+				instance.Fields[slot] = vm.stack[baseIdx+fastCtor.ArgIndexes[i]]
+			}
+			vm.stack = vm.stack[:len(vm.stack)-argc-1]
+			vm.push(value.ObjectValue(instance))
+			return nil
 		}
-		fastCtor := class.FastConstructor
+		var ctor *bytecode.Function
+		if len(class.ConstructorOverloads) <= 1 {
+			ctor = class.Constructor
+		} else {
+			args := vm.peekArgs(argc)
+			ctor = vm.selectBestOverload(class.ConstructorOverloads, args)
+			if ctor == nil && class.Constructor != nil && vm.overloadMatches(class.Constructor, args) {
+				ctor = class.Constructor
+			}
+		}
+
 		if ctor == nil && argc != 0 {
 			return fmt.Errorf("%s expects 0 args, got %d", class.Name, argc)
 		}
 		if ctor != nil && ctor.Arity != argc {
 			return fmt.Errorf("%s expects %d args, got %d", class.Name, ctor.Arity, argc)
-		}
-		if fastCtor != nil && ctor == class.Constructor {
-			if fastCtor.Arity != argc {
-				return fmt.Errorf("%s expects %d args, got %d", class.Name, fastCtor.Arity, argc)
-			}
-			args := make([]value.Value, argc)
-			for i := argc - 1; i >= 0; i-- {
-				args[i] = vm.pop()
-			}
-			vm.pop()
-			instance := class.NewInstance()
-			for i, slot := range fastCtor.FieldSlots {
-				instance.Fields[slot] = args[fastCtor.ArgIndexes[i]]
-			}
-			vm.push(value.ObjectValue(instance))
-			return nil
 		}
 		instance := class.NewInstance()
 		if ctor == nil {
@@ -1525,12 +1595,19 @@ func (vm *VM) callKnownValue(callee value.Value, argc int) error {
 		if err := vm.ensureAccess(class, class.ConstructorVisibility); err != nil {
 			return err
 		}
-		args := vm.peekArgs(argc)
-		ctor := vm.selectBestOverload(class.ConstructorOverloads, args)
-		if ctor == nil && class.Constructor != nil && vm.overloadMatches(class.Constructor, args) {
-			ctor = class.Constructor
-		}
+		var ctor *bytecode.Function
 		fastCtor := class.FastConstructor
+
+		if len(class.ConstructorOverloads) <= 1 {
+			ctor = class.Constructor
+		} else {
+			args := vm.peekArgs(argc)
+			ctor = vm.selectBestOverload(class.ConstructorOverloads, args)
+			if ctor == nil && class.Constructor != nil && vm.overloadMatches(class.Constructor, args) {
+				ctor = class.Constructor
+			}
+		}
+
 		if ctor == nil && argc != 0 {
 			return fmt.Errorf("%s expects 0 args, got %d", class.Name, argc)
 		}
@@ -1541,14 +1618,12 @@ func (vm *VM) callKnownValue(callee value.Value, argc int) error {
 			if fastCtor.Arity != argc {
 				return fmt.Errorf("%s expects %d args, got %d", class.Name, fastCtor.Arity, argc)
 			}
-			args := make([]value.Value, argc)
-			for i := argc - 1; i >= 0; i-- {
-				args[i] = vm.pop()
-			}
 			instance := class.NewInstance()
+			baseIdx := len(vm.stack) - argc
 			for i, slot := range fastCtor.FieldSlots {
-				instance.Fields[slot] = args[fastCtor.ArgIndexes[i]]
+				instance.Fields[slot] = vm.stack[baseIdx+fastCtor.ArgIndexes[i]]
 			}
+			vm.stack = vm.stack[:len(vm.stack)-argc]
 			vm.push(value.ObjectValue(instance))
 			return nil
 		}
@@ -2331,10 +2406,15 @@ func (vm *VM) callSuper(argc int) error {
 	if superclass == nil {
 		return fmt.Errorf("class %s has no superclass", currentFrame.receiver.Class.Name)
 	}
-	args := vm.peekArgs(argc)
-	ctor := vm.selectBestOverload(superclass.ConstructorOverloads, args)
-	if ctor == nil && superclass.Constructor != nil && vm.overloadMatches(superclass.Constructor, args) {
+	var ctor *bytecode.Function
+	if len(superclass.ConstructorOverloads) <= 1 {
 		ctor = superclass.Constructor
+	} else {
+		args := vm.peekArgs(argc)
+		ctor = vm.selectBestOverload(superclass.ConstructorOverloads, args)
+		if ctor == nil && superclass.Constructor != nil && vm.overloadMatches(superclass.Constructor, args) {
+			ctor = superclass.Constructor
+		}
 	}
 	if ctor == nil {
 		if argc != 0 {
@@ -2770,7 +2850,16 @@ func (vm *VM) constantToValue(item any) value.Value {
 }
 
 func (vm *VM) localGet(frame *frame, slot byte) value.Value {
-	vm.materializeLocalString(frame, slot)
+	if len(frame.stringBuffers) == 0 && len(frame.localRefs) == 0 {
+		return frame.locals[slot]
+	}
+	return vm.localGetSlow(frame, slot)
+}
+
+func (vm *VM) localGetSlow(frame *frame, slot byte) value.Value {
+	if len(frame.stringBuffers) > 0 {
+		vm.materializeLocalString(frame, slot)
+	}
 	if cell, ok := frame.localRefs[slot]; ok {
 		return cell.Value
 	}
@@ -2778,7 +2867,17 @@ func (vm *VM) localGet(frame *frame, slot byte) value.Value {
 }
 
 func (vm *VM) localSet(frame *frame, slot byte, v value.Value) {
-	delete(frame.stringBuffers, slot)
+	if len(frame.stringBuffers) == 0 && len(frame.localRefs) == 0 {
+		frame.locals[slot] = v
+		return
+	}
+	vm.localSetSlow(frame, slot, v)
+}
+
+func (vm *VM) localSetSlow(frame *frame, slot byte, v value.Value) {
+	if len(frame.stringBuffers) > 0 {
+		delete(frame.stringBuffers, slot)
+	}
 	if cell, ok := frame.localRefs[slot]; ok {
 		cell.Value = v
 		return

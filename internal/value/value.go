@@ -88,6 +88,7 @@ type Cell struct {
 type Class struct {
 	ClassDecl
 	ClassRuntime
+	defaultFields []Value
 }
 
 type SpecialMethodSlot uint8
@@ -201,6 +202,7 @@ type Instance struct {
 	Class  *Class
 	Fields []Value
 	Frozen bool
+	Inline [4]Value
 }
 
 type BoundMethod struct {
@@ -594,11 +596,40 @@ func (c *Class) SetStatic(name string, v Value) error {
 }
 
 func (c *Class) NewInstance() *Instance {
-	instance := &Instance{Class: c, Fields: make([]Value, len(c.FieldOrder))}
-	for idx, name := range c.FieldOrder {
-		instance.Fields[idx] = c.Fields[name].Default
+	if c.defaultFields == nil {
+		c.defaultFields = make([]Value, len(c.FieldOrder))
+		for idx, name := range c.FieldOrder {
+			c.defaultFields[idx] = c.Fields[name].Default
+		}
 	}
-	return instance
+	inst := &Instance{Class: c}
+	n := len(c.defaultFields)
+	switch n {
+	case 0:
+		inst.Fields = inst.Inline[:0]
+	case 1:
+		inst.Fields = inst.Inline[:1]
+		inst.Fields[0] = c.defaultFields[0]
+	case 2:
+		inst.Fields = inst.Inline[:2]
+		inst.Fields[0] = c.defaultFields[0]
+		inst.Fields[1] = c.defaultFields[1]
+	case 3:
+		inst.Fields = inst.Inline[:3]
+		inst.Fields[0] = c.defaultFields[0]
+		inst.Fields[1] = c.defaultFields[1]
+		inst.Fields[2] = c.defaultFields[2]
+	case 4:
+		inst.Fields = inst.Inline[:4]
+		inst.Fields[0] = c.defaultFields[0]
+		inst.Fields[1] = c.defaultFields[1]
+		inst.Fields[2] = c.defaultFields[2]
+		inst.Fields[3] = c.defaultFields[3]
+	default:
+		inst.Fields = make([]Value, n)
+		copy(inst.Fields, c.defaultFields)
+	}
+	return inst
 }
 
 func (i *Instance) GetField(name string) (Value, bool) {
