@@ -32,6 +32,7 @@ type frame struct {
 	handlers      []exceptionHandler
 	receiver      *value.Instance
 	init          bool
+	hasCells      bool // true only when localRefs or stringBuffers are non-empty
 }
 
 type stringAccumulator struct {
@@ -229,7 +230,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if current.Kind != value.Number || current.NumberKind != value.NumberInt {
 				return value.NilValue(), fmt.Errorf("ADD_CONST_LOCAL_INT expects int local")
 			}
-			vm.localSet(frame, slot, value.IntValue(int64(current.Num)+increment))
+			vm.localSet(frame, slot, value.IntValue(current.Int+increment))
 		case bytecode.OpJumpIfLocalLessEqualIntConstFalse:
 			slot := vm.readByte(frame)
 			constant := frame.fn.Chunk.Constants[vm.readUint16(frame)]
@@ -330,7 +331,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			left := vm.pop()
 			if left.Kind == value.Number && right.Kind == value.Number {
 				if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-					vm.push(value.IntValue(int64(left.Num) + int64(right.Num)))
+					vm.push(value.IntValue(left.Int + right.Int))
 					continue
 				}
 				vm.push(value.FloatValue(left.Num + right.Num))
@@ -383,7 +384,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			left := vm.pop()
 			if left.Kind == value.Number && right.Kind == value.Number {
 				if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-					vm.push(value.IntValue(int64(left.Num) - int64(right.Num)))
+					vm.push(value.IntValue(left.Int - right.Int))
 					continue
 				}
 				vm.push(value.FloatValue(left.Num - right.Num))
@@ -399,7 +400,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			left := vm.pop()
 			if left.Kind == value.Number && right.Kind == value.Number {
 				if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-					vm.push(value.IntValue(int64(left.Num) * int64(right.Num)))
+					vm.push(value.IntValue(left.Int * right.Int))
 					continue
 				}
 				vm.push(value.FloatValue(left.Num * right.Num))
@@ -523,7 +524,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			left := vm.pop()
 			if left.Kind == value.Number && right.Kind == value.Number {
 				if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-					vm.push(value.IntValue(int64(left.Num) + int64(right.Num)))
+					vm.push(value.IntValue(left.Int + right.Int))
 					continue
 				}
 				vm.push(value.FloatValue(left.Num + right.Num))
@@ -539,7 +540,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			left := vm.pop()
 			if left.Kind == value.Number && right.Kind == value.Number {
 				if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-					vm.push(value.IntValue(int64(left.Num) - int64(right.Num)))
+					vm.push(value.IntValue(left.Int - right.Int))
 					continue
 				}
 				vm.push(value.FloatValue(left.Num - right.Num))
@@ -555,7 +556,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			left := vm.pop()
 			if left.Kind == value.Number && right.Kind == value.Number {
 				if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-					vm.push(value.IntValue(int64(left.Num) * int64(right.Num)))
+					vm.push(value.IntValue(left.Int * right.Int))
 					continue
 				}
 				vm.push(value.FloatValue(left.Num * right.Num))
@@ -743,22 +744,38 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				if end.Kind != value.Number {
 					return value.NilValue(), fmt.Errorf("range expects numeric arguments")
 				}
-				frame.locals[currentSlot] = value.NumberValue(-1)
-				frame.locals[endSlot] = end
-				frame.locals[stepSlot] = value.NumberValue(1)
+				if end.NumberKind == value.NumberInt {
+					frame.locals[currentSlot] = value.IntValue(-1)
+					frame.locals[endSlot] = end
+					frame.locals[stepSlot] = value.IntValue(1)
+				} else {
+					frame.locals[currentSlot] = value.NumberValue(-1)
+					frame.locals[endSlot] = end
+					frame.locals[stepSlot] = value.NumberValue(1)
+				}
 			case 2:
 				end := vm.pop()
 				start := vm.pop()
 				if start.Kind != value.Number || end.Kind != value.Number {
 					return value.NilValue(), fmt.Errorf("range expects numeric arguments")
 				}
-				step := 1.0
-				if start.Num > end.Num {
-					step = -1
+				if start.NumberKind == value.NumberInt && end.NumberKind == value.NumberInt {
+					step := int64(1)
+					if start.Int > end.Int {
+						step = -1
+					}
+					frame.locals[currentSlot] = value.IntValue(start.Int - step)
+					frame.locals[endSlot] = end
+					frame.locals[stepSlot] = value.IntValue(step)
+				} else {
+					step := 1.0
+					if start.Num > end.Num {
+						step = -1
+					}
+					frame.locals[currentSlot] = value.NumberValue(start.Num - step)
+					frame.locals[endSlot] = end
+					frame.locals[stepSlot] = value.NumberValue(step)
 				}
-				frame.locals[currentSlot] = value.NumberValue(start.Num - step)
-				frame.locals[endSlot] = end
-				frame.locals[stepSlot] = value.NumberValue(step)
 			default:
 				return value.NilValue(), fmt.Errorf("range expects 1 or 2 arguments")
 			}
@@ -773,6 +790,18 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			step := frame.locals[stepSlot]
 			if current.Kind != value.Number || end.Kind != value.Number || step.Kind != value.Number {
 				return value.NilValue(), fmt.Errorf("fast range expects numeric locals")
+			}
+			// Fast integer path: keeps loop variable as IntValue so arithmetic stays integer
+			if current.NumberKind == value.NumberInt && step.NumberKind == value.NumberInt {
+				next := current.Int + step.Int
+				if (step.Int > 0 && next >= end.Int) || (step.Int < 0 && next <= end.Int) {
+					frame.ip += int(offset)
+					continue
+				}
+				nextVal := value.IntValue(next)
+				frame.locals[currentSlot] = nextVal
+				frame.locals[valueSlot] = nextVal
+				continue
 			}
 			next := current.Num + step.Num
 			if (step.Num > 0 && next >= end.Num) || (step.Num < 0 && next <= end.Num) {
@@ -2352,7 +2381,10 @@ func (vm *VM) evalFastMethodExpr(receiver *value.Instance, expr *value.FastMetho
 	}
 	switch expr.Kind {
 	case value.FastMethodExprNumber:
-		return value.NumberValue(expr.Number), nil
+		if i := int64(expr.Number); float64(i) == expr.Number {
+			return value.IntValue(i), nil
+		}
+		return value.FloatValue(expr.Number), nil
 	case value.FastMethodExprField:
 		if expr.FieldSlot < 0 || expr.FieldSlot >= len(receiver.Fields) {
 			return value.NilValue(), fmt.Errorf("invalid fast method field slot %d for %s", expr.FieldSlot, receiver.Class.Name)
@@ -2378,6 +2410,22 @@ func (vm *VM) evalFastMethodExpr(receiver *value.Instance, expr *value.FastMetho
 		}
 		if left.Kind != value.Number || right.Kind != value.Number {
 			return value.NilValue(), fmt.Errorf("fast method arithmetic expects numbers")
+		}
+		// Use integer arithmetic when both operands are integers
+		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
+			switch expr.Kind {
+			case value.FastMethodExprAdd:
+				return value.IntValue(left.Int + right.Int), nil
+			case value.FastMethodExprSub:
+				return value.IntValue(left.Int - right.Int), nil
+			case value.FastMethodExprMul:
+				return value.IntValue(left.Int * right.Int), nil
+			default:
+				if right.Int == 0 {
+					return value.NilValue(), fmt.Errorf("fast method division by zero")
+				}
+				return value.IntValue(left.Int / right.Int), nil
+			}
 		}
 		switch expr.Kind {
 		case value.FastMethodExprAdd:
@@ -2743,16 +2791,7 @@ func (vm *VM) acquireFrame(fn *bytecode.Function, closure *value.Closure, receiv
 	child.stackBase = len(vm.stack)
 	child.receiver = receiver
 	child.init = init
-	if child.localRefs == nil {
-		child.localRefs = make(map[byte]*value.Cell)
-	} else {
-		clear(child.localRefs)
-	}
-	if child.stringBuffers == nil {
-		child.stringBuffers = make(map[byte]*stringAccumulator)
-	} else {
-		clear(child.stringBuffers)
-	}
+	child.hasCells = false // maps are lazily initialized; skip clear unless used
 	child.handlers = child.handlers[:0]
 	if cap(child.locals) < fn.MaxLocals {
 		child.locals = make([]value.Value, fn.MaxLocals)
@@ -2770,8 +2809,13 @@ func (vm *VM) releaseFrame(child *frame) {
 	child.ip = 0
 	child.receiver = nil
 	child.init = false
-	clear(child.localRefs)
-	clear(child.stringBuffers)
+	child.hasCells = false
+	if child.localRefs != nil {
+		clear(child.localRefs)
+	}
+	if child.stringBuffers != nil {
+		clear(child.stringBuffers)
+	}
 	child.handlers = child.handlers[:0]
 	vm.framePool = append(vm.framePool, child)
 }
@@ -2833,24 +2877,26 @@ func (vm *VM) constantToValue(item any) value.Value {
 }
 
 func (vm *VM) localGet(frame *frame, slot byte) value.Value {
-	if len(frame.stringBuffers) == 0 && len(frame.localRefs) == 0 {
+	if !frame.hasCells {
 		return frame.locals[slot]
 	}
 	return vm.localGetSlow(frame, slot)
 }
 
 func (vm *VM) localGetSlow(frame *frame, slot byte) value.Value {
-	if len(frame.stringBuffers) > 0 {
+	if frame.stringBuffers != nil && len(frame.stringBuffers) > 0 {
 		vm.materializeLocalString(frame, slot)
 	}
-	if cell, ok := frame.localRefs[slot]; ok {
-		return cell.Value
+	if frame.localRefs != nil {
+		if cell, ok := frame.localRefs[slot]; ok {
+			return cell.Value
+		}
 	}
 	return frame.locals[slot]
 }
 
 func (vm *VM) localSet(frame *frame, slot byte, v value.Value) {
-	if len(frame.stringBuffers) == 0 && len(frame.localRefs) == 0 {
+	if !frame.hasCells {
 		frame.locals[slot] = v
 		return
 	}
@@ -2858,12 +2904,14 @@ func (vm *VM) localSet(frame *frame, slot byte, v value.Value) {
 }
 
 func (vm *VM) localSetSlow(frame *frame, slot byte, v value.Value) {
-	if len(frame.stringBuffers) > 0 {
+	if frame.stringBuffers != nil && len(frame.stringBuffers) > 0 {
 		delete(frame.stringBuffers, slot)
 	}
-	if cell, ok := frame.localRefs[slot]; ok {
-		cell.Value = v
-		return
+	if frame.localRefs != nil {
+		if cell, ok := frame.localRefs[slot]; ok {
+			cell.Value = v
+			return
+		}
 	}
 	frame.locals[slot] = v
 }
@@ -2971,21 +3019,31 @@ func (vm *VM) tryHashMethod(instance *value.Instance) (value.Value, bool, error)
 
 func (vm *VM) captureLocal(frame *frame, slot byte) *value.Cell {
 	vm.materializeLocalString(frame, slot)
+	if frame.localRefs == nil {
+		frame.localRefs = make(map[byte]*value.Cell)
+	}
 	if cell, ok := frame.localRefs[slot]; ok {
 		return cell
 	}
 	cell := &value.Cell{Value: frame.locals[slot]}
 	frame.localRefs[slot] = cell
+	frame.hasCells = true
 	return cell
 }
 
 func (vm *VM) appendLocalString(frame *frame, slot byte, suffix value.Value) {
+	if frame.stringBuffers == nil {
+		frame.stringBuffers = make(map[byte]*stringAccumulator)
+	}
+	frame.hasCells = true
 	accumulator, ok := frame.stringBuffers[slot]
 	if !ok {
 		accumulator = &stringAccumulator{}
 		base := frame.locals[slot]
-		if cell, ok := frame.localRefs[slot]; ok {
-			base = cell.Value
+		if frame.localRefs != nil {
+			if cell, ok := frame.localRefs[slot]; ok {
+				base = cell.Value
+			}
 		}
 		if base.Kind == value.String || base.Kind == value.Char {
 			accumulator.builder.WriteString(base.Str)
@@ -2998,24 +3056,29 @@ func (vm *VM) appendLocalString(frame *frame, slot byte, suffix value.Value) {
 }
 
 func (vm *VM) materializeLocalString(frame *frame, slot byte) {
+	if frame.stringBuffers == nil {
+		return
+	}
 	accumulator, ok := frame.stringBuffers[slot]
 	if !ok {
 		return
 	}
 	materialized := value.StringValue(string(append([]byte(nil), accumulator.builder.String()...)))
-	if cell, ok := frame.localRefs[slot]; ok {
-		cell.Value = materialized
-	} else {
-		frame.locals[slot] = materialized
+	if frame.localRefs != nil {
+		if cell, ok := frame.localRefs[slot]; ok {
+			cell.Value = materialized
+			return
+		}
 	}
+	frame.locals[slot] = materialized
 }
 
 func (vm *VM) binaryNumberOp(operator bytecode.Op, op func(float64, float64) float64) error {
 	right := vm.pop()
 	left := vm.pop()
 	if left.Kind == value.Number && right.Kind == value.Number && left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-		leftInt := int64(left.Num)
-		rightInt := int64(right.Num)
+		leftInt := left.Int
+		rightInt := right.Int
 		switch operator {
 		case bytecode.OpAdd, bytecode.OpAddNum:
 			vm.push(value.IntValue(leftInt + rightInt))
@@ -3316,8 +3379,8 @@ func (vm *VM) binaryNumericCompareOp(operator bytecode.Op) error {
 	right := vm.pop()
 	left := vm.pop()
 	if left.Kind == value.Number && right.Kind == value.Number && left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-		leftInt := int64(left.Num)
-		rightInt := int64(right.Num)
+		leftInt := left.Int
+		rightInt := right.Int
 		switch operator {
 		case bytecode.OpLessNum:
 			vm.push(value.BoolValue(leftInt < rightInt))

@@ -25,8 +25,8 @@ func BuildSysModule() *RuntimeModule {
 			}
 			return value.BoolValue(matched), nil
 		}).
-		AddTypedFunction("time", nil, TypeInt, false, func(args []value.Value) (value.Value, error) {
-			return value.IntValue(time.Now().UnixMilli()), nil
+		AddTypedFunction("time", nil, TypeFloat, false, func(args []value.Value) (value.Value, error) {
+			return value.FloatValue(float64(time.Now().UnixNano()) / 1e6), nil
 		}).
 		AddTypedFunction("sleep", []string{TypeInt}, TypeVoid, false, func(args []value.Value) (value.Value, error) {
 			if args[0].Kind != value.Number {
