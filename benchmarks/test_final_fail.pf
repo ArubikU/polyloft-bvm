@@ -1,7 +1,0 @@
-class Bad:
-    final x: int = 10
-    Bad(): this.x = 10 end
-end
-let b = new Bad()
-b.x = 99
-println(b.x)

@@ -1,7 +1,0 @@
-class Bad2:
-    const y: int
-    Bad2(): this.y = 5 end
-end
-let b2 = new Bad2()
-b2.y = 99
-println(b2.y)

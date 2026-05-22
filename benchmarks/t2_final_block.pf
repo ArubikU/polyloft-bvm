@@ -1,8 +1,0 @@
-// Test 2: BLOCKED - final mutation from outside
-class F:
-    final x: int = 5
-    F(): this.x = 5 end
-end
-let f = new F()
-f.x = 99
-println("should not reach here")

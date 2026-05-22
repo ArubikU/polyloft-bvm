@@ -1,6 +1,0 @@
-let a = [i * 2 for i in range(5)]
-println(a)
-println(len(a))
-
-let b = [x for x in ["apple", "banana", "cherry"]]
-println(b)

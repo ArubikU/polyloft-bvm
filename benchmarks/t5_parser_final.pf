@@ -1,6 +1,0 @@
-// Test 5: ALLOWED - final without keyword init, parser should reject
-class NoInit:
-    final bad: int
-    NoInit(): this.bad = 0 end
-end
-println("should not parse")

@@ -1,4 +1,0 @@
-import polyloft.collections.arraylist { ArrayList }
-
-let items: ArrayList<int> = ArrayList<int>()
-println(items.size())
