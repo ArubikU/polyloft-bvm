@@ -38,6 +38,14 @@ class PairBox:
     end
 end
 
+def reduceBoxes(boxes: PairBox[]) -> number:
+    let total = 0
+    for box in boxes:
+        total += box.mix()
+    end
+    return total
+end
+
 def makeScaler(factor: number):
     return (value: number) => value * factor
 end
@@ -59,9 +67,9 @@ def updateTable(values: array) -> number:
 end
 
 def sliceAndSum(values: array) -> number:
-    let middle = values[10...29]
+    let middle = values[10...90]
     let total = 0
-    for i in range(0, 7):
+    for i in range(0, 27):
         total += middle[i * 3]
     end
     return total
@@ -69,7 +77,7 @@ end
 
 def indexedUpdate(values: array) -> number:
     let total = 0
-    for i in range(0, 30):
+    for i in range(0, 120):
         values[i] += i
         total += values[i]
     end
@@ -79,8 +87,17 @@ end
 let started = Sys.time()
 
 let worker = new Worker(7, 3)
-let box = new PairBox(2, 3)
-let values = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+
+let values = __array_new(120)
+for i in range(0, 120):
+    values[i] = i
+end
+
+let boxes = __array_new(80)
+for i in range(0, 80):
+    boxes[i] = new PairBox(i, i + 1)
+end
+
 let scaler = makeScaler(9)
 
 let methodStarted = Sys.time()
@@ -100,7 +117,7 @@ let listEnded = Sys.time()
 let objectStarted = Sys.time()
 let objectTotal = 0
 for i in range(0, 200):
-    objectTotal += box.mix()
+    objectTotal += reduceBoxes(boxes)
 end
 let objectEnded = Sys.time()
 
@@ -114,7 +131,7 @@ let closureEnded = Sys.time()
 let containerStarted = Sys.time()
 let tableTotal = updateTable(values)
 let sliceTotal = sliceAndSum(values)
-let indexTotal = indexedUpdate(values[0...29])
+let indexTotal = indexedUpdate(values[0...119])
 let containerEnded = Sys.time()
 
 let ended = Sys.time()

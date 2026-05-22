@@ -607,13 +607,13 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if fieldSlot < 0 || fieldSlot >= len(frame.receiver.Fields) {
 				return value.NilValue(), fmt.Errorf("invalid field slot %d for %s", fieldSlot, frame.receiver.Class.Name)
 			}
-			target := vm.localGet(frame, targetSlot)
-			multiplier := vm.localGet(frame, localSlot)
+			target := frame.locals[targetSlot]
+			multiplier := frame.locals[localSlot]
 			factor := frame.receiver.Fields[fieldSlot]
 			if target.Kind != value.Number || multiplier.Kind != value.Number || factor.Kind != value.Number {
 				return value.NilValue(), fmt.Errorf("ADD_LOCAL_MUL_THIS_FIELD expects numbers")
 			}
-			vm.localSet(frame, targetSlot, value.NumberValue(target.Num+multiplier.Num*factor.Num))
+			frame.locals[targetSlot] = value.NumberValue(target.Num + multiplier.Num*factor.Num)
 		case bytecode.OpClosure:
 			idx := vm.readUint16(frame)
 			fn := frame.fn.Chunk.Constants[idx].(*bytecode.Function)
@@ -737,8 +737,30 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			endSlot := vm.readByte(frame)
 			stepSlot := vm.readByte(frame)
 			argc := int(vm.readByte(frame))
-			if err := vm.initFastRange(frame, currentSlot, endSlot, stepSlot, argc); err != nil {
-				return value.NilValue(), err
+			switch argc {
+			case 1:
+				end := vm.pop()
+				if end.Kind != value.Number {
+					return value.NilValue(), fmt.Errorf("range expects numeric arguments")
+				}
+				frame.locals[currentSlot] = value.NumberValue(-1)
+				frame.locals[endSlot] = end
+				frame.locals[stepSlot] = value.NumberValue(1)
+			case 2:
+				end := vm.pop()
+				start := vm.pop()
+				if start.Kind != value.Number || end.Kind != value.Number {
+					return value.NilValue(), fmt.Errorf("range expects numeric arguments")
+				}
+				step := 1.0
+				if start.Num > end.Num {
+					step = -1
+				}
+				frame.locals[currentSlot] = value.NumberValue(start.Num - step)
+				frame.locals[endSlot] = end
+				frame.locals[stepSlot] = value.NumberValue(step)
+			default:
+				return value.NilValue(), fmt.Errorf("range expects 1 or 2 arguments")
 			}
 		case bytecode.OpRangeNextFast:
 			currentSlot := vm.readByte(frame)
@@ -746,15 +768,20 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			stepSlot := vm.readByte(frame)
 			valueSlot := vm.readByte(frame)
 			offset := vm.readUint16(frame)
-			advance, err := vm.rangeNextFast(frame, currentSlot, endSlot, stepSlot)
-			if err != nil {
-				return value.NilValue(), err
+			current := frame.locals[currentSlot]
+			end := frame.locals[endSlot]
+			step := frame.locals[stepSlot]
+			if current.Kind != value.Number || end.Kind != value.Number || step.Kind != value.Number {
+				return value.NilValue(), fmt.Errorf("fast range expects numeric locals")
 			}
-			if !advance {
+			next := current.Num + step.Num
+			if (step.Num > 0 && next >= end.Num) || (step.Num < 0 && next <= end.Num) {
 				frame.ip += int(offset)
 				continue
 			}
-			frame.locals[valueSlot] = frame.locals[currentSlot]
+			nextVal := value.NumberValue(next)
+			frame.locals[currentSlot] = nextVal
+			frame.locals[valueSlot] = nextVal
 		case bytecode.OpIterInit:
 			slot := vm.readByte(frame)
 			mode := vm.readByte(frame)
@@ -817,7 +844,8 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 					frame.ip += int(offset)
 					continue
 				}
-				vm.localSet(frame, valueSlot, iterator.Items[iterator.Index])
+				// Direct write: iterator value slots never have captures or string buffers.
+				frame.locals[valueSlot] = iterator.Items[iterator.Index]
 				iterator.Index++
 				continue
 			}
@@ -2371,9 +2399,11 @@ func (vm *VM) callMethod(receiver *value.Instance, fn *bytecode.Function, owner 
 		return fmt.Errorf("%s expects %d args, got %d", fn.Name, fn.Arity, argc)
 	}
 	child := vm.acquireFrame(fn, nil, receiver, false)
-	vm.localSet(child, 0, value.ObjectValue(receiver))
+	// acquireFrame always returns a fresh frame: no stringBuffers, no localRefs.
+	// Write locals directly to avoid the fast-path guard in localSet.
+	child.locals[0] = value.ObjectValue(receiver)
 	for i := argc - 1; i >= 0; i-- {
-		vm.localSet(child, byte(i+1), vm.pop())
+		child.locals[i+1] = vm.pop()
 	}
 	vm.pop()
 	child.stackBase = len(vm.stack)
@@ -2387,9 +2417,10 @@ func (vm *VM) callMethodDirect(receiver *value.Instance, fn *bytecode.Function, 
 		return fmt.Errorf("%s expects %d args, got %d", fn.Name, fn.Arity, argc)
 	}
 	child := vm.acquireFrame(fn, nil, receiver, false)
-	vm.localSet(child, 0, value.ObjectValue(receiver))
+	// acquireFrame always returns a fresh frame: no stringBuffers, no localRefs.
+	child.locals[0] = value.ObjectValue(receiver)
 	for i := argc - 1; i >= 0; i-- {
-		vm.localSet(child, byte(i+1), vm.pop())
+		child.locals[i+1] = vm.pop()
 	}
 	child.stackBase = len(vm.stack)
 	_ = owner
@@ -2635,54 +2666,6 @@ func (vm *VM) buildRange(argc int) (*value.Range, error) {
 		return &value.Range{Start: int(start.Num), End: int(end.Num), Step: step}, nil
 	}
 	return nil, fmt.Errorf("range expects 1 or 2 arguments")
-}
-
-func (vm *VM) initFastRange(frame *frame, currentSlot, endSlot, stepSlot byte, argc int) error {
-	switch argc {
-	case 1:
-		end := vm.pop()
-		if end.Kind != value.Number {
-			return fmt.Errorf("range expects numeric arguments")
-		}
-		vm.localSet(frame, currentSlot, value.NumberValue(-1))
-		vm.localSet(frame, endSlot, end)
-		vm.localSet(frame, stepSlot, value.NumberValue(1))
-		return nil
-	case 2:
-		end := vm.pop()
-		start := vm.pop()
-		if start.Kind != value.Number || end.Kind != value.Number {
-			return fmt.Errorf("range expects numeric arguments")
-		}
-		step := 1.0
-		if start.Num > end.Num {
-			step = -1
-		}
-		vm.localSet(frame, currentSlot, value.NumberValue(start.Num-step))
-		vm.localSet(frame, endSlot, end)
-		vm.localSet(frame, stepSlot, value.NumberValue(step))
-		return nil
-	default:
-		return fmt.Errorf("range expects 1 or 2 arguments")
-	}
-}
-
-func (vm *VM) rangeNextFast(frame *frame, currentSlot, endSlot, stepSlot byte) (bool, error) {
-	current := vm.localGet(frame, currentSlot)
-	end := vm.localGet(frame, endSlot)
-	step := vm.localGet(frame, stepSlot)
-	if current.Kind != value.Number || end.Kind != value.Number || step.Kind != value.Number {
-		return false, fmt.Errorf("fast range expects numeric locals")
-	}
-	next := current.Num + step.Num
-	if step.Num > 0 && next >= end.Num {
-		return false, nil
-	}
-	if step.Num < 0 && next <= end.Num {
-		return false, nil
-	}
-	vm.localSet(frame, currentSlot, value.NumberValue(next))
-	return true, nil
 }
 
 func (vm *VM) currentFrame() *frame {
