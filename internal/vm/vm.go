@@ -1061,6 +1061,25 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				elements[i] = vm.pop()
 			}
 			vm.push(value.ObjectValue(&value.Array{Elements: elements}))
+		case bytecode.OpArrayAlloc:
+			sizeVal := vm.pop()
+			n := int(sizeVal.Int)
+			if n < 0 {
+				return value.NilValue(), fmt.Errorf("array size must be non-negative, got %d", n)
+			}
+			vm.push(value.ObjectValue(&value.Array{Elements: make([]value.Value, n)}))
+		case bytecode.OpArrayFill:
+			fill := vm.pop()
+			sizeVal := vm.pop()
+			n := int(sizeVal.Int)
+			if n < 0 {
+				return value.NilValue(), fmt.Errorf("array size must be non-negative, got %d", n)
+			}
+			elements := make([]value.Value, n)
+			for i := range elements {
+				elements[i] = fill
+			}
+			vm.push(value.ObjectValue(&value.Array{Elements: elements}))
 		case bytecode.OpMap:
 			count := int(vm.readByte(frame))
 			entries := map[string]value.Value{}

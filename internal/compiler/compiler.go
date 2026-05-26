@@ -962,22 +962,42 @@ func (c *Compiler) compileExpr(expr ast.Expr) error {
 		return nil
 
 	case *ast.ArrayNewExpr:
-		// compile size expression if present (result unused)
 		if node.Size != nil {
+			// push the size onto the stack
 			if err := c.compileExpr(node.Size); err != nil {
 				return err
 			}
-			// drop size from stack
-			c.emit(bytecode.OpPop, 0)
-		}
-		// compile initializer elements
-		for _, element := range node.Initializer {
-			if err := c.compileExpr(element); err != nil {
-				return err
+			switch len(node.Initializer) {
+			case 0:
+				// new T[N]  →  allocate N nils
+				c.emit(bytecode.OpArrayAlloc, 0)
+			case 1:
+				// new T[N]{fill}  →  N copies of fill
+				if err := c.compileExpr(node.Initializer[0]); err != nil {
+					return err
+				}
+				c.emit(bytecode.OpArrayFill, 0)
+			default:
+				// new T[N]{a,b,c,...}  →  size already bounds-checked; just build explicit array
+				c.emit(bytecode.OpPop, 0) // drop size; element count is exact
+				for _, element := range node.Initializer {
+					if err := c.compileExpr(element); err != nil {
+						return err
+					}
+				}
+				c.emit(bytecode.OpArray, 0)
+				c.emitByte(byte(len(node.Initializer)), 0)
 			}
+		} else {
+			// new T[]{a,b,c}  or  new T{}  →  bare initializer list
+			for _, element := range node.Initializer {
+				if err := c.compileExpr(element); err != nil {
+					return err
+				}
+			}
+			c.emit(bytecode.OpArray, 0)
+			c.emitByte(byte(len(node.Initializer)), 0)
 		}
-		c.emit(bytecode.OpArray, 0)
-		c.emitByte(byte(len(node.Initializer)), 0)
 		return nil
 	case *ast.MapExpr:
 		for _, entry := range node.Entries {

@@ -368,7 +368,7 @@ func (c *Checker) checkStmt(stmt ast.Stmt) error {
 		if err != nil {
 			return err
 		}
-		if !assignedType.IsAssignableFrom(valueType) {
+		if !c.isAssignable(assignedType, valueType) {
 			return fmt.Errorf("cannot assign %s through index of %s", valueType.Name, objType.Name)
 		}
 		return nil
@@ -888,8 +888,17 @@ func (c *Checker) checkExprWithExpected(expr ast.Expr, expected *Type) (Type, er
 		return ArrayOf(elementType), nil
 
 	case *ast.ArrayNewExpr:
-		// size expression may be constant
-		elemType := c.resolveTypeRef(node.Type)
+		// Resolve the declared type.
+		// When the user writes `new T[]{...}` parseTypeRef already wraps T into
+		// array<T> before the size bracket is consumed, so node.Type comes in as
+		// array<T> and node.Size is nil.  Unwrap one level so we always work with
+		// the element type during initializer checking.
+		declaredType := c.resolveTypeRef(node.Type)
+		elemType := declaredType
+		if node.Size == nil && declaredType.Name == runtime.TypeArray && len(declaredType.Args) > 0 {
+			elemType = declaredType.Args[0]
+		}
+
 		if node.Size != nil {
 			szType, err := c.checkExpr(node.Size)
 			if err != nil {
@@ -898,6 +907,7 @@ func (c *Checker) checkExprWithExpected(expr ast.Expr, expected *Type) (Type, er
 			if szType.Name != runtime.TypeInt {
 				return Unknown(), fmt.Errorf("array size must be int, got %s", szType.Name)
 			}
+			// literal-size bounds check: new T[N]{a,b,c,d} where count > N is an error
 			if lit, ok := node.Size.(*ast.LiteralExpr); ok {
 				num, ok2 := integerLiteralValue(lit)
 				if ok2 && len(node.Initializer) > 0 {
@@ -907,22 +917,22 @@ func (c *Checker) checkExprWithExpected(expr ast.Expr, expected *Type) (Type, er
 				}
 			}
 		}
-		// check initializer value types
+		// check initializer value types against the declared element type.
+		// When a type is declared (new T[N]{...} or new T[]{...}) the element type
+		// is fixed — don't widen it with UnionOf or subtype initializers break.
+		// For untyped bare initialisers (no explicit T) widen as before.
+		declaredElem := elemType
 		for _, elem := range node.Initializer {
 			candidate, err := c.checkExpr(elem)
 			if err != nil {
 				return Unknown(), err
 			}
-			if !elemType.IsAssignableFrom(candidate) {
-				return Unknown(), fmt.Errorf("initializer element %s not assignable to %s", candidate.Name, elemType.Name)
+			if !c.isAssignable(declaredElem, candidate) {
+				return Unknown(), fmt.Errorf("initializer element %s not assignable to %s", candidate.Name, declaredElem.Name)
 			}
-			elemType = UnionOf(elemType, candidate)
 		}
-		// if a size was supplied wrap the element type in an array
-		if node.Size != nil {
-			return ArrayOf(elemType), nil
-		}
-		return elemType, nil
+		// always return array<declaredElemType>
+		return ArrayOf(declaredElem), nil
 	case *ast.MapExpr:
 		valueType := Any()
 		for _, entry := range node.Entries {
@@ -1643,7 +1653,7 @@ func (c *Checker) checkBinary(node *ast.BinaryExpr) (Type, error) {
 			return Unknown(), fmt.Errorf("line %d:%d: %s does not support 'in'", node.Operator.Line, node.Operator.Column, right.Name)
 		}
 		containsType := right.ContainsKeyType()
-		if !containsType.IsAssignableFrom(left) {
+		if !c.isAssignable(containsType, left) {
 			return Unknown(), fmt.Errorf("line %d:%d: left side of 'in' must be %s, got %s", node.Operator.Line, node.Operator.Column, containsType.Name, left.Name)
 		}
 		return Primitive(runtime.TypeBool), nil

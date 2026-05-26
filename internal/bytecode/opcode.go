@@ -97,6 +97,8 @@ const (
 	OpSwap
 	OpSwapTwo
 	OpReturn
+	OpArrayAlloc // pop size(int) → push array of N nils
+	OpArrayFill  // pop fill, pop size(int) → push array of N copies of fill
 )
 
 func (op Op) String() string {
@@ -289,6 +291,10 @@ func (op Op) String() string {
 		return "SWAP_TWO"
 	case OpReturn:
 		return "RETURN"
+	case OpArrayAlloc:
+		return "ARRAY_ALLOC"
+	case OpArrayFill:
+		return "ARRAY_FILL"
 	default:
 		return "UNKNOWN"
 	}

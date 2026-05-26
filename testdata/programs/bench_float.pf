@@ -1,0 +1,70 @@
+def leibniz_pi(n: int) -> number:
+    let s = 0.0
+    let sign = 1.0
+    for i in range(0, n):
+        s += sign / (2.0 * i + 1.0)
+        sign = sign * -1.0
+    end
+    return s * 4.0
+end
+
+def newton_sqrt(x: number) -> number:
+    if x <= 0.0:
+        return 0.0
+    end
+    let g = x / 2.0
+    for i in range(0, 20):
+        g = (g + x / g) / 2.0
+    end
+    return g
+end
+
+let started = Sys.time()
+
+let t1 = Sys.time()
+let pi_approx = leibniz_pi(1000000)
+let leibniz_ms = Sys.time() - t1
+
+let t2 = Sys.time()
+let sqrt_sum = 0.0
+for i in range(1, 50001):
+    sqrt_sum += newton_sqrt(i * 1.0)
+end
+let newton_ms = Sys.time() - t2
+
+// Mandelbrot: 100×100 grid, 50 iterations each
+let t3 = Sys.time()
+let mandel_count = 0
+for px in range(0, 100):
+    for py in range(0, 100):
+        let cr = px / 50.0 - 1.5
+        let ci = py / 50.0 - 1.0
+        let zr = 0.0
+        let zi = 0.0
+        let escaped = false
+        for iter in range(0, 50):
+            if zr * zr + zi * zi > 4.0:
+                escaped = true
+                break
+            end
+            let new_zr = zr * zr - zi * zi + cr
+            zi = 2.0 * zr * zi + ci
+            zr = new_zr
+        end
+        if !escaped:
+            mandel_count += 1
+        end
+    end
+end
+let mandel_ms = Sys.time() - t3
+
+let ended = Sys.time()
+
+println("polyloft-bvm float benchmark")
+println("pi_approx=" + pi_approx)
+println("sqrt_sum_check=" + (sqrt_sum > 0))
+println("mandel_count=" + mandel_count)
+println("leibniz_ms=" + leibniz_ms)
+println("newton_ms=" + newton_ms)
+println("mandel_ms=" + mandel_ms)
+println("elapsed_ms=" + (ended - started))

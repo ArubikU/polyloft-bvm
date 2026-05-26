@@ -1,0 +1,96 @@
+class Shape:
+    def area() -> number:
+        return 0.0
+    end
+    def perimeter() -> number:
+        return 0.0
+    end
+end
+
+class Circle extends Shape:
+    r: number
+    Circle(r: number):
+        this.r = r
+    end
+    def area() -> number:
+        return 3.14159265 * this.r * this.r
+    end
+    def perimeter() -> number:
+        return 2.0 * 3.14159265 * this.r
+    end
+end
+
+class Rectangle extends Shape:
+    w: number
+    h: number
+    Rectangle(w: number, h: number):
+        this.w = w
+        this.h = h
+    end
+    def area() -> number:
+        return this.w * this.h
+    end
+    def perimeter() -> number:
+        return 2.0 * (this.w + this.h)
+    end
+end
+
+class Triangle extends Shape:
+    a: number
+    b: number
+    c: number
+    Triangle(a: number, b: number, c: number):
+        this.a = a
+        this.b = b
+        this.c = c
+    end
+    def area() -> number:
+        let s = (this.a + this.b + this.c) / 2.0
+        return (s * (s - this.a) * (s - this.b) * (s - this.c)) ^ 0.5
+    end
+    def perimeter() -> number:
+        return this.a + this.b + this.c
+    end
+end
+
+let started = Sys.time()
+
+// Build a mixed array of shapes
+let N = 30000
+let shapes = new Shape[N]
+for i in range(0, N):
+    let r = i % 3
+    if r == 0:
+        shapes[i] = new Circle(i + 1.0)
+    else if r == 1:
+        shapes[i] = new Rectangle(i + 1.0, i + 2.0)
+    else:
+        shapes[i] = new Triangle(3.0, 4.0, 5.0)
+    end
+end
+
+// Dispatch area() on all shapes (virtual dispatch)
+let t1 = Sys.time()
+let total_area = 0.0
+for shape in shapes:
+    total_area += shape.area()
+end
+let area_ms = Sys.time() - t1
+
+// Dispatch perimeter() on all shapes
+let t2 = Sys.time()
+let total_perim = 0.0
+for shape in shapes:
+    total_perim += shape.perimeter()
+end
+let perim_ms = Sys.time() - t2
+
+let ended = Sys.time()
+
+println("polyloft-bvm polymorphism benchmark")
+println("shapes=" + N)
+println("area_check=" + (total_area > 0))
+println("perim_check=" + (total_perim > 0))
+println("area_ms=" + area_ms)
+println("perim_ms=" + perim_ms)
+println("elapsed_ms=" + (ended - started))

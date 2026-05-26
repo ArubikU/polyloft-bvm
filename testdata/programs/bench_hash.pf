@@ -1,0 +1,49 @@
+let started = Sys.time()
+
+// Part 1: insert 50k string keys
+let t1 = Sys.time()
+let m = {}
+for i in range(0, 50000):
+    let key = "key" + i
+    m[key] = i * 2
+end
+let insert_ms = Sys.time() - t1
+
+// Part 2: lookup all keys
+let t2 = Sys.time()
+let total = 0
+for i in range(0, 50000):
+    let key = "key" + i
+    total += m[key]
+end
+let lookup_ms = Sys.time() - t2
+
+// Part 3: update (read-modify-write) 20k entries
+let t3 = Sys.time()
+for i in range(0, 20000):
+    let key = "key" + (i * 2)
+    m[key] = m[key] + 1
+end
+let update_ms = Sys.time() - t3
+
+// Part 4: frequency count with integer keys (word count style)
+let t4 = Sys.time()
+let freq = {}
+for i in range(0, 100000):
+    let k = "w" + (i % 1000)
+    if freq[k] == nil:
+        freq[k] = 0
+    end
+    freq[k] += 1
+end
+let freq_ms = Sys.time() - t4
+
+let ended = Sys.time()
+
+println("polyloft-bvm hash benchmark")
+println("insert_total_check=" + total)
+println("insert_ms=" + insert_ms)
+println("lookup_ms=" + lookup_ms)
+println("update_ms=" + update_ms)
+println("freq_ms=" + freq_ms)
+println("elapsed_ms=" + (ended - started))

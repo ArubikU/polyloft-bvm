@@ -1369,15 +1369,25 @@ func (p *Parser) ifStatementTail() (*ast.IfStmt, bool, error) {
 		elseBlock = &ast.BlockStmt{Statements: []ast.Stmt{nested}}
 		requiresEnd = requiresEnd || nestedRequiresEnd
 	} else if p.match(token.Else) {
-		if _, err := p.consume(token.Colon, "expected ':' after else"); err != nil {
-			return nil, false, err
+		// support `else if` as sugar for `elif`
+		if p.match(token.If) {
+			nested, nestedRequiresEnd, err := p.ifStatementTail()
+			if err != nil {
+				return nil, false, err
+			}
+			elseBlock = &ast.BlockStmt{Statements: []ast.Stmt{nested}}
+			requiresEnd = requiresEnd || nestedRequiresEnd
+		} else {
+			if _, err := p.consume(token.Colon, "expected ':' after else"); err != nil {
+				return nil, false, err
+			}
+			var elseInline bool
+			elseBlock, elseInline, err = p.statementSuite(token.End)
+			if err != nil {
+				return nil, false, err
+			}
+			requiresEnd = requiresEnd || !elseInline
 		}
-		var elseInline bool
-		elseBlock, elseInline, err = p.statementSuite(token.End)
-		if err != nil {
-			return nil, false, err
-		}
-		requiresEnd = requiresEnd || !elseInline
 	}
 	p.skipNewlines()
 	return &ast.IfStmt{Condition: condition, Then: thenBlock, Else: elseBlock}, requiresEnd, nil

@@ -1,0 +1,38 @@
+let started = Sys.time()
+
+// Part 1: repeated string concatenation (O(n^2) intentionally, same as Python)
+let s = ""
+for i in range(0, 3000):
+    s = s + "x"
+end
+let build_ms = Sys.time() - started
+
+// Part 2: numeric-to-string conversion in a loop
+let t1 = Sys.time()
+let nums = ""
+for i in range(0, 5000):
+    nums = nums + i + ","
+end
+let conv_ms = Sys.time() - t1
+
+// Part 3: string contains check using 'in' operator
+let t2 = Sys.time()
+let haystack = "the quick brown fox jumps over the lazy dog"
+let hits = 0
+for i in range(0, 50000):
+    if "fox" in haystack:
+        hits += 1
+    end
+end
+let search_ms = Sys.time() - t2
+
+let ended = Sys.time()
+
+println("polyloft-bvm string benchmark")
+println("build_len=" + len(s))
+println("conv_len=" + len(nums))
+println("search_hits=" + hits)
+println("build_ms=" + build_ms)
+println("conv_ms=" + conv_ms)
+println("search_ms=" + search_ms)
+println("elapsed_ms=" + (ended - started))

@@ -1,0 +1,64 @@
+class Item:
+    key: int
+    val: int
+
+    Item(k: int, v: int):
+        this.key = k
+        this.val = v
+    end
+end
+
+def qsort(arr: Item[], lo: int, hi: int) -> void:
+    if lo >= hi:
+        return
+    end
+    let mid = lo + (int)((hi - lo) / 2)
+    let pivot = arr[mid].key
+    let i = lo
+    let j = hi
+    loop i <= j:
+        loop arr[i].key < pivot:
+            i += 1
+        end
+        loop arr[j].key > pivot:
+            j -= 1
+        end
+        if i <= j:
+            let tmp = arr[i]
+            arr[i] = arr[j]
+            arr[j] = tmp
+            i += 1
+            j -= 1
+        end
+    end
+    qsort(arr, lo, j)
+    qsort(arr, i, hi)
+end
+
+let started = Sys.time()
+
+let N = 5000
+let items = new Item[N]
+for i in range(0, N):
+    items[i] = new Item(N - i + (i % 17) * 3, i)
+end
+let build_ms = Sys.time() - started
+
+let t1 = Sys.time()
+qsort(items, 0, N - 1)
+let sort_ms = Sys.time() - t1
+
+let checksum = 0
+for item in items:
+    checksum += item.key
+end
+
+let ended = Sys.time()
+
+println("polyloft-bvm sort benchmark")
+println("checksum=" + checksum)
+println("first_key=" + items[0].key)
+println("last_key=" + items[N - 1].key)
+println("build_ms=" + build_ms)
+println("sort_ms=" + sort_ms)
+println("elapsed_ms=" + (ended - started))

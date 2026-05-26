@@ -1,0 +1,14 @@
+def fib(n: int) -> int:
+    if n <= 1:
+        return n
+    end
+    return fib(n - 1) + fib(n - 2)
+end
+
+let started = Sys.time()
+let result = fib(35)
+let ended = Sys.time()
+
+println("polyloft-bvm recursion benchmark")
+println("fib(35)=" + result)
+println("elapsed_ms=" + (ended - started))

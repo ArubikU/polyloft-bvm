@@ -1,0 +1,60 @@
+def makeAdder(n: int):
+    return (x: int) => x + n
+end
+
+def makeAccumulator(start: int):
+    let total = start
+    let f = (x: int) => :
+        total += x
+        return total
+    end
+    return f
+end
+
+def applyN(f, n: int, x: int) -> int:
+    let result = x
+    for i in range(0, n):
+        result = f(result)
+    end
+    return result
+end
+
+let started = Sys.time()
+
+// Part 1: create and call many closures
+let t1 = Sys.time()
+let sum = 0
+for i in range(0, 5000):
+    let adder = makeAdder(i)
+    sum += adder(10)
+end
+let make_ms = Sys.time() - t1
+
+// Part 2: stateful closure (accumulator)
+let t2 = Sys.time()
+let acc = makeAccumulator(0)
+for i in range(0, 100000):
+    acc(i)
+end
+let final_acc = acc(0)
+let accum_ms = Sys.time() - t2
+
+// Part 3: function composition chain
+let t3 = Sys.time()
+let inc = (x: int) => x + 1
+let dbl = (x: int) => x * 2
+let result = applyN(inc, 10000, 0)
+let result2 = applyN(dbl, 20, 1)
+let hof_ms = Sys.time() - t3
+
+let ended = Sys.time()
+
+println("polyloft-bvm closure benchmark")
+println("make_sum=" + sum)
+println("accum_final=" + final_acc)
+println("hof_inc=" + result)
+println("hof_dbl=" + result2)
+println("make_ms=" + make_ms)
+println("accum_ms=" + accum_ms)
+println("hof_ms=" + hof_ms)
+println("elapsed_ms=" + (ended - started))

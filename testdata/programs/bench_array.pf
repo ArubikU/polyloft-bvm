@@ -1,0 +1,63 @@
+def sieve(limit: int) -> int:
+    let is_prime = new bool[limit + 1]{true}
+    is_prime[0] = false
+    is_prime[1] = false
+    let i = 2
+    loop i * i <= limit:
+        if is_prime[i]:
+            let j = i * i
+            loop j <= limit:
+                is_prime[j] = false
+                j += i
+            end
+        end
+        i += 1
+    end
+    let count = 0
+    for p in is_prime:
+        if p:
+            count += 1
+        end
+    end
+    return count
+end
+
+let started = Sys.time()
+
+// Part 1: Sieve of Eratosthenes up to 500k
+let t1 = Sys.time()
+let prime_count = sieve(500000)
+let sieve_ms = Sys.time() - t1
+
+// Part 2: squares sum
+let t2 = Sys.time()
+let sq_sum = 0
+for i in range(0, 10000):
+    sq_sum += i * i
+end
+let comp_ms = Sys.time() - t2
+
+// Part 3: prefix sums
+let t3 = Sys.time()
+let N = 100000
+let data = new int[N]
+for i in range(0, N):
+    data[i] = i % 997
+end
+let prefix = new int[N]
+prefix[0] = data[0]
+for i in range(1, N):
+    prefix[i] = prefix[i - 1] + data[i]
+end
+let prefix_ms = Sys.time() - t3
+
+let ended = Sys.time()
+
+println("polyloft-bvm array benchmark")
+println("prime_count=" + prime_count)
+println("sq_sum=" + sq_sum)
+println("prefix_last=" + prefix[N - 1])
+println("sieve_ms=" + sieve_ms)
+println("comp_ms=" + comp_ms)
+println("prefix_ms=" + prefix_ms)
+println("elapsed_ms=" + (ended - started))
