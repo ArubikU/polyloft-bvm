@@ -213,7 +213,6 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 				}
 				c.emit(bytecode.OpSetLocal, node.Targets[i].Line)
 				c.emitByte(slots[i], node.Targets[i].Line)
-				c.emit(bytecode.OpPop, node.Targets[i].Line)
 			}
 			return nil
 		}
@@ -266,7 +265,6 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 			}
 			c.emit(bytecode.OpSetLocal, node.Targets[i].Line)
 			c.emitByte(slots[i], node.Targets[i].Line)
-			c.emit(bytecode.OpPop, node.Targets[i].Line)
 		}
 		return nil
 	case *ast.AssignStmt:
@@ -281,6 +279,12 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 				return nil
 			}
 			if node.Operator.Type == token.Equal && c.emitFastLocalMulThisFieldAssign(slot, node, targetType) {
+				return nil
+			}
+			if c.emitFastPlusEqLocalMulThisFieldAddThisField(slot, node) {
+				return nil
+			}
+			if c.emitFastPlusEqLocalMulThisField(slot, node) {
 				return nil
 			}
 			if node.Operator.Type != token.Equal {
@@ -591,8 +595,9 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 		iterSlot := c.declareLocal(iteratorName, "Iterator")
 		targetSlots := make([]byte, len(node.Targets))
 		itemSlot := byte(0)
+		elemType := c.inferIterableElementType(c.inferExprType(node.Iterable))
 		if len(node.Targets) == 1 {
-			targetSlots[0] = c.declareLocal(node.Targets[0], "")
+			targetSlots[0] = c.declareLocal(node.Targets[0], elemType)
 			itemSlot = targetSlots[0]
 		} else {
 			itemSlot = c.declareLocal(token.Token{Lexeme: "__item_" + anchor.Lexeme, Line: anchor.Line}, "")
@@ -621,7 +626,6 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 			for i := len(targetSlots) - 1; i >= 0; i-- {
 				c.emit(bytecode.OpSetLocal, node.Targets[i].Line)
 				c.emitByte(targetSlots[i], node.Targets[i].Line)
-				c.emit(bytecode.OpPop, node.Targets[i].Line)
 			}
 		}
 		if node.Condition != nil {
@@ -634,7 +638,6 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 				}
 				c.emit(bytecode.OpSetLocal, condition.Target.Name.Line)
 				c.emitByte(tempSlot, condition.Target.Name.Line)
-				c.emit(bytecode.OpPop, condition.Target.Name.Line)
 				c.emit(bytecode.OpGetLocal, condition.Target.Name.Line)
 				c.emitByte(tempSlot, condition.Target.Name.Line)
 				name := c.constant(c.typeNameFromRef(condition.Target))
@@ -647,7 +650,6 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 				c.emitCastForType(condition.Target, condition.Target.Name.Line)
 				c.emit(bytecode.OpSetLocal, condition.Binding.Line)
 				c.emitByte(bindingSlot, condition.Binding.Line)
-				c.emit(bytecode.OpPop, condition.Binding.Line)
 				if err := c.compileExpr(guard); err != nil {
 					return err
 				}
@@ -672,7 +674,6 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 				}
 				c.emit(bytecode.OpSetLocal, condition.Target.Name.Line)
 				c.emitByte(tempSlot, condition.Target.Name.Line)
-				c.emit(bytecode.OpPop, condition.Target.Name.Line)
 				c.emit(bytecode.OpGetLocal, condition.Target.Name.Line)
 				c.emitByte(tempSlot, condition.Target.Name.Line)
 				name := c.constant(c.typeNameFromRef(condition.Target))
@@ -685,7 +686,6 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 				c.emitCastForType(condition.Target, condition.Target.Name.Line)
 				c.emit(bytecode.OpSetLocal, condition.Binding.Line)
 				c.emitByte(bindingSlot, condition.Binding.Line)
-				c.emit(bytecode.OpPop, condition.Binding.Line)
 				if err := c.compileBlock(node.Body); err != nil {
 					return err
 				}
@@ -1438,6 +1438,69 @@ func (c *Compiler) emitFastLocalMulThisFieldAssign(targetSlot byte, node *ast.As
 	return true
 }
 
+// emitFastPlusEqLocalMulThisField handles: target += local * this.field
+func (c *Compiler) emitFastPlusEqLocalMulThisField(targetSlot byte, node *ast.AssignStmt) bool {
+	if node.Operator.Type != token.PlusEqual {
+		return false
+	}
+	localSlot, fieldSlot, ok := c.matchLocalMulThisField(node.Value)
+	if !ok {
+		return false
+	}
+	c.emit(bytecode.OpAddLocalMulThisField, node.Name.Line)
+	c.emitByte(targetSlot, node.Name.Line)
+	c.emitByte(localSlot, node.Name.Line)
+	c.emitByte(fieldSlot, node.Name.Line)
+	return true
+}
+
+// emitFastPlusEqLocalMulThisFieldAddThisField handles: target += (local * this.fieldA) + this.fieldB
+func (c *Compiler) emitFastPlusEqLocalMulThisFieldAddThisField(targetSlot byte, node *ast.AssignStmt) bool {
+	if node.Operator.Type != token.PlusEqual {
+		return false
+	}
+	addExpr, ok := node.Value.(*ast.BinaryExpr)
+	if !ok || addExpr.Operator.Type != token.Plus {
+		return false
+	}
+	// Try: (local * thisField) + thisField2
+	if localSlot, mulFieldSlot, ok := c.matchLocalMulThisField(addExpr.Left); ok {
+		if addFieldSlot, ok := c.matchThisFieldSlot(addExpr.Right); ok {
+			c.emit(bytecode.OpAddLocalMulThisFieldAddThisField, node.Name.Line)
+			c.emitByte(targetSlot, node.Name.Line)
+			c.emitByte(localSlot, node.Name.Line)
+			c.emitByte(byte(mulFieldSlot), node.Name.Line)
+			c.emitByte(byte(addFieldSlot), node.Name.Line)
+			return true
+		}
+	}
+	// Try: thisField2 + (local * thisField) — commutative
+	if localSlot, mulFieldSlot, ok := c.matchLocalMulThisField(addExpr.Right); ok {
+		if addFieldSlot, ok := c.matchThisFieldSlot(addExpr.Left); ok {
+			c.emit(bytecode.OpAddLocalMulThisFieldAddThisField, node.Name.Line)
+			c.emitByte(targetSlot, node.Name.Line)
+			c.emitByte(localSlot, node.Name.Line)
+			c.emitByte(byte(mulFieldSlot), node.Name.Line)
+			c.emitByte(byte(addFieldSlot), node.Name.Line)
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Compiler) matchThisFieldSlot(expr ast.Expr) (int, bool) {
+	expr = unwrapGrouping(expr)
+	getter, ok := expr.(*ast.GetExpr)
+	if !ok {
+		return 0, false
+	}
+	if _, isThis := getter.Object.(*ast.ThisExpr); !isThis {
+		return 0, false
+	}
+	slot, ok := c.resolveFieldSlot(getter.Object, getter.Name.Lexeme)
+	return slot, ok
+}
+
 func (c *Compiler) emitFastStringAppendAssign(targetSlot byte, node *ast.AssignStmt, targetType string) bool {
 	if c.state.parent != nil || c.state.name != "<script>" {
 		return false
@@ -1765,7 +1828,6 @@ func (c *Compiler) compileIfInstanceOf(node *ast.IfStmt, condition *ast.Instance
 	}
 	c.emit(bytecode.OpSetLocal, condition.Target.Name.Line)
 	c.emitByte(tempSlot, condition.Target.Name.Line)
-	c.emit(bytecode.OpPop, condition.Target.Name.Line)
 	c.emit(bytecode.OpGetLocal, condition.Target.Name.Line)
 	c.emitByte(tempSlot, condition.Target.Name.Line)
 	name := c.constant(c.typeNameFromRef(condition.Target))
@@ -1779,7 +1841,6 @@ func (c *Compiler) compileIfInstanceOf(node *ast.IfStmt, condition *ast.Instance
 	bindingSlot := c.declareLocal(*condition.Binding, c.typeNameFromRef(condition.Target))
 	c.emit(bytecode.OpSetLocal, condition.Binding.Line)
 	c.emitByte(bindingSlot, condition.Binding.Line)
-	c.emit(bytecode.OpPop, condition.Binding.Line)
 	if guard != nil {
 		if err := c.compileExpr(guard); err != nil {
 			return err
@@ -2106,7 +2167,9 @@ func (c *Compiler) detectFastMethod(classValue *value.Class, method ast.MethodDe
 	if expr == nil {
 		return nil
 	}
-	return &value.FastMethodPlan{Arity: 0, Expr: expr}
+	plan := &value.FastMethodPlan{Arity: 0, Expr: expr}
+	plan.CompileOps()
+	return plan
 }
 
 func (c *Compiler) buildDynamicInstanceFieldInitializers(fields []ast.FieldDecl) []ast.Stmt {
@@ -3141,7 +3204,6 @@ func (c *Compiler) compileFastRangeFor(node *ast.ForStmt) error {
 			}
 			c.emit(bytecode.OpSetLocal, condition.Target.Name.Line)
 			c.emitByte(tempSlot, condition.Target.Name.Line)
-			c.emit(bytecode.OpPop, condition.Target.Name.Line)
 			c.emit(bytecode.OpGetLocal, condition.Target.Name.Line)
 			c.emitByte(tempSlot, condition.Target.Name.Line)
 			name := c.constant(c.typeNameFromRef(condition.Target))
@@ -3154,7 +3216,6 @@ func (c *Compiler) compileFastRangeFor(node *ast.ForStmt) error {
 			c.emitCastForType(condition.Target, condition.Target.Name.Line)
 			c.emit(bytecode.OpSetLocal, condition.Binding.Line)
 			c.emitByte(bindingSlot, condition.Binding.Line)
-			c.emit(bytecode.OpPop, condition.Binding.Line)
 			if err := c.compileExpr(guard); err != nil {
 				return err
 			}
@@ -3179,7 +3240,6 @@ func (c *Compiler) compileFastRangeFor(node *ast.ForStmt) error {
 			}
 			c.emit(bytecode.OpSetLocal, condition.Target.Name.Line)
 			c.emitByte(tempSlot, condition.Target.Name.Line)
-			c.emit(bytecode.OpPop, condition.Target.Name.Line)
 			c.emit(bytecode.OpGetLocal, condition.Target.Name.Line)
 			c.emitByte(tempSlot, condition.Target.Name.Line)
 			name := c.constant(c.typeNameFromRef(condition.Target))
@@ -3192,7 +3252,6 @@ func (c *Compiler) compileFastRangeFor(node *ast.ForStmt) error {
 			c.emitCastForType(condition.Target, condition.Target.Name.Line)
 			c.emit(bytecode.OpSetLocal, condition.Binding.Line)
 			c.emitByte(bindingSlot, condition.Binding.Line)
-			c.emit(bytecode.OpPop, condition.Binding.Line)
 			if err := c.compileBlock(node.Body); err != nil {
 				return err
 			}
@@ -3320,6 +3379,14 @@ func (c *Compiler) inferDestructureTypes(expr ast.Expr, count int) []string {
 		types[i] = c.inferExprType(element)
 	}
 	return types
+}
+
+func (c *Compiler) inferIterableElementType(iterableType string) string {
+	const prefix = "array<"
+	if strings.HasPrefix(iterableType, prefix) && strings.HasSuffix(iterableType, ">") {
+		return iterableType[len(prefix) : len(iterableType)-1]
+	}
+	return ""
 }
 
 func (c *Compiler) resolveExprClass(expr ast.Expr) *value.Class {

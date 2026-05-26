@@ -318,6 +318,7 @@ func AllInstructionSpecs() []bytecode.Op {
 		bytecode.OpGreaterNum,
 		bytecode.OpAddLocalMulThisField,
 		bytecode.OpAddLocalMulLocal,
+		bytecode.OpAddLocalMulThisFieldAddThisField,
 		bytecode.OpAppendLocalString,
 		bytecode.OpClosure,
 		bytecode.OpCall,

@@ -193,16 +193,131 @@ type FastMethodExpr struct {
 	Right      *FastMethodExpr
 }
 
+// FastMethodOp is one instruction in a flat postfix evaluation sequence.
+type FastMethodOp struct {
+	Kind  FastMethodExprKind
+	Slot  int   // field slot (for FastMethodExprField)
+	Const Value // constant value (for FastMethodExprNumber/Literal)
+}
+
 type FastMethodPlan struct {
 	Arity int
 	Expr  *FastMethodExpr
+	Ops   []FastMethodOp // flat postfix sequence; non-nil when pre-compiled
+}
+
+// CompileOps converts the expression tree to a flat postfix instruction sequence.
+func (p *FastMethodPlan) CompileOps() {
+	if p.Arity != 0 || p.Expr == nil {
+		return
+	}
+	var ops []FastMethodOp
+	if buildPostfix(p.Expr, &ops) {
+		p.Ops = ops
+	}
+}
+
+func buildPostfix(expr *FastMethodExpr, ops *[]FastMethodOp) bool {
+	switch expr.Kind {
+	case FastMethodExprNumber:
+		var v Value
+		if i := int64(expr.Number); float64(i) == expr.Number {
+			v = IntValue(i)
+		} else {
+			v = FloatValue(expr.Number)
+		}
+		*ops = append(*ops, FastMethodOp{Kind: FastMethodExprNumber, Const: v})
+		return true
+	case FastMethodExprLiteral:
+		*ops = append(*ops, FastMethodOp{Kind: FastMethodExprLiteral, Const: expr.Literal})
+		return true
+	case FastMethodExprField:
+		*ops = append(*ops, FastMethodOp{Kind: FastMethodExprField, Slot: expr.FieldSlot})
+		return true
+	case FastMethodExprNegate:
+		if !buildPostfix(expr.Left, ops) {
+			return false
+		}
+		*ops = append(*ops, FastMethodOp{Kind: FastMethodExprNegate})
+		return true
+	case FastMethodExprAdd, FastMethodExprSub, FastMethodExprMul, FastMethodExprDiv:
+		if !buildPostfix(expr.Left, ops) || !buildPostfix(expr.Right, ops) {
+			return false
+		}
+		*ops = append(*ops, FastMethodOp{Kind: expr.Kind})
+		return true
+	default:
+		return false
+	}
+}
+
+// EvalOps executes the flat postfix sequence against an instance.
+// Uses a fixed-size stack to avoid allocations.
+func (p *FastMethodPlan) EvalOps(inst *Instance) Value {
+	var stack [16]Value
+	sp := 0
+	for i := range p.Ops {
+		op := &p.Ops[i]
+		switch op.Kind {
+		case FastMethodExprField:
+			stack[sp] = inst.Fields[op.Slot]
+			sp++
+		case FastMethodExprNumber, FastMethodExprLiteral:
+			stack[sp] = op.Const
+			sp++
+		case FastMethodExprNegate:
+			v := &stack[sp-1]
+			if v.Kind == Number {
+				if v.NumberKind == NumberInt {
+					stack[sp-1] = IntValue(-v.Int)
+				} else {
+					stack[sp-1] = FloatValue(-v.Num)
+				}
+			}
+		case FastMethodExprAdd, FastMethodExprSub, FastMethodExprMul, FastMethodExprDiv:
+			sp--
+			l := &stack[sp-1]
+			r := &stack[sp]
+			if l.Kind == Number && r.Kind == Number {
+				if l.NumberKind == NumberInt && r.NumberKind == NumberInt {
+					switch op.Kind {
+					case FastMethodExprAdd:
+						stack[sp-1] = IntValue(l.Int + r.Int)
+					case FastMethodExprSub:
+						stack[sp-1] = IntValue(l.Int - r.Int)
+					case FastMethodExprMul:
+						stack[sp-1] = IntValue(l.Int * r.Int)
+					default:
+						if r.Int != 0 {
+							stack[sp-1] = IntValue(l.Int / r.Int)
+						}
+					}
+				} else {
+					switch op.Kind {
+					case FastMethodExprAdd:
+						stack[sp-1] = FloatValue(l.Num + r.Num)
+					case FastMethodExprSub:
+						stack[sp-1] = FloatValue(l.Num - r.Num)
+					case FastMethodExprMul:
+						stack[sp-1] = FloatValue(l.Num * r.Num)
+					default:
+						stack[sp-1] = FloatValue(l.Num / r.Num)
+					}
+				}
+			}
+		}
+	}
+	if sp == 0 {
+		return NilValue()
+	}
+	return stack[0]
 }
 
 type Instance struct {
 	Class  *Class
 	Fields []Value
 	Frozen bool
-	Inline [4]Value
+	Inline [1]Value
 }
 
 type BoundMethod struct {
@@ -610,21 +725,6 @@ func (c *Class) NewInstance() *Instance {
 	case 1:
 		inst.Fields = inst.Inline[:1]
 		inst.Fields[0] = c.defaultFields[0]
-	case 2:
-		inst.Fields = inst.Inline[:2]
-		inst.Fields[0] = c.defaultFields[0]
-		inst.Fields[1] = c.defaultFields[1]
-	case 3:
-		inst.Fields = inst.Inline[:3]
-		inst.Fields[0] = c.defaultFields[0]
-		inst.Fields[1] = c.defaultFields[1]
-		inst.Fields[2] = c.defaultFields[2]
-	case 4:
-		inst.Fields = inst.Inline[:4]
-		inst.Fields[0] = c.defaultFields[0]
-		inst.Fields[1] = c.defaultFields[1]
-		inst.Fields[2] = c.defaultFields[2]
-		inst.Fields[3] = c.defaultFields[3]
 	default:
 		inst.Fields = make([]Value, n)
 		copy(inst.Fields, c.defaultFields)

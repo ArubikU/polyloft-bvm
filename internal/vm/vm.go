@@ -50,6 +50,7 @@ type VM struct {
 	builtinArgs     []value.Value
 	globalSlotNames []string
 	callbackMu      sync.Mutex
+	instancePools   map[*value.Class][]*value.Instance
 }
 
 func New(stdout io.Writer) *VM {
@@ -215,7 +216,19 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			vm.push(vm.localGet(frame, slot))
 		case bytecode.OpSetLocal:
 			slot := vm.readByte(frame)
-			vm.localSet(frame, slot, vm.peek(0))
+			newVal := vm.pop()
+			// Fast path: peek at old local and recycle if it's an Instance with no aliases
+			if !frame.hasCells {
+				if old := frame.locals[slot]; old.Kind == value.Object {
+					vm.tryRecycleLocal(frame, slot, old)
+				}
+				frame.locals[slot] = newVal
+			} else {
+				if old := vm.localGetSlow(frame, slot); old.Kind == value.Object {
+					vm.tryRecycleLocal(frame, slot, old)
+				}
+				vm.localSetSlow(frame, slot, newVal)
+			}
 		case bytecode.OpAppendLocalString:
 			slot := vm.readByte(frame)
 			vm.appendLocalString(frame, slot, vm.pop())
@@ -605,16 +618,37 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if frame.receiver == nil {
 				return value.NilValue(), fmt.Errorf("ADD_LOCAL_MUL_THIS_FIELD expects receiver")
 			}
-			if fieldSlot < 0 || fieldSlot >= len(frame.receiver.Fields) {
-				return value.NilValue(), fmt.Errorf("invalid field slot %d for %s", fieldSlot, frame.receiver.Class.Name)
-			}
 			target := frame.locals[targetSlot]
 			multiplier := frame.locals[localSlot]
 			factor := frame.receiver.Fields[fieldSlot]
 			if target.Kind != value.Number || multiplier.Kind != value.Number || factor.Kind != value.Number {
 				return value.NilValue(), fmt.Errorf("ADD_LOCAL_MUL_THIS_FIELD expects numbers")
 			}
+			if target.NumberKind == value.NumberInt && multiplier.NumberKind == value.NumberInt && factor.NumberKind == value.NumberInt {
+				frame.locals[targetSlot] = value.IntValue(target.Int + multiplier.Int*factor.Int)
+				continue
+			}
 			frame.locals[targetSlot] = value.NumberValue(target.Num + multiplier.Num*factor.Num)
+		case bytecode.OpAddLocalMulThisFieldAddThisField:
+			targetSlot := vm.readByte(frame)
+			localSlot := vm.readByte(frame)
+			mulFieldSlot := int(vm.readByte(frame))
+			addFieldSlot := int(vm.readByte(frame))
+			if frame.receiver == nil {
+				return value.NilValue(), fmt.Errorf("ADD_LOCAL_MUL_THIS_FIELD_ADD_THIS_FIELD expects receiver")
+			}
+			target := frame.locals[targetSlot]
+			multiplier := frame.locals[localSlot]
+			mulField := frame.receiver.Fields[mulFieldSlot]
+			addField := frame.receiver.Fields[addFieldSlot]
+			if target.Kind != value.Number || multiplier.Kind != value.Number || mulField.Kind != value.Number || addField.Kind != value.Number {
+				return value.NilValue(), fmt.Errorf("ADD_LOCAL_MUL_THIS_FIELD_ADD_THIS_FIELD expects numbers")
+			}
+			if target.NumberKind == value.NumberInt && multiplier.NumberKind == value.NumberInt && mulField.NumberKind == value.NumberInt && addField.NumberKind == value.NumberInt {
+				frame.locals[targetSlot] = value.IntValue(target.Int + multiplier.Int*mulField.Int + addField.Int)
+				continue
+			}
+			frame.locals[targetSlot] = value.NumberValue(target.Num + multiplier.Num*mulField.Num + addField.Num)
 		case bytecode.OpClosure:
 			idx := vm.readUint16(frame)
 			fn := frame.fn.Chunk.Constants[idx].(*bytecode.Function)
@@ -1478,7 +1512,7 @@ func (vm *VM) call(argc int) error {
 			if fastCtor.Arity != argc {
 				return fmt.Errorf("%s expects %d args, got %d", class.Name, fastCtor.Arity, argc)
 			}
-			instance := class.NewInstance()
+			instance := vm.acquireInstance(class)
 			baseIdx := len(vm.stack) - argc
 			for i, slot := range fastCtor.FieldSlots {
 				instance.Fields[slot] = vm.stack[baseIdx+fastCtor.ArgIndexes[i]]
@@ -1504,7 +1538,7 @@ func (vm *VM) call(argc int) error {
 		if ctor != nil && ctor.Arity != argc {
 			return fmt.Errorf("%s expects %d args, got %d", class.Name, ctor.Arity, argc)
 		}
-		instance := class.NewInstance()
+		instance := vm.acquireInstance(class)
 		if ctor == nil {
 			for i := 0; i < argc; i++ {
 				vm.pop()
@@ -1675,7 +1709,7 @@ func (vm *VM) callKnownValue(callee value.Value, argc int) error {
 			if fastCtor.Arity != argc {
 				return fmt.Errorf("%s expects %d args, got %d", class.Name, fastCtor.Arity, argc)
 			}
-			instance := class.NewInstance()
+			instance := vm.acquireInstance(class)
 			baseIdx := len(vm.stack) - argc
 			for i, slot := range fastCtor.FieldSlots {
 				instance.Fields[slot] = vm.stack[baseIdx+fastCtor.ArgIndexes[i]]
@@ -1684,7 +1718,7 @@ func (vm *VM) callKnownValue(callee value.Value, argc int) error {
 			vm.push(value.ObjectValue(instance))
 			return nil
 		}
-		instance := class.NewInstance()
+		instance := vm.acquireInstance(class)
 		if ctor == nil {
 			for i := 0; i < argc; i++ {
 				vm.pop()
@@ -2368,6 +2402,9 @@ func (vm *VM) tryFastMethodCall(receiver *value.Instance, slot int) (value.Value
 	if !ok || plan == nil || plan.Arity != 0 {
 		return value.NilValue(), false, nil
 	}
+	if plan.Ops != nil {
+		return plan.EvalOps(receiver), true, nil
+	}
 	result, err := vm.evalFastMethodExpr(receiver, plan.Expr)
 	if err != nil {
 		return value.NilValue(), false, err
@@ -2818,6 +2855,59 @@ func (vm *VM) releaseFrame(child *frame) {
 	}
 	child.handlers = child.handlers[:0]
 	vm.framePool = append(vm.framePool, child)
+}
+
+// acquireInstance returns a recycled instance from the pool if available, or allocates a new one.
+func (vm *VM) acquireInstance(cls *value.Class) *value.Instance {
+	if vm.instancePools != nil {
+		if pool := vm.instancePools[cls]; len(pool) > 0 {
+			n := len(pool) - 1
+			inst := pool[n]
+			vm.instancePools[cls] = pool[:n]
+			inst.Frozen = false
+			return inst
+		}
+	}
+	return cls.NewInstance()
+}
+
+// tryRecycleLocal checks whether the old value at a local slot can be safely pooled.
+// Safe when the instance has no alias in another local slot or on the active stack.
+func (vm *VM) tryRecycleLocal(frame *frame, slot byte, old value.Value) {
+	if old.Kind != value.Object {
+		return
+	}
+	inst, ok := old.Object.(*value.Instance)
+	if !ok {
+		return
+	}
+	// Check for aliases in other locals
+	for i := range frame.locals {
+		if byte(i) == slot {
+			continue
+		}
+		v := frame.locals[i]
+		if v.Kind == value.Object && v.Object == old.Object {
+			return
+		}
+	}
+	// Check for aliases on the active expression stack
+	for i := frame.stackBase; i < len(vm.stack); i++ {
+		v := vm.stack[i]
+		if v.Kind == value.Object && v.Object == old.Object {
+			return
+		}
+	}
+	// No aliases found – recycle the instance
+	if vm.instancePools == nil {
+		vm.instancePools = make(map[*value.Class][]*value.Instance, 4)
+	}
+	cls := inst.Class
+	pool := vm.instancePools[cls]
+	const maxPoolSize = 32
+	if len(pool) < maxPoolSize {
+		vm.instancePools[cls] = append(pool, inst)
+	}
 }
 
 func (vm *VM) borrowBuiltinArgs(argc int) []value.Value {

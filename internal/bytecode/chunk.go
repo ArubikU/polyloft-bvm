@@ -217,6 +217,9 @@ func (c *Chunk) Disassemble(name string) string {
 		case OpAddLocalMulLocal:
 			fmt.Fprintf(&out, "target=%d left=%d right=%d", c.Code[offset+1], c.Code[offset+2], c.Code[offset+3])
 			offset += 4
+		case OpAddLocalMulThisFieldAddThisField:
+			fmt.Fprintf(&out, "target=%d local=%d mulField=%d addField=%d", c.Code[offset+1], c.Code[offset+2], c.Code[offset+3], c.Code[offset+4])
+			offset += 5
 		case OpAppendLocalString:
 			fmt.Fprintf(&out, "slot=%d", c.Code[offset+1])
 			offset += 2

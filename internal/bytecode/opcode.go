@@ -47,6 +47,7 @@ const (
 	OpGreaterNum
 	OpAddLocalMulThisField
 	OpAddLocalMulLocal
+	OpAddLocalMulThisFieldAddThisField
 	OpAppendLocalString
 	OpClosure
 	OpCall
@@ -188,6 +189,8 @@ func (op Op) String() string {
 		return "ADD_LOCAL_MUL_THIS_FIELD"
 	case OpAddLocalMulLocal:
 		return "ADD_LOCAL_MUL_LOCAL"
+	case OpAddLocalMulThisFieldAddThisField:
+		return "ADD_LOCAL_MUL_THIS_FIELD_ADD_THIS_FIELD"
 	case OpAppendLocalString:
 		return "APPEND_LOCAL_STRING"
 	case OpClosure:
