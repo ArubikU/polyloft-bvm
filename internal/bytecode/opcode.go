@@ -36,6 +36,7 @@ const (
 	OpThrow
 	OpJump
 	OpJumpIfFalse
+	OpJumpIfTrue
 	OpLoop
 	OpAddNum
 	OpSubNum
@@ -97,8 +98,11 @@ const (
 	OpSwap
 	OpSwapTwo
 	OpReturn
-	OpArrayAlloc // pop size(int) → push array of N nils
-	OpArrayFill  // pop fill, pop size(int) → push array of N copies of fill
+	OpArrayAlloc        // pop size(int) → push array of N nils
+	OpArrayFill         // pop fill, pop size(int) → push array of N copies of fill
+	OpSetLocalArrayBool    // locals[arr][locals[idx]] = bool; args: arr_slot, idx_slot, bool_byte
+	OpAddLocalLocal        // locals[dst] += locals[src] (int); args: dst_slot, src_slot
+	OpGetLocalArrayField   // push locals[arr_slot][locals[idx_slot].Int].Fields[field_slot]; args: arr_slot, idx_slot, field_slot
 )
 
 func (op Op) String() string {
@@ -169,6 +173,8 @@ func (op Op) String() string {
 		return "JUMP"
 	case OpJumpIfFalse:
 		return "JUMP_IF_FALSE"
+	case OpJumpIfTrue:
+		return "JUMP_IF_TRUE"
 	case OpLoop:
 		return "LOOP"
 	case OpAddNum:
@@ -295,6 +301,12 @@ func (op Op) String() string {
 		return "ARRAY_ALLOC"
 	case OpArrayFill:
 		return "ARRAY_FILL"
+	case OpSetLocalArrayBool:
+		return "SET_LOCAL_ARRAY_BOOL"
+	case OpAddLocalLocal:
+		return "ADD_LOCAL_LOCAL"
+	case OpGetLocalArrayField:
+		return "GET_LOCAL_ARRAY_FIELD"
 	default:
 		return "UNKNOWN"
 	}

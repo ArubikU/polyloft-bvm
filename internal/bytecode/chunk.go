@@ -186,101 +186,132 @@ func (c *Chunk) PatchUint16(offset int, v uint16) {
 
 func (c *Chunk) Disassemble(name string) string {
 	var out strings.Builder
-	fmt.Fprintf(&out, "== %s ==\n", name)
+	c.disassembleInto(&out, name)
+	return out.String()
+}
+
+func (c *Chunk) disassembleInto(out *strings.Builder, name string) {
+	// Collect nested functions from constants so they can be printed after the main body.
+	var nested []*Function
+	for _, k := range c.Constants {
+		if fn, ok := k.(*Function); ok {
+			nested = append(nested, fn)
+		}
+	}
+
+	fmt.Fprintf(out, "== %s ==\n", name)
 	for offset := 0; offset < len(c.Code); {
 		op := Op(c.Code[offset])
 		line := c.Lines[offset]
-		fmt.Fprintf(&out, "%04d L%-3d %-14s", offset, line, op.String())
+		fmt.Fprintf(out,"%04d L%-3d %-14s", offset, line, op.String())
 		switch op {
 		case OpConstant, OpDefineGlobal, OpGetGlobal, OpSetGlobal, OpGetProperty, OpSetProperty, OpClosure:
 			idx := readUint16(c.Code[offset+1:])
-			fmt.Fprintf(&out, "%d (%v)", idx, c.Constants[idx])
+			fmt.Fprintf(out,"%d (%v)", idx, c.Constants[idx])
 			offset += 3
 		case OpWrapInterface:
 			ifaceIdx := readUint16(c.Code[offset+1:])
 			methodIdx := readUint16(c.Code[offset+3:])
-			fmt.Fprintf(&out, "%v.%v", c.Constants[ifaceIdx], c.Constants[methodIdx])
+			fmt.Fprintf(out,"%v.%v", c.Constants[ifaceIdx], c.Constants[methodIdx])
 			offset += 5
 		case OpMatchType, OpCastRef:
 			idx := readUint16(c.Code[offset+1:])
-			fmt.Fprintf(&out, "%d (%v)", idx, c.Constants[idx])
+			fmt.Fprintf(out,"%d (%v)", idx, c.Constants[idx])
 			offset += 3
 		case OpGetLocal, OpSetLocal, OpGetCapture, OpSetCapture, OpCall, OpCallSuper, OpRange, OpTuple, OpUnpack, OpGetField, OpSetField, OpGetThisField, OpSetThisField, OpDefineGlobalSlot, OpGetGlobalSlot, OpSetGlobalSlot, OpArray, OpMap:
-			fmt.Fprintf(&out, "%d", c.Code[offset+1])
+			fmt.Fprintf(out,"%d", c.Code[offset+1])
 			offset += 2
 		case OpCallGlobalSlot:
-			fmt.Fprintf(&out, "slot=%d argc=%d", c.Code[offset+1], c.Code[offset+2])
+			fmt.Fprintf(out,"slot=%d argc=%d", c.Code[offset+1], c.Code[offset+2])
 			offset += 3
 		case OpAddLocalMulThisField:
-			fmt.Fprintf(&out, "target=%d local=%d field=%d", c.Code[offset+1], c.Code[offset+2], c.Code[offset+3])
+			fmt.Fprintf(out,"target=%d local=%d field=%d", c.Code[offset+1], c.Code[offset+2], c.Code[offset+3])
 			offset += 4
 		case OpAddLocalMulLocal:
-			fmt.Fprintf(&out, "target=%d left=%d right=%d", c.Code[offset+1], c.Code[offset+2], c.Code[offset+3])
+			fmt.Fprintf(out,"target=%d left=%d right=%d", c.Code[offset+1], c.Code[offset+2], c.Code[offset+3])
 			offset += 4
 		case OpAddLocalMulThisFieldAddThisField:
-			fmt.Fprintf(&out, "target=%d local=%d mulField=%d addField=%d", c.Code[offset+1], c.Code[offset+2], c.Code[offset+3], c.Code[offset+4])
+			fmt.Fprintf(out,"target=%d local=%d mulField=%d addField=%d", c.Code[offset+1], c.Code[offset+2], c.Code[offset+3], c.Code[offset+4])
 			offset += 5
 		case OpAppendLocalString:
-			fmt.Fprintf(&out, "slot=%d", c.Code[offset+1])
+			fmt.Fprintf(out,"slot=%d", c.Code[offset+1])
 			offset += 2
 		case OpCallConst:
 			idx := readUint16(c.Code[offset+1:])
-			fmt.Fprintf(&out, "%v argc=%d", c.Constants[idx], c.Code[offset+3])
+			fmt.Fprintf(out,"%v argc=%d", c.Constants[idx], c.Code[offset+3])
 			offset += 4
 		case OpAddConstLocalInt:
 			idx := readUint16(c.Code[offset+2:])
-			fmt.Fprintf(&out, "slot=%d const=%v", c.Code[offset+1], c.Constants[idx])
+			fmt.Fprintf(out,"slot=%d const=%v", c.Code[offset+1], c.Constants[idx])
 			offset += 4
 		case OpCallConstLocalSubInt:
 			callableIdx := readUint16(c.Code[offset+1:])
 			constIdx := readUint16(c.Code[offset+4:])
-			fmt.Fprintf(&out, "%v slot=%d sub=%v", c.Constants[callableIdx], c.Code[offset+3], c.Constants[constIdx])
+			fmt.Fprintf(out,"%v slot=%d sub=%v", c.Constants[callableIdx], c.Code[offset+3], c.Constants[constIdx])
 			offset += 6
 		case OpCallSelfLocalSubInt:
 			constIdx := readUint16(c.Code[offset+2:])
-			fmt.Fprintf(&out, "slot=%d sub=%v", c.Code[offset+1], c.Constants[constIdx])
+			fmt.Fprintf(out,"slot=%d sub=%v", c.Code[offset+1], c.Constants[constIdx])
 			offset += 4
 		case OpIterInit:
-			fmt.Fprintf(&out, "slot=%d mode=%d", c.Code[offset+1], c.Code[offset+2])
+			fmt.Fprintf(out,"slot=%d mode=%d", c.Code[offset+1], c.Code[offset+2])
 			offset += 3
 		case OpRangeInitFast:
-			fmt.Fprintf(&out, "current=%d end=%d step=%d argc=%d", c.Code[offset+1], c.Code[offset+2], c.Code[offset+3], c.Code[offset+4])
+			fmt.Fprintf(out,"current=%d end=%d step=%d argc=%d", c.Code[offset+1], c.Code[offset+2], c.Code[offset+3], c.Code[offset+4])
 			offset += 5
 		case OpRangeNextFast:
-			fmt.Fprintf(&out, "current=%d end=%d step=%d value=%d exit=%d", c.Code[offset+1], c.Code[offset+2], c.Code[offset+3], c.Code[offset+4], readUint16(c.Code[offset+5:]))
+			fmt.Fprintf(out,"current=%d end=%d step=%d value=%d exit=%d", c.Code[offset+1], c.Code[offset+2], c.Code[offset+3], c.Code[offset+4], readUint16(c.Code[offset+5:]))
 			offset += 7
 		case OpJumpIfLocalLessEqualIntConstFalse, OpJumpIfLocalDivisibleByIntConstFalse:
 			idx := readUint16(c.Code[offset+2:])
-			fmt.Fprintf(&out, "slot=%d const=%v jump=%d", c.Code[offset+1], c.Constants[idx], readUint16(c.Code[offset+4:]))
+			fmt.Fprintf(out,"slot=%d const=%v jump=%d", c.Code[offset+1], c.Constants[idx], readUint16(c.Code[offset+4:]))
 			offset += 6
 		case OpInvoke:
 			idx := readUint16(c.Code[offset+1:])
-			fmt.Fprintf(&out, "%v argc=%d", c.Constants[idx], c.Code[offset+3])
+			fmt.Fprintf(out,"%v argc=%d", c.Constants[idx], c.Code[offset+3])
 			offset += 4
 		case OpInvokeSuper:
 			idx := readUint16(c.Code[offset+1:])
-			fmt.Fprintf(&out, "%v argc=%d", c.Constants[idx], c.Code[offset+3])
+			fmt.Fprintf(out,"%v argc=%d", c.Constants[idx], c.Code[offset+3])
 			offset += 4
 		case OpInvokeMethod:
-			fmt.Fprintf(&out, "slot=%d argc=%d", c.Code[offset+1], c.Code[offset+2])
+			fmt.Fprintf(out,"slot=%d argc=%d", c.Code[offset+1], c.Code[offset+2])
 			offset += 3
-		case OpPushHandler, OpJump, OpJumpIfFalse, OpLoop:
+		case OpPushHandler, OpJump, OpJumpIfFalse, OpJumpIfTrue, OpLoop:
 			jump := readUint16(c.Code[offset+1:])
-			fmt.Fprintf(&out, "%d", jump)
+			fmt.Fprintf(out,"%d", jump)
 			offset += 3
-		case OpAddNum, OpSubNum, OpMulNum, OpPowNum, OpDivNum, OpModNum, OpLessNum, OpGreaterNum, OpPopHandler, OpThrow, OpReturn, OpNil, OpTrue, OpFalse, OpPop, OpDup, OpDupTwo, OpEqual, OpGreater, OpLess, OpAdd, OpSub, OpMul, OpPow, OpDiv, OpMod, OpNot, OpNegate, OpFreeze:
+		case OpAddNum, OpSubNum, OpMulNum, OpPowNum, OpDivNum, OpModNum, OpLessNum, OpGreaterNum, OpPopHandler, OpThrow, OpReturn, OpNil, OpTrue, OpFalse, OpPop, OpDup, OpDupTwo, OpEqual, OpGreater, OpLess, OpAdd, OpSub, OpMul, OpPow, OpDiv, OpMod, OpNot, OpNegate, OpFreeze, OpSwap, OpSwapTwo:
 			offset++
 		case OpIterNext:
-			fmt.Fprintf(&out, "iter=%d value=%d exit=%d", c.Code[offset+1], c.Code[offset+2], readUint16(c.Code[offset+3:]))
+			fmt.Fprintf(out,"iter=%d value=%d exit=%d", c.Code[offset+1], c.Code[offset+2], readUint16(c.Code[offset+3:]))
 			offset += 5
 		case OpGetIndex, OpGetIndexArray, OpGetIndexMap, OpSetIndex, OpSetIndexArray, OpSetIndexMap, OpSlice, OpCastInt, OpCastFloat:
 			offset++
+		case OpSetLocalArrayBool:
+			fmt.Fprintf(out, "arr=%d idx=%d val=%d", c.Code[offset+1], c.Code[offset+2], c.Code[offset+3])
+			offset += 4
+		case OpAddLocalLocal:
+			fmt.Fprintf(out, "dst=%d src=%d", c.Code[offset+1], c.Code[offset+2])
+			offset += 3
+		case OpGetLocalArrayField:
+			fmt.Fprintf(out, "arr=%d idx=%d field=%d", c.Code[offset+1], c.Code[offset+2], c.Code[offset+3])
+			offset += 4
+		case OpContains, OpContainsArray, OpContainsMap, OpContainsString:
+			offset++
+		case OpArrayAlloc, OpArrayFill:
+			offset++
 		default:
+			fmt.Fprintf(out, "(unknown op %d)", byte(op))
 			offset++
 		}
 		out.WriteByte('\n')
 	}
-	return out.String()
+
+	for _, fn := range nested {
+		out.WriteByte('\n')
+		fn.Chunk.disassembleInto(out, fn.Name)
+	}
 }
 
 func readUint16(code []byte) uint16 {

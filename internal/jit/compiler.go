@@ -536,6 +536,15 @@ func lowerBytecode(fn *bytecode.Function) ([]irInstruction, []value.Value, []any
 			patches = append(patches, jumpPatch{irIndex: len(ir) - 1, targetByte: target})
 			recordTargetDepth(target, stackDepth)
 			offset += 3
+		case bytecode.OpJumpIfTrue:
+			if offset+2 >= len(code) || stackDepth < 1 {
+				return nil, nil, nil, false, 0, false, "invalid JUMP_IF_TRUE"
+			}
+			ir = append(ir, irInstruction{opcode: irJumpIfTrue})
+			target := offset + 3 + int(readUint16(code[offset+1:]))
+			patches = append(patches, jumpPatch{irIndex: len(ir) - 1, targetByte: target})
+			recordTargetDepth(target, stackDepth)
+			offset += 3
 		case bytecode.OpLoop:
 			if offset+2 >= len(code) {
 				return nil, nil, nil, false, 0, false, "truncated LOOP"
@@ -1002,6 +1011,15 @@ func executeProgram(program *Program, receiver *value.Instance, args []value.Val
 				return value.NilValue(), fmt.Errorf("jit stack underflow in %s", program.Name)
 			}
 			if !stack[len(stack)-1].IsTruthy() {
+				ip = int(instruction.Operand)
+				continue
+			}
+			ip++
+		case ops.jumpIfTrue:
+			if len(stack) < 1 {
+				return value.NilValue(), fmt.Errorf("jit stack underflow in %s", program.Name)
+			}
+			if stack[len(stack)-1].IsTruthy() {
 				ip = int(instruction.Operand)
 				continue
 			}

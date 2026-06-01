@@ -1,0 +1,12 @@
+// test 3-arg range
+let total = 0
+for j in range(0, 100, 3):
+    total += j
+end
+println(total)  // 0+3+6+...+99 = sum of 0,3,...,99
+
+let total2 = 0
+for j in range(10, 0, -2):
+    total2 += j
+end
+println(total2)  // 10+8+6+4+2 = 30

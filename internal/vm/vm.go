@@ -529,6 +529,18 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if !condition.IsTruthy() {
 				frame.ip += int(offset)
 			}
+		case bytecode.OpJumpIfTrue:
+			offset := vm.readUint16(frame)
+			condition := vm.peek(0)
+			if booleanValue, ok := vm.booleanOperand(condition); ok {
+				if booleanValue {
+					frame.ip += int(offset)
+				}
+				continue
+			}
+			if condition.IsTruthy() {
+				frame.ip += int(offset)
+			}
 		case bytecode.OpLoop:
 			offset := vm.readUint16(frame)
 			frame.ip -= int(offset)
@@ -604,10 +616,34 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				return value.NilValue(), raised
 			}
 		case bytecode.OpLessNum:
+			right := vm.pop()
+			left := vm.pop()
+			if left.Kind == value.Number && right.Kind == value.Number {
+				if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
+					vm.push(value.BoolValue(left.Int < right.Int))
+				} else {
+					vm.push(value.BoolValue(left.Num < right.Num))
+				}
+				continue
+			}
+			vm.push(left)
+			vm.push(right)
 			if err := vm.binaryNumericCompareOp(bytecode.OpLessNum); err != nil {
 				return value.NilValue(), err
 			}
 		case bytecode.OpGreaterNum:
+			right := vm.pop()
+			left := vm.pop()
+			if left.Kind == value.Number && right.Kind == value.Number {
+				if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
+					vm.push(value.BoolValue(left.Int > right.Int))
+				} else {
+					vm.push(value.BoolValue(left.Num > right.Num))
+				}
+				continue
+			}
+			vm.push(left)
+			vm.push(right)
 			if err := vm.binaryNumericCompareOp(bytecode.OpGreaterNum); err != nil {
 				return value.NilValue(), err
 			}
@@ -810,8 +846,24 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 					frame.locals[endSlot] = end
 					frame.locals[stepSlot] = value.NumberValue(step)
 				}
+			case 3:
+				step := vm.pop()
+				end := vm.pop()
+				start := vm.pop()
+				if start.Kind != value.Number || end.Kind != value.Number || step.Kind != value.Number {
+					return value.NilValue(), fmt.Errorf("range expects numeric arguments")
+				}
+				if start.NumberKind == value.NumberInt && end.NumberKind == value.NumberInt && step.NumberKind == value.NumberInt {
+					frame.locals[currentSlot] = value.IntValue(start.Int - step.Int)
+					frame.locals[endSlot] = end
+					frame.locals[stepSlot] = step
+				} else {
+					frame.locals[currentSlot] = value.NumberValue(start.Num - step.Num)
+					frame.locals[endSlot] = end
+					frame.locals[stepSlot] = step
+				}
 			default:
-				return value.NilValue(), fmt.Errorf("range expects 1 or 2 arguments")
+				return value.NilValue(), fmt.Errorf("range expects 1, 2, or 3 arguments")
 			}
 		case bytecode.OpRangeNextFast:
 			currentSlot := vm.readByte(frame)
@@ -1080,6 +1132,40 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				elements[i] = fill
 			}
 			vm.push(value.ObjectValue(&value.Array{Elements: elements}))
+		case bytecode.OpSetLocalArrayBool:
+			arrSlot := vm.readByte(frame)
+			idxSlot := vm.readByte(frame)
+			boolByte := vm.readByte(frame)
+			arr, ok := frame.locals[arrSlot].AsArray()
+			if !ok {
+				return value.NilValue(), fmt.Errorf("SET_LOCAL_ARRAY_BOOL expects array")
+			}
+			idx := int(frame.locals[idxSlot].Int)
+			if idx < 0 || idx >= len(arr.Elements) {
+				return value.NilValue(), fmt.Errorf("array index out of range")
+			}
+			arr.Elements[idx] = value.BoolValue(boolByte != 0)
+		case bytecode.OpAddLocalLocal:
+			dstSlot := vm.readByte(frame)
+			srcSlot := vm.readByte(frame)
+			frame.locals[dstSlot] = value.IntValue(frame.locals[dstSlot].Int + frame.locals[srcSlot].Int)
+		case bytecode.OpGetLocalArrayField:
+			arrSlot := vm.readByte(frame)
+			idxSlot := vm.readByte(frame)
+			fieldSlot := int(vm.readByte(frame))
+			arr, ok := frame.locals[arrSlot].AsArray()
+			if !ok {
+				return value.NilValue(), fmt.Errorf("GET_LOCAL_ARRAY_FIELD expects array")
+			}
+			idx := int(frame.locals[idxSlot].Int)
+			if idx < 0 || idx >= len(arr.Elements) {
+				return value.NilValue(), fmt.Errorf("array index out of range")
+			}
+			instance, ok := arr.Elements[idx].Object.(*value.Instance)
+			if !ok {
+				return value.NilValue(), fmt.Errorf("GET_LOCAL_ARRAY_FIELD expects instance element")
+			}
+			vm.push(instance.Fields[fieldSlot])
 		case bytecode.OpMap:
 			count := int(vm.readByte(frame))
 			entries := map[string]value.Value{}
@@ -1164,7 +1250,12 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				if index.Kind != value.Number {
 					return value.NilValue(), fmt.Errorf("array index must be number")
 				}
-				idx := int(index.Num)
+				var idx int
+				if index.NumberKind == value.NumberInt {
+					idx = int(index.Int)
+				} else {
+					idx = int(index.Num)
+				}
 				if idx < 0 || idx >= len(array.Elements) {
 					return value.NilValue(), fmt.Errorf("array index out of range")
 				}
@@ -1215,7 +1306,12 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if index.Kind != value.Number {
 				return value.NilValue(), fmt.Errorf("array index must be number")
 			}
-			idx := int(index.Num)
+			var idx int
+			if index.NumberKind == value.NumberInt {
+				idx = int(index.Int)
+			} else {
+				idx = int(index.Num)
+			}
 			if idx < 0 || idx >= len(array.Elements) {
 				return value.NilValue(), fmt.Errorf("array index out of range")
 			}
@@ -1363,7 +1459,12 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				if index.Kind != value.Number {
 					return value.NilValue(), fmt.Errorf("array index must be number")
 				}
-				idx := int(index.Num)
+				var idx int
+				if index.NumberKind == value.NumberInt {
+					idx = int(index.Int)
+				} else {
+					idx = int(index.Num)
+				}
 				if idx < 0 || idx >= len(array.Elements) {
 					return value.NilValue(), fmt.Errorf("array index out of range")
 				}
@@ -1397,7 +1498,12 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if index.Kind != value.Number {
 				return value.NilValue(), fmt.Errorf("array index must be number")
 			}
-			idx := int(index.Num)
+			var idx int
+			if index.NumberKind == value.NumberInt {
+				idx = int(index.Int)
+			} else {
+				idx = int(index.Num)
+			}
 			if idx < 0 || idx >= len(array.Elements) {
 				return value.NilValue(), fmt.Errorf("array index out of range")
 			}

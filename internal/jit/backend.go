@@ -51,6 +51,7 @@ const (
 	irNegNumber
 	irJump
 	irJumpIfFalse
+	irJumpIfTrue
 	irReturn
 )
 
@@ -154,6 +155,7 @@ type opcodeSet struct {
 	negNumber        byte
 	jump             byte
 	jumpIfFalse      byte
+	jumpIfTrue       byte
 	ret              byte
 }
 
@@ -249,6 +251,8 @@ func opcodeFor(op irOp, ops opcodeSet) byte {
 		return ops.jump
 	case irJumpIfFalse:
 		return ops.jumpIfFalse
+	case irJumpIfTrue:
+		return ops.jumpIfTrue
 	case irReturn:
 		return ops.ret
 	default:
@@ -307,6 +311,7 @@ func AllInstructionSpecs() []bytecode.Op {
 		bytecode.OpThrow,
 		bytecode.OpJump,
 		bytecode.OpJumpIfFalse,
+		bytecode.OpJumpIfTrue,
 		bytecode.OpLoop,
 		bytecode.OpAddNum,
 		bytecode.OpSubNum,
@@ -413,6 +418,7 @@ func implementedBytecodeOps() map[bytecode.Op]bool {
 		bytecode.OpNegate:           true,
 		bytecode.OpJump:             true,
 		bytecode.OpJumpIfFalse:      true,
+		bytecode.OpJumpIfTrue:       true,
 		bytecode.OpLoop:             true,
 		bytecode.OpReturn:           true,
 	}
@@ -500,6 +506,7 @@ func opcodeSetForBackend(name string) (opcodeSet, bool) {
 		negNumber:        lookup[bytecode.OpNegate],
 		jump:             lookup[bytecode.OpJump],
 		jumpIfFalse:      lookup[bytecode.OpJumpIfFalse],
+		jumpIfTrue:       lookup[bytecode.OpJumpIfTrue],
 		ret:              lookup[bytecode.OpReturn],
 	}, true
 }

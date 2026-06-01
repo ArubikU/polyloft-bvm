@@ -1,0 +1,12 @@
+let arr = new bool[10]{true}
+arr[3] = false
+println(arr[3])
+println(arr[4])
+
+let nums = new int[5]
+for i in range(0, 5):
+    nums[i] = i * i
+end
+for i in range(0, 5):
+    println(nums[i])
+end

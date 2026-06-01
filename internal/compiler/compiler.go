@@ -38,14 +38,15 @@ type loopContext struct {
 }
 
 type state struct {
-	function   *bytecode.Function
-	chunk      *bytecode.Chunk
-	locals     []local
-	upvalues   []upvalueRef
-	depth      int
-	parent     *state
-	name       string
-	ownerClass *value.Class
+	function         *bytecode.Function
+	chunk            *bytecode.Chunk
+	locals           []local
+	upvalues         []upvalueRef
+	depth            int
+	parent           *state
+	name             string
+	ownerClass       *value.Class
+	lastOpcodeOffset int // offset in chunk.Code of the most recently emitted opcode
 }
 
 type local struct {
@@ -275,6 +276,9 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 			if c.emitFastAddConstLocalAssign(slot, node, targetType) {
 				return nil
 			}
+			if c.emitFastAddLocalLocal(slot, node, targetType) {
+				return nil
+			}
 			if node.Operator.Type == token.Equal && c.emitFastStringAppendAssign(slot, node, targetType) {
 				return nil
 			}
@@ -467,6 +471,31 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 			c.emitCompoundOp(node.Operator, bvmruntime.TypeAny, c.inferExprType(node.Value))
 			c.emitIndexedSet(node.Object, node.Index, 0)
 			return nil
+		}
+		// Fast path: local_arr[local_idx] = bool_literal → SET_LOCAL_ARRAY_BOOL
+		if objVar, ok := node.Object.(*ast.VariableExpr); ok {
+			if idxVar, ok := node.Index.(*ast.VariableExpr); ok {
+				if lit, ok := node.Value.(*ast.LiteralExpr); ok {
+					if boolVal, ok := lit.Value.(bool); ok {
+						objType := c.inferExprType(node.Object)
+						if isArrayType(objType) {
+							if arrSlot, aok := c.resolveLocal(objVar.Name.Lexeme); aok {
+								if idxSlot, iok := c.resolveLocal(idxVar.Name.Lexeme); iok {
+									var boolByte byte
+									if boolVal {
+										boolByte = 1
+									}
+									c.emit(bytecode.OpSetLocalArrayBool, objVar.Name.Line)
+									c.emitByte(arrSlot, objVar.Name.Line)
+									c.emitByte(idxSlot, objVar.Name.Line)
+									c.emitByte(boolByte, objVar.Name.Line)
+									return nil
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 		if err := c.compileExpr(node.Object); err != nil {
 			return err
@@ -1050,6 +1079,23 @@ func (c *Compiler) compileExpr(expr ast.Expr) error {
 	case *ast.SuperExpr:
 		return fmt.Errorf("super must be called as super(...)")
 	case *ast.UnaryExpr:
+		// Constant fold: -(literal) → push negated constant directly, avoids NEGATE opcode
+		if node.Operator.Type == token.Minus {
+			if folded, ok := c.evalConstExpr(node); ok {
+				// Store the raw Go type (int64 or float64) so the VM's constantToValue
+				// can handle it correctly. Do NOT store value.Value directly.
+				var raw any
+				if folded.NumberKind == value.NumberInt {
+					raw = folded.Int
+				} else {
+					raw = folded.Num
+				}
+				idx := c.state.chunk.AddConstant(raw)
+				c.emit(bytecode.OpConstant, node.Operator.Line)
+				c.emitUint16(idx, node.Operator.Line)
+				return nil
+			}
+		}
 		if err := c.compileExpr(node.Right); err != nil {
 			return err
 		}
@@ -1071,6 +1117,24 @@ func (c *Compiler) compileExpr(expr ast.Expr) error {
 				c.emit(bytecode.OpGetThisField, node.Name.Line)
 				c.emitByte(byte(slot), node.Name.Line)
 				return nil
+			}
+			// Fast path: arr[i].field where arr and i are locals in a typed array
+			if idxExpr, isIndex := node.Object.(*ast.IndexExpr); isIndex {
+				if arrVar, isVar := idxExpr.Object.(*ast.VariableExpr); isVar {
+					if idxVar, isIdxVar := idxExpr.Index.(*ast.VariableExpr); isIdxVar {
+						if arrSlot, aok := c.resolveLocal(arrVar.Name.Lexeme); aok {
+							if isArrayType(c.inferExprType(idxExpr.Object)) {
+								if idxSlot, iok := c.resolveLocal(idxVar.Name.Lexeme); iok {
+									c.emit(bytecode.OpGetLocalArrayField, node.Name.Line)
+									c.emitByte(arrSlot, node.Name.Line)
+									c.emitByte(idxSlot, node.Name.Line)
+									c.emitByte(byte(slot), node.Name.Line)
+									return nil
+								}
+							}
+						}
+					}
+				}
 			}
 			if err := c.compileExpr(node.Object); err != nil {
 				return err
@@ -1415,24 +1479,32 @@ func (c *Compiler) emitCompoundOp(operator token.Token, leftType string, rightTy
 	}
 }
 
+func isArrayType(t string) bool {
+	return t == bvmruntime.TypeArray || len(t) > 6 && t[:6] == "array<"
+}
+
+func isMapType(t string) bool {
+	return t == bvmruntime.TypeMap || len(t) > 4 && t[:4] == "map<"
+}
+
 func (c *Compiler) emitIndexedGet(object ast.Expr, index ast.Expr, line int) {
-	switch c.inferExprType(object) {
-	case bvmruntime.TypeArray:
+	t := c.inferExprType(object)
+	if isArrayType(t) {
 		c.emit(bytecode.OpGetIndexArray, line)
-	case bvmruntime.TypeMap:
+	} else if isMapType(t) {
 		c.emit(bytecode.OpGetIndexMap, line)
-	default:
+	} else {
 		c.emit(bytecode.OpGetIndex, line)
 	}
 }
 
 func (c *Compiler) emitIndexedSet(object ast.Expr, index ast.Expr, line int) {
-	switch c.inferExprType(object) {
-	case bvmruntime.TypeArray:
+	t := c.inferExprType(object)
+	if isArrayType(t) {
 		c.emit(bytecode.OpSetIndexArray, line)
-	case bvmruntime.TypeMap:
+	} else if isMapType(t) {
 		c.emit(bytecode.OpSetIndexMap, line)
-	default:
+	} else {
 		c.emit(bytecode.OpSetIndex, line)
 	}
 }
@@ -1549,17 +1621,32 @@ func (c *Compiler) emitFastAddConstLocalAssign(targetSlot byte, node *ast.Assign
 		return false
 	}
 	var constExpr ast.Expr
+	negate := false
 	if node.Operator.Type == token.PlusEqual {
 		constExpr = node.Value
+	} else if node.Operator.Type == token.MinusEqual {
+		constExpr = node.Value
+		negate = true
 	} else if node.Operator.Type == token.Equal {
 		addExpr, ok := node.Value.(*ast.BinaryExpr)
-		if !ok || addExpr.Operator.Type != token.Plus {
+		if !ok {
 			return false
 		}
-		if leftVar, ok := addExpr.Left.(*ast.VariableExpr); ok && leftVar.Name.Lexeme == node.Name.Lexeme {
-			constExpr = addExpr.Right
-		} else if rightVar, ok := addExpr.Right.(*ast.VariableExpr); ok && rightVar.Name.Lexeme == node.Name.Lexeme {
-			constExpr = addExpr.Left
+		if addExpr.Operator.Type == token.Plus {
+			if leftVar, ok := addExpr.Left.(*ast.VariableExpr); ok && leftVar.Name.Lexeme == node.Name.Lexeme {
+				constExpr = addExpr.Right
+			} else if rightVar, ok := addExpr.Right.(*ast.VariableExpr); ok && rightVar.Name.Lexeme == node.Name.Lexeme {
+				constExpr = addExpr.Left
+			} else {
+				return false
+			}
+		} else if addExpr.Operator.Type == token.Minus {
+			if leftVar, ok := addExpr.Left.(*ast.VariableExpr); ok && leftVar.Name.Lexeme == node.Name.Lexeme {
+				constExpr = addExpr.Right
+				negate = true
+			} else {
+				return false
+			}
 		} else {
 			return false
 		}
@@ -1570,10 +1657,55 @@ func (c *Compiler) emitFastAddConstLocalAssign(targetSlot byte, node *ast.Assign
 	if !ok || constantValue.Kind != value.Number || constantValue.NumberKind != value.NumberInt {
 		return false
 	}
-	idx := c.constant(int64(constantValue.Num))
+	intVal := constantValue.Int
+	if negate {
+		intVal = -intVal
+	}
+	idx := c.constant(intVal)
 	c.emit(bytecode.OpAddConstLocalInt, node.Name.Line)
 	c.emitByte(targetSlot, node.Name.Line)
 	c.emitUint16(idx, node.Name.Line)
+	return true
+}
+
+// emitFastAddLocalLocal emits OpAddLocalLocal for `dst += src` or `dst = dst + src`
+// where both are int locals.
+func (c *Compiler) emitFastAddLocalLocal(targetSlot byte, node *ast.AssignStmt, targetType string) bool {
+	if rootTypeName(targetType) != bvmruntime.TypeInt {
+		return false
+	}
+	var srcExpr ast.Expr
+	if node.Operator.Type == token.PlusEqual {
+		srcExpr = node.Value
+	} else if node.Operator.Type == token.Equal {
+		addExpr, ok := node.Value.(*ast.BinaryExpr)
+		if !ok || addExpr.Operator.Type != token.Plus {
+			return false
+		}
+		if leftVar, ok := addExpr.Left.(*ast.VariableExpr); ok && leftVar.Name.Lexeme == node.Name.Lexeme {
+			srcExpr = addExpr.Right
+		} else if rightVar, ok := addExpr.Right.(*ast.VariableExpr); ok && rightVar.Name.Lexeme == node.Name.Lexeme {
+			srcExpr = addExpr.Left
+		} else {
+			return false
+		}
+	} else {
+		return false
+	}
+	srcVar, ok := srcExpr.(*ast.VariableExpr)
+	if !ok {
+		return false
+	}
+	srcSlot, ok := c.resolveLocal(srcVar.Name.Lexeme)
+	if !ok {
+		return false
+	}
+	if rootTypeName(c.localType(srcSlot)) != bvmruntime.TypeInt {
+		return false
+	}
+	c.emit(bytecode.OpAddLocalLocal, node.Name.Line)
+	c.emitByte(targetSlot, node.Name.Line)
+	c.emitByte(srcSlot, node.Name.Line)
 	return true
 }
 
@@ -2149,7 +2281,7 @@ func (c *Compiler) compileClass(stmt *ast.ClassStmt) (*value.Class, error) {
 			continue
 		}
 		classValue.MethodVisibility[method.Name.Lexeme] = string(method.Visibility)
-		classValue.MethodOverloads[method.Name.Lexeme] = append(classValue.MethodOverloads[method.Name.Lexeme], fn)
+		classValue.MethodOverloads[method.Name.Lexeme] = replaceOrAppendOverload(classValue.MethodOverloads[method.Name.Lexeme], fn)
 		fastMethod := c.detectFastMethod(classValue, method)
 		if slot, exists := classValue.MethodIndex[method.Name.Lexeme]; exists {
 			classValue.MethodTable[slot] = fn
@@ -2170,6 +2302,30 @@ func (c *Compiler) compileClass(stmt *ast.ClassStmt) (*value.Class, error) {
 		}
 	}
 	return classValue, nil
+}
+
+// replaceOrAppendOverload inserts fn into the overload list, replacing any existing
+// entry with the same arity and parameter types (virtual override from a parent class).
+func replaceOrAppendOverload(overloads []*bytecode.Function, fn *bytecode.Function) []*bytecode.Function {
+	for i, existing := range overloads {
+		if existing != nil && existing.Arity == fn.Arity && paramTypesEqual(existing.ParamTypes, fn.ParamTypes) {
+			overloads[i] = fn
+			return overloads
+		}
+	}
+	return append(overloads, fn)
+}
+
+func paramTypesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Compiler) detectFastMethod(classValue *value.Class, method ast.MethodDecl) *value.FastMethodPlan {
@@ -3046,6 +3202,12 @@ func (c *Compiler) inferExprType(expr ast.Expr) string {
 		return bvmruntime.TypeTuple
 	case *ast.ArrayExpr:
 		return bvmruntime.TypeArray
+	case *ast.ArrayNewExpr:
+		// Propagate element type so for-loop variables inherit it (e.g. new Shape[N] → array<Shape>)
+		if node.Type != nil && node.Type.Name.Lexeme != "" && len(node.Type.Args) == 0 {
+			return "array<" + node.Type.Name.Lexeme + ">"
+		}
+		return bvmruntime.TypeArray
 	case *ast.MapExpr:
 		return bvmruntime.TypeMap
 	case *ast.VariableExpr:
@@ -3078,6 +3240,9 @@ func (c *Compiler) inferExprType(expr ast.Expr) string {
 		}
 		return ""
 	case *ast.IndexExpr:
+		if elemType := c.inferIterableElementType(c.inferExprType(node.Object)); elemType != "" {
+			return elemType
+		}
 		return bvmruntime.TypeAny
 	case *ast.SliceExpr:
 		return c.inferExprType(node.Object)
@@ -3095,8 +3260,19 @@ func (c *Compiler) inferExprType(expr ast.Expr) string {
 			if callee.Name.Lexeme == "range" {
 				return bvmruntime.TypeRange
 			}
+			// Look up the return type from the pre-collected function signatures
+			if sig, ok := c.functionSigs[callee.Name.Lexeme]; ok && sig.ret != "" {
+				return sig.ret
+			}
 		}
 		return ""
+	case *ast.UnaryExpr:
+		if node.Operator.Type == token.Minus {
+			return c.inferExprType(node.Right)
+		}
+		if node.Operator.Type == token.Bang {
+			return bvmruntime.TypeBool
+		}
 	case *ast.LambdaExpr:
 		return bvmruntime.TypeFunction
 	case *ast.BinaryExpr:
@@ -3190,7 +3366,7 @@ func (c *Compiler) isRangeCall(expr ast.Expr) bool {
 	if !ok || callee.Name.Lexeme != "range" {
 		return false
 	}
-	return len(call.Arguments) == 1 || len(call.Arguments) == 2
+	return len(call.Arguments) >= 1 && len(call.Arguments) <= 3
 }
 
 func (c *Compiler) compileFastRangeFor(node *ast.ForStmt) error {
@@ -4214,6 +4390,7 @@ func normalizeAnnotation(name string) string {
 }
 
 func (c *Compiler) emit(op bytecode.Op, line int) {
+	c.state.lastOpcodeOffset = len(c.state.chunk.Code)
 	c.state.chunk.WriteOp(op, line)
 }
 
@@ -4226,6 +4403,16 @@ func (c *Compiler) emitUint16(v uint16, line int) {
 }
 
 func (c *Compiler) emitJump(op bytecode.Op, line int) int {
+	// Peephole: NOT + JUMP_IF_FALSE → JUMP_IF_TRUE (eliminates the NOT instruction)
+	if op == bytecode.OpJumpIfFalse {
+		code := c.state.chunk.Code
+		lastOff := c.state.lastOpcodeOffset
+		if lastOff < len(code) && bytecode.Op(code[lastOff]) == bytecode.OpNot {
+			c.state.chunk.Code = code[:lastOff]
+			c.state.chunk.Lines = c.state.chunk.Lines[:lastOff]
+			op = bytecode.OpJumpIfTrue
+		}
+	}
 	c.emit(op, line)
 	offset := len(c.state.chunk.Code)
 	c.emitUint16(0, line)
