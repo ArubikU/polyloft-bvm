@@ -102,7 +102,13 @@ const (
 	OpArrayFill         // pop fill, pop size(int) → push array of N copies of fill
 	OpSetLocalArrayBool    // locals[arr][locals[idx]] = bool; args: arr_slot, idx_slot, bool_byte
 	OpAddLocalLocal        // locals[dst] += locals[src] (int); args: dst_slot, src_slot
-	OpGetLocalArrayField   // push locals[arr_slot][locals[idx_slot].Int].Fields[field_slot]; args: arr_slot, idx_slot, field_slot
+	OpGetLocalArrayField            // push locals[arr_slot][locals[idx_slot].Int].Fields[field_slot]; args: arr_slot, idx_slot, field_slot
+	OpJumpIfNotContainsStringConst  // if !strings.Contains(locals[haystack_slot], constants[needle_idx]) jump; args: haystack_slot(1) needle_idx(2) jump(2)
+	OpAddToLocal                    // locals[slot] += pop() (numeric); args: slot(1)
+	OpSubToLocal                    // locals[slot] -= pop() (numeric); args: slot(1)
+	OpMulToLocal                    // locals[slot] *= pop() (numeric); args: slot(1)
+	OpJumpIfFalsePop                // pop TOS, then jump if it was falsy; args: offset(2)
+	OpJumpIfTruePop                 // pop TOS, then jump if it was truthy; args: offset(2)
 )
 
 func (op Op) String() string {
@@ -307,6 +313,18 @@ func (op Op) String() string {
 		return "ADD_LOCAL_LOCAL"
 	case OpGetLocalArrayField:
 		return "GET_LOCAL_ARRAY_FIELD"
+	case OpJumpIfNotContainsStringConst:
+		return "JUMP_IF_NOT_CONTAINS_STRING_CONST"
+	case OpAddToLocal:
+		return "ADD_TO_LOCAL"
+	case OpSubToLocal:
+		return "SUB_TO_LOCAL"
+	case OpMulToLocal:
+		return "MUL_TO_LOCAL"
+	case OpJumpIfFalsePop:
+		return "JUMP_IF_FALSE_POP"
+	case OpJumpIfTruePop:
+		return "JUMP_IF_TRUE_POP"
 	default:
 		return "UNKNOWN"
 	}

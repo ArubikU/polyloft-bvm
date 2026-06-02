@@ -1038,7 +1038,7 @@ println(total)
 	if got, want := out.String(), "30\n"; got != want {
 		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", want, got)
 	}
-	if disassembly := fn.Chunk.Disassemble(fn.Name); !strings.Contains(disassembly, "ADD_NUM") {
+	if disassembly := fn.Chunk.Disassemble(fn.Name); !strings.Contains(disassembly, "ADD_NUM") && !strings.Contains(disassembly, "ADD_TO_LOCAL") {
 		t.Fatalf("expected specialized numeric add in script chunk, got:\n%s", disassembly)
 	}
 }

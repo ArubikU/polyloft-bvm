@@ -279,7 +279,7 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 			if c.emitFastAddLocalLocal(slot, node, targetType) {
 				return nil
 			}
-			if node.Operator.Type == token.Equal && c.emitFastStringAppendAssign(slot, node, targetType) {
+			if (node.Operator.Type == token.Equal || node.Operator.Type == token.PlusEqual) && c.emitFastStringAppendAssign(slot, node, targetType) {
 				return nil
 			}
 			if node.Operator.Type == token.Equal && c.emitFastLocalMulThisFieldAssign(slot, node, targetType) {
@@ -292,6 +292,25 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 				return nil
 			}
 			if node.Operator.Type != token.Equal {
+				if isNumericLikeType(targetType) && isNumericLikeType(assignedType) {
+					var toLocalOp bytecode.Op
+					switch node.Operator.Type {
+					case token.PlusEqual:
+						toLocalOp = bytecode.OpAddToLocal
+					case token.MinusEqual:
+						toLocalOp = bytecode.OpSubToLocal
+					case token.StarEqual:
+						toLocalOp = bytecode.OpMulToLocal
+					}
+					if toLocalOp != 0 {
+						if err := c.compileExpr(node.Value); err != nil {
+							return err
+						}
+						c.emit(toLocalOp, node.Name.Line)
+						c.emitByte(slot, node.Name.Line)
+						return nil
+					}
+				}
 				c.emit(bytecode.OpGetLocal, node.Name.Line)
 				c.emitByte(slot, node.Name.Line)
 				if err := c.compileExpr(node.Value); err != nil {
@@ -300,6 +319,10 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 				c.emitCompoundOp(node.Operator, targetType, assignedType)
 				c.emit(bytecode.OpSetLocal, node.Name.Line)
 				c.emitByte(slot, node.Name.Line)
+				return nil
+			}
+			// Detect `a = a op expr` pattern and emit xToLocal fused op
+			if c.emitFastNumericSelfAssign(slot, node, targetType, assignedType) {
 				return nil
 			}
 		} else if current, ok := c.globalTypes[node.Name.Lexeme]; ok {
@@ -521,14 +544,12 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 		if err := c.compileExpr(node.Condition); err != nil {
 			return err
 		}
-		jumpIfFalse := c.emitJump(bytecode.OpJumpIfFalse, 0)
-		c.emit(bytecode.OpPop, 0)
+		jumpIfFalse := c.emitJump(bytecode.OpJumpIfFalsePop, 0)
 		if err := c.compileBlock(node.Then); err != nil {
 			return err
 		}
 		jumpOverElse := c.emitJump(bytecode.OpJump, 0)
 		c.patchJump(jumpIfFalse)
-		c.emit(bytecode.OpPop, 0)
 		if node.Else != nil {
 			if err := c.compileBlock(node.Else); err != nil {
 				return err
@@ -672,8 +693,7 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 				name := c.constant(c.typeNameFromRef(condition.Target))
 				c.emit(bytecode.OpMatchType, condition.Target.Name.Line)
 				c.emitUint16(name, condition.Target.Name.Line)
-				skipBody := c.emitJump(bytecode.OpJumpIfFalse, anchor.Line)
-				c.emit(bytecode.OpPop, anchor.Line)
+				skipBody := c.emitJump(bytecode.OpJumpIfFalsePop, anchor.Line)
 				c.emit(bytecode.OpGetLocal, condition.Target.Name.Line)
 				c.emitByte(tempSlot, condition.Target.Name.Line)
 				c.emitCastForType(condition.Target, condition.Target.Name.Line)
@@ -682,17 +702,14 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 				if err := c.compileExpr(guard); err != nil {
 					return err
 				}
-				skipByGuard := c.emitJump(bytecode.OpJumpIfFalse, anchor.Line)
-				c.emit(bytecode.OpPop, anchor.Line)
+				skipByGuard := c.emitJump(bytecode.OpJumpIfFalsePop, anchor.Line)
 				if err := c.compileBlock(node.Body); err != nil {
 					return err
 				}
 				c.emitLoop(loopStart, anchor.Line)
 				c.patchJump(skipByGuard)
-				c.emit(bytecode.OpPop, anchor.Line)
 				c.emitLoop(loopStart, anchor.Line)
 				c.patchJump(skipBody)
-				c.emit(bytecode.OpPop, anchor.Line)
 				c.emitLoop(loopStart, anchor.Line)
 			} else if condition, ok := unwrapInstanceOfExpr(node.Condition); ok && condition.Binding != nil {
 				tempName := token.Token{Lexeme: "__where_instanceof_temp", Line: condition.Target.Name.Line}
@@ -708,8 +725,7 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 				name := c.constant(c.typeNameFromRef(condition.Target))
 				c.emit(bytecode.OpMatchType, condition.Target.Name.Line)
 				c.emitUint16(name, condition.Target.Name.Line)
-				skipBody := c.emitJump(bytecode.OpJumpIfFalse, anchor.Line)
-				c.emit(bytecode.OpPop, anchor.Line)
+				skipBody := c.emitJump(bytecode.OpJumpIfFalsePop, anchor.Line)
 				c.emit(bytecode.OpGetLocal, condition.Target.Name.Line)
 				c.emitByte(tempSlot, condition.Target.Name.Line)
 				c.emitCastForType(condition.Target, condition.Target.Name.Line)
@@ -720,20 +736,17 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 				}
 				c.emitLoop(loopStart, anchor.Line)
 				c.patchJump(skipBody)
-				c.emit(bytecode.OpPop, anchor.Line)
 				c.emitLoop(loopStart, anchor.Line)
 			} else {
 				if err := c.compileExpr(node.Condition); err != nil {
 					return err
 				}
-				skipBody := c.emitJump(bytecode.OpJumpIfFalse, anchor.Line)
-				c.emit(bytecode.OpPop, anchor.Line)
+				skipBody := c.emitJump(bytecode.OpJumpIfFalsePop, anchor.Line)
 				if err := c.compileBlock(node.Body); err != nil {
 					return err
 				}
 				c.emitLoop(loopStart, anchor.Line)
 				c.patchJump(skipBody)
-				c.emit(bytecode.OpPop, anchor.Line)
 				c.emitLoop(loopStart, anchor.Line)
 			}
 		} else {
@@ -820,8 +833,7 @@ func (c *Compiler) compileTry(node *ast.TryStmt) error {
 			typeName := c.constant(c.typeNameFromRef(clause.Type))
 			c.emit(bytecode.OpMatchType, clause.Keyword.Line)
 			c.emitUint16(typeName, clause.Keyword.Line)
-			skipJump = c.emitJump(bytecode.OpJumpIfFalse, clause.Keyword.Line)
-			c.emit(bytecode.OpPop, clause.Keyword.Line)
+			skipJump = c.emitJump(bytecode.OpJumpIfFalsePop, clause.Keyword.Line)
 		}
 		c.beginScope()
 		if clause.Binding.Type != "" {
@@ -842,7 +854,6 @@ func (c *Compiler) compileTry(node *ast.TryStmt) error {
 		catchJumps = append(catchJumps, c.emitJump(bytecode.OpJump, clause.Keyword.Line))
 		if clause.Type != nil {
 			c.patchJump(skipJump)
-			c.emit(bytecode.OpPop, clause.Keyword.Line)
 		}
 	}
 	c.emit(bytecode.OpGetLocal, node.Keyword.Line)
@@ -882,11 +893,9 @@ func (c *Compiler) compileSwitch(node *ast.SwitchStmt) error {
 			if err := c.emitSwitchPatternCheck(switchSlot, pattern); err != nil {
 				return err
 			}
-			jumpIfFalse := c.emitJump(bytecode.OpJumpIfFalse, 0)
-			c.emit(bytecode.OpPop, 0)
+			jumpIfFalse := c.emitJump(bytecode.OpJumpIfFalsePop, 0)
 			matchedJumps = append(matchedJumps, c.emitJump(bytecode.OpJump, 0))
 			c.patchJump(jumpIfFalse)
-			c.emit(bytecode.OpPop, 0)
 		}
 		skipBody := c.emitJump(bytecode.OpJump, 0)
 		for _, jump := range matchedJumps {
@@ -1337,18 +1346,15 @@ func (c *Compiler) compileBinary(node *ast.BinaryExpr) error {
 		if err := c.compileExpr(node.Left); err != nil {
 			return err
 		}
-		leftFalse := c.emitJump(bytecode.OpJumpIfFalse, node.Operator.Line)
-		c.emit(bytecode.OpPop, node.Operator.Line)
+		leftFalse := c.emitJump(bytecode.OpJumpIfFalsePop, node.Operator.Line)
 		if err := c.compileExpr(node.Right); err != nil {
 			return err
 		}
-		rightFalse := c.emitJump(bytecode.OpJumpIfFalse, node.Operator.Line)
-		c.emit(bytecode.OpPop, node.Operator.Line)
+		rightFalse := c.emitJump(bytecode.OpJumpIfFalsePop, node.Operator.Line)
 		c.emit(bytecode.OpTrue, node.Operator.Line)
 		endJump := c.emitJump(bytecode.OpJump, node.Operator.Line)
 		c.patchJump(leftFalse)
 		c.patchJump(rightFalse)
-		c.emit(bytecode.OpPop, node.Operator.Line)
 		c.emit(bytecode.OpFalse, node.Operator.Line)
 		c.patchJump(endJump)
 		return nil
@@ -1357,21 +1363,17 @@ func (c *Compiler) compileBinary(node *ast.BinaryExpr) error {
 		if err := c.compileExpr(node.Left); err != nil {
 			return err
 		}
-		leftFalse := c.emitJump(bytecode.OpJumpIfFalse, node.Operator.Line)
-		c.emit(bytecode.OpPop, node.Operator.Line)
+		leftFalse := c.emitJump(bytecode.OpJumpIfFalsePop, node.Operator.Line)
 		c.emit(bytecode.OpTrue, node.Operator.Line)
 		endJump := c.emitJump(bytecode.OpJump, node.Operator.Line)
 		c.patchJump(leftFalse)
-		c.emit(bytecode.OpPop, node.Operator.Line)
 		if err := c.compileExpr(node.Right); err != nil {
 			return err
 		}
-		rightFalse := c.emitJump(bytecode.OpJumpIfFalse, node.Operator.Line)
-		c.emit(bytecode.OpPop, node.Operator.Line)
+		rightFalse := c.emitJump(bytecode.OpJumpIfFalsePop, node.Operator.Line)
 		c.emit(bytecode.OpTrue, node.Operator.Line)
 		endJumpRight := c.emitJump(bytecode.OpJump, node.Operator.Line)
 		c.patchJump(rightFalse)
-		c.emit(bytecode.OpPop, node.Operator.Line)
 		c.emit(bytecode.OpFalse, node.Operator.Line)
 		c.patchJump(endJump)
 		c.patchJump(endJumpRight)
@@ -1530,6 +1532,55 @@ func (c *Compiler) emitFastLocalMulThisFieldAssign(targetSlot byte, node *ast.As
 	return true
 }
 
+// emitFastNumericSelfAssign detects `a = a op expr` and emits xToLocal fused ops.
+// Handles: a = a + expr, a = a - expr, a = a * expr, a = a / expr
+func (c *Compiler) emitFastNumericSelfAssign(targetSlot byte, node *ast.AssignStmt, targetType string, assignedType string) bool {
+	if node.Operator.Type != token.Equal {
+		return false
+	}
+	if !isNumericLikeType(targetType) {
+		return false
+	}
+	bin, ok := node.Value.(*ast.BinaryExpr)
+	if !ok {
+		return false
+	}
+	var rhsExpr ast.Expr
+	var op bytecode.Op
+	switch bin.Operator.Type {
+	case token.Plus:
+		op = bytecode.OpAddToLocal
+	case token.Minus:
+		op = bytecode.OpSubToLocal
+	case token.Star:
+		op = bytecode.OpMulToLocal
+	default:
+		return false
+	}
+	// Check that left side references the target variable
+	if leftVar, ok := bin.Left.(*ast.VariableExpr); ok && leftVar.Name.Lexeme == node.Name.Lexeme {
+		rhsExpr = bin.Right
+	} else if op == bytecode.OpAddToLocal || op == bytecode.OpMulToLocal {
+		// commutative: check right side too
+		if rightVar, ok := bin.Right.(*ast.VariableExpr); ok && rightVar.Name.Lexeme == node.Name.Lexeme {
+			rhsExpr = bin.Left
+		}
+	}
+	if rhsExpr == nil {
+		return false
+	}
+	rhsType := c.inferExprType(rhsExpr)
+	if !isNumericLikeType(rhsType) {
+		return false
+	}
+	if err := c.compileExpr(rhsExpr); err != nil {
+		return false
+	}
+	c.emit(op, node.Name.Line)
+	c.emitByte(targetSlot, node.Name.Line)
+	return true
+}
+
 // emitFastPlusEqLocalMulThisField handles: target += local * this.field
 func (c *Compiler) emitFastPlusEqLocalMulThisField(targetSlot byte, node *ast.AssignStmt) bool {
 	if node.Operator.Type != token.PlusEqual {
@@ -1594,26 +1645,52 @@ func (c *Compiler) matchThisFieldSlot(expr ast.Expr) (int, bool) {
 }
 
 func (c *Compiler) emitFastStringAppendAssign(targetSlot byte, node *ast.AssignStmt, targetType string) bool {
-	if c.state.parent != nil || c.state.name != "<script>" {
-		return false
-	}
 	if rootTypeName(targetType) != bvmruntime.TypeString {
 		return false
 	}
-	addExpr, ok := node.Value.(*ast.BinaryExpr)
-	if !ok || addExpr.Operator.Type != token.Plus {
+	// Handle s += expr
+	if node.Operator.Type == token.PlusEqual {
+		if err := c.compileExpr(node.Value); err != nil {
+			return false
+		}
+		c.emit(bytecode.OpAppendLocalString, node.Name.Line)
+		c.emitByte(targetSlot, node.Name.Line)
+		return true
+	}
+	if node.Operator.Type != token.Equal {
 		return false
 	}
-	leftVar, ok := addExpr.Left.(*ast.VariableExpr)
-	if !ok || leftVar.Name.Lexeme != node.Name.Lexeme {
+	// Recursively detect s = s + a + b + ... chains, emitting one APPEND_LOCAL_STRING per term.
+	return c.emitStringAppendChain(targetSlot, node.Name.Lexeme, node.Value, node.Name.Line)
+}
+
+// emitStringAppendChain peels apart left-associative (s + a + b + c) trees.
+// It returns true only when the leftmost leaf is exactly targetName.
+// On success every sub-expression is compiled and followed by APPEND_LOCAL_STRING(slot).
+func (c *Compiler) emitStringAppendChain(slot byte, targetName string, expr ast.Expr, line int) bool {
+	bin, ok := expr.(*ast.BinaryExpr)
+	if !ok || bin.Operator.Type != token.Plus {
 		return false
 	}
-	if err := c.compileExpr(addExpr.Right); err != nil {
-		return false
+	// Base case: targetName + right
+	if leftVar, lok := bin.Left.(*ast.VariableExpr); lok && leftVar.Name.Lexeme == targetName {
+		if err := c.compileExpr(bin.Right); err != nil {
+			return false
+		}
+		c.emit(bytecode.OpAppendLocalString, line)
+		c.emitByte(slot, line)
+		return true
 	}
-	c.emit(bytecode.OpAppendLocalString, node.Name.Line)
-	c.emitByte(targetSlot, node.Name.Line)
-	return true
+	// Recursive case: (deeper_chain) + right
+	if c.emitStringAppendChain(slot, targetName, bin.Left, line) {
+		if err := c.compileExpr(bin.Right); err != nil {
+			return false
+		}
+		c.emit(bytecode.OpAppendLocalString, line)
+		c.emitByte(slot, line)
+		return true
+	}
+	return false
 }
 
 func (c *Compiler) emitFastAddConstLocalAssign(targetSlot byte, node *ast.AssignStmt, targetType string) bool {
@@ -1758,6 +1835,25 @@ func (c *Compiler) compileFastIfStmt(node *ast.IfStmt) bool {
 		c.patchJump(jumpOverElse)
 		return true
 	}
+	// Pattern: if const_string in local_var:
+	if haystackSlot, needle, ok := c.matchContainsStringConstCondition(node.Condition); ok {
+		jumpIfFalse := c.emitJumpIfNotContainsStringConst(haystackSlot, needle, 0)
+		if err := c.compileBlock(node.Then); err != nil {
+			return false
+		}
+		if node.Else != nil {
+			jumpOverElse := c.emitJump(bytecode.OpJump, 0)
+			c.patchJump(jumpIfFalse)
+			if err := c.compileBlock(node.Else); err != nil {
+				return false
+			}
+			c.patchJump(jumpOverElse)
+		} else {
+			// No else branch: jump directly to the instruction after the then block.
+			c.patchJump(jumpIfFalse)
+		}
+		return true
+	}
 	return false
 }
 
@@ -1821,6 +1917,38 @@ func (c *Compiler) matchLocalDivisibleByIntConstCondition(expr ast.Expr) (byte, 
 		return 0, 0, false
 	}
 	return slot, int64(constantValue.Num), true
+}
+
+// matchContainsStringConstCondition detects `needle_const in haystack_local`.
+// Returns (haystackSlot, needle, true) when matched.
+func (c *Compiler) matchContainsStringConstCondition(expr ast.Expr) (byte, string, bool) {
+	bin, ok := unwrapGrouping(expr).(*ast.BinaryExpr)
+	if !ok || bin.Operator.Type != token.In {
+		return 0, "", false
+	}
+	needleVal, ok := c.evalConstExpr(bin.Left)
+	if !ok || needleVal.Kind != value.String {
+		return 0, "", false
+	}
+	haystackVar, ok := unwrapGrouping(bin.Right).(*ast.VariableExpr)
+	if !ok {
+		return 0, "", false
+	}
+	slot, ok := c.resolveLocal(haystackVar.Name.Lexeme)
+	if !ok {
+		return 0, "", false
+	}
+	return slot, needleVal.Str, true
+}
+
+// emitJumpIfNotContainsStringConst emits OpJumpIfNotContainsStringConst and returns
+// the offset to patch with the forward jump distance.
+func (c *Compiler) emitJumpIfNotContainsStringConst(haystackSlot byte, needle string, line int) int {
+	c.emit(bytecode.OpJumpIfNotContainsStringConst, line)
+	c.emitByte(haystackSlot, line)
+	c.emitUint16(c.constant(needle), line)
+	jumpOffset := c.state.chunk.WriteUint16(0, line)
+	return jumpOffset - 1
 }
 
 func (c *Compiler) matchConstCallableLocalSubInt(constantValue value.Value, args []ast.Expr) (any, byte, int64, bool) {
@@ -1985,8 +2113,7 @@ func (c *Compiler) compileIfInstanceOf(node *ast.IfStmt, condition *ast.Instance
 	name := c.constant(c.typeNameFromRef(condition.Target))
 	c.emit(bytecode.OpMatchType, condition.Target.Name.Line)
 	c.emitUint16(name, condition.Target.Name.Line)
-	jumpIfFalse := c.emitJump(bytecode.OpJumpIfFalse, condition.Target.Name.Line)
-	c.emit(bytecode.OpPop, condition.Target.Name.Line)
+	jumpIfFalse := c.emitJump(bytecode.OpJumpIfFalsePop, condition.Target.Name.Line)
 	c.emit(bytecode.OpGetLocal, condition.Target.Name.Line)
 	c.emitByte(tempSlot, condition.Target.Name.Line)
 	c.emitCastForType(condition.Target, condition.Target.Name.Line)
@@ -1997,14 +2124,12 @@ func (c *Compiler) compileIfInstanceOf(node *ast.IfStmt, condition *ast.Instance
 		if err := c.compileExpr(guard); err != nil {
 			return err
 		}
-		skipThen := c.emitJump(bytecode.OpJumpIfFalse, condition.Target.Name.Line)
-		c.emit(bytecode.OpPop, condition.Target.Name.Line)
+		skipThen := c.emitJump(bytecode.OpJumpIfFalsePop, condition.Target.Name.Line)
 		if err := c.compileBlockStatements(node.Then); err != nil {
 			return err
 		}
 		jumpOverElse := c.emitJump(bytecode.OpJump, 0)
 		c.patchJump(skipThen)
-		c.emit(bytecode.OpPop, condition.Target.Name.Line)
 		if node.Else != nil {
 			if err := c.compileBlock(node.Else); err != nil {
 				return err
@@ -2018,7 +2143,6 @@ func (c *Compiler) compileIfInstanceOf(node *ast.IfStmt, condition *ast.Instance
 	}
 	jumpOverElse := c.emitJump(bytecode.OpJump, 0)
 	c.patchJump(jumpIfFalse)
-	c.emit(bytecode.OpPop, condition.Target.Name.Line)
 	if node.Else != nil {
 		if err := c.compileBlock(node.Else); err != nil {
 			return err
@@ -3405,8 +3529,7 @@ func (c *Compiler) compileFastRangeFor(node *ast.ForStmt) error {
 			name := c.constant(c.typeNameFromRef(condition.Target))
 			c.emit(bytecode.OpMatchType, condition.Target.Name.Line)
 			c.emitUint16(name, condition.Target.Name.Line)
-			skipBody := c.emitJump(bytecode.OpJumpIfFalse, anchor.Line)
-			c.emit(bytecode.OpPop, anchor.Line)
+			skipBody := c.emitJump(bytecode.OpJumpIfFalsePop, anchor.Line)
 			c.emit(bytecode.OpGetLocal, condition.Target.Name.Line)
 			c.emitByte(tempSlot, condition.Target.Name.Line)
 			c.emitCastForType(condition.Target, condition.Target.Name.Line)
@@ -3415,17 +3538,14 @@ func (c *Compiler) compileFastRangeFor(node *ast.ForStmt) error {
 			if err := c.compileExpr(guard); err != nil {
 				return err
 			}
-			skipByGuard := c.emitJump(bytecode.OpJumpIfFalse, anchor.Line)
-			c.emit(bytecode.OpPop, anchor.Line)
+			skipByGuard := c.emitJump(bytecode.OpJumpIfFalsePop, anchor.Line)
 			if err := c.compileBlock(node.Body); err != nil {
 				return err
 			}
 			c.emitLoop(loopStart, anchor.Line)
 			c.patchJump(skipByGuard)
-			c.emit(bytecode.OpPop, anchor.Line)
 			c.emitLoop(loopStart, anchor.Line)
 			c.patchJump(skipBody)
-			c.emit(bytecode.OpPop, anchor.Line)
 			c.emitLoop(loopStart, anchor.Line)
 		} else if condition, ok := unwrapInstanceOfExpr(node.Condition); ok && condition.Binding != nil {
 			tempName := token.Token{Lexeme: "__where_instanceof_temp", Line: condition.Target.Name.Line}
@@ -3441,8 +3561,7 @@ func (c *Compiler) compileFastRangeFor(node *ast.ForStmt) error {
 			name := c.constant(c.typeNameFromRef(condition.Target))
 			c.emit(bytecode.OpMatchType, condition.Target.Name.Line)
 			c.emitUint16(name, condition.Target.Name.Line)
-			skipBody := c.emitJump(bytecode.OpJumpIfFalse, anchor.Line)
-			c.emit(bytecode.OpPop, anchor.Line)
+			skipBody := c.emitJump(bytecode.OpJumpIfFalsePop, anchor.Line)
 			c.emit(bytecode.OpGetLocal, condition.Target.Name.Line)
 			c.emitByte(tempSlot, condition.Target.Name.Line)
 			c.emitCastForType(condition.Target, condition.Target.Name.Line)
@@ -3453,20 +3572,17 @@ func (c *Compiler) compileFastRangeFor(node *ast.ForStmt) error {
 			}
 			c.emitLoop(loopStart, anchor.Line)
 			c.patchJump(skipBody)
-			c.emit(bytecode.OpPop, anchor.Line)
 			c.emitLoop(loopStart, anchor.Line)
 		} else {
 			if err := c.compileExpr(node.Condition); err != nil {
 				return err
 			}
-			skipBody := c.emitJump(bytecode.OpJumpIfFalse, anchor.Line)
-			c.emit(bytecode.OpPop, anchor.Line)
+			skipBody := c.emitJump(bytecode.OpJumpIfFalsePop, anchor.Line)
 			if err := c.compileBlock(node.Body); err != nil {
 				return err
 			}
 			c.emitLoop(loopStart, anchor.Line)
 			c.patchJump(skipBody)
-			c.emit(bytecode.OpPop, anchor.Line)
 			c.emitLoop(loopStart, anchor.Line)
 		}
 	} else {
@@ -3488,15 +3604,13 @@ func (c *Compiler) compileLoop(node *ast.LoopStmt) error {
 		if err := c.compileExpr(node.Condition); err != nil {
 			return err
 		}
-		exitJump := c.emitJump(bytecode.OpJumpIfFalse, node.Keyword.Line)
-		c.emit(bytecode.OpPop, node.Keyword.Line)
+		exitJump := c.emitJump(bytecode.OpJumpIfFalsePop, node.Keyword.Line)
 		c.loops = append(c.loops, loopContext{scopeDepth: c.state.depth, continueTarget: loopStart, continueBackward: true})
 		if err := c.compileBlock(node.Body); err != nil {
 			return err
 		}
 		c.emitLoop(loopStart, node.Keyword.Line)
 		c.patchJump(exitJump)
-		c.emit(bytecode.OpPop, node.Keyword.Line)
 		c.patchLoopBreaks()
 		c.loops = c.loops[:len(c.loops)-1]
 		return nil
@@ -3525,11 +3639,9 @@ func (c *Compiler) compileDoLoop(node *ast.LoopStmt) error {
 		if err := c.compileExpr(node.Condition); err != nil {
 			return err
 		}
-		exitJump := c.emitJump(bytecode.OpJumpIfFalse, node.Keyword.Line)
-		c.emit(bytecode.OpPop, node.Keyword.Line)
+		exitJump := c.emitJump(bytecode.OpJumpIfFalsePop, node.Keyword.Line)
 		c.emitLoop(loopStart, node.Keyword.Line)
 		c.patchJump(exitJump)
-		c.emit(bytecode.OpPop, node.Keyword.Line)
 	} else {
 		c.emitLoop(loopStart, node.Keyword.Line)
 	}
@@ -3649,6 +3761,12 @@ func (c *Compiler) compileCallArgument(arg ast.Expr, expectedParams []string, in
 	expectedType := expectedParams[index]
 	if err := c.maybeWrapInterfaceName(expectedType, arg, line); err != nil {
 		return err
+	}
+	// Skip redundant runtime type check when inferred argument type already matches expected.
+	argType := normalizeRuntimeTypeAlias(rootRuntimeTypeName(c.inferExprType(arg)))
+	normExpected := normalizeRuntimeTypeAlias(rootRuntimeTypeName(expectedType))
+	if argType != "" && argType != bvmruntime.TypeAny && argType == normExpected {
+		return nil
 	}
 	return c.emitRuntimeTypeCheck(expectedType, line)
 }
@@ -4404,13 +4522,18 @@ func (c *Compiler) emitUint16(v uint16, line int) {
 
 func (c *Compiler) emitJump(op bytecode.Op, line int) int {
 	// Peephole: NOT + JUMP_IF_FALSE → JUMP_IF_TRUE (eliminates the NOT instruction)
-	if op == bytecode.OpJumpIfFalse {
+	// Same peephole for the Pop variants.
+	if op == bytecode.OpJumpIfFalse || op == bytecode.OpJumpIfFalsePop {
 		code := c.state.chunk.Code
 		lastOff := c.state.lastOpcodeOffset
 		if lastOff < len(code) && bytecode.Op(code[lastOff]) == bytecode.OpNot {
 			c.state.chunk.Code = code[:lastOff]
 			c.state.chunk.Lines = c.state.chunk.Lines[:lastOff]
-			op = bytecode.OpJumpIfTrue
+			if op == bytecode.OpJumpIfFalsePop {
+				op = bytecode.OpJumpIfTruePop
+			} else {
+				op = bytecode.OpJumpIfTrue
+			}
 		}
 	}
 	c.emit(op, line)

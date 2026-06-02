@@ -277,7 +277,7 @@ func (c *Chunk) disassembleInto(out *strings.Builder, name string) {
 		case OpInvokeMethod:
 			fmt.Fprintf(out,"slot=%d argc=%d", c.Code[offset+1], c.Code[offset+2])
 			offset += 3
-		case OpPushHandler, OpJump, OpJumpIfFalse, OpJumpIfTrue, OpLoop:
+		case OpPushHandler, OpJump, OpJumpIfFalse, OpJumpIfTrue, OpJumpIfFalsePop, OpJumpIfTruePop, OpLoop:
 			jump := readUint16(c.Code[offset+1:])
 			fmt.Fprintf(out,"%d", jump)
 			offset += 3
@@ -297,8 +297,16 @@ func (c *Chunk) disassembleInto(out *strings.Builder, name string) {
 		case OpGetLocalArrayField:
 			fmt.Fprintf(out, "arr=%d idx=%d field=%d", c.Code[offset+1], c.Code[offset+2], c.Code[offset+3])
 			offset += 4
+		case OpJumpIfNotContainsStringConst:
+			needleIdx := readUint16(c.Code[offset+2:])
+			jump := readUint16(c.Code[offset+4:])
+			fmt.Fprintf(out, "haystack=%d needle=%v jump=%d", c.Code[offset+1], c.Constants[needleIdx], jump)
+			offset += 6
 		case OpContains, OpContainsArray, OpContainsMap, OpContainsString:
 			offset++
+		case OpAddToLocal, OpSubToLocal, OpMulToLocal:
+			fmt.Fprintf(out, "slot=%d", c.Code[offset+1])
+			offset += 2
 		case OpArrayAlloc, OpArrayFill:
 			offset++
 		default:

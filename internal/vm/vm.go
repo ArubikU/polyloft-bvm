@@ -179,10 +179,14 @@ func (vm *VM) callValue(callable value.Value, args []value.Value) (value.Value, 
 }
 
 func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
-	for len(vm.frames) > baseDepth {
-		frame := vm.currentFrame()
+	if len(vm.frames) <= baseDepth {
+		return value.NilValue(), nil
+	}
+	frame := vm.frames[len(vm.frames)-1]
+	for {
 		if frame.ip >= len(frame.fn.Chunk.Code) {
 			if handled, raised := vm.handleRaised(baseDepth, frame, diagnostic.Runtime("RuntimeError", "unexpected end of bytecode", value.NilValue())); handled {
+				frame = vm.frames[len(vm.frames)-1]
 				continue
 			} else {
 				return value.NilValue(), raised
@@ -267,6 +271,72 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			current := vm.localGet(frame, slot)
 			if current.Kind != value.Number || current.Num != math.Trunc(current.Num) || int64(current.Num)%divisor != 0 {
 				frame.ip += int(offset)
+			}
+		case bytecode.OpJumpIfNotContainsStringConst:
+			haystackSlot := vm.readByte(frame)
+			needleConst := frame.fn.Chunk.Constants[vm.readUint16(frame)]
+			offset := vm.readUint16(frame)
+			needle, ok := needleConst.(string)
+			if !ok {
+				return value.NilValue(), fmt.Errorf("JUMP_IF_NOT_CONTAINS_STRING_CONST expects string constant")
+			}
+			haystack := vm.localGet(frame, haystackSlot)
+			if haystack.Kind != value.String || !strings.Contains(haystack.Str, needle) {
+				frame.ip += int(offset)
+			}
+		case bytecode.OpAddToLocal:
+			slot := vm.readByte(frame)
+			rhs := vm.pop()
+			lhs := frame.locals[slot]
+			if lhs.Kind == value.Number && rhs.Kind == value.Number {
+				if lhs.NumberKind == value.NumberInt && rhs.NumberKind == value.NumberInt {
+					frame.locals[slot] = value.IntValue(lhs.Int + rhs.Int)
+				} else {
+					frame.locals[slot] = value.FloatValue(lhs.Num + rhs.Num)
+				}
+			} else {
+				vm.push(lhs)
+				vm.push(rhs)
+				if err := vm.binaryNumberOp(bytecode.OpAddNum, func(a, b float64) float64 { return a + b }); err != nil {
+					return value.NilValue(), err
+				}
+				frame.locals[slot] = vm.pop()
+			}
+		case bytecode.OpSubToLocal:
+			slot := vm.readByte(frame)
+			rhs := vm.pop()
+			lhs := frame.locals[slot]
+			if lhs.Kind == value.Number && rhs.Kind == value.Number {
+				if lhs.NumberKind == value.NumberInt && rhs.NumberKind == value.NumberInt {
+					frame.locals[slot] = value.IntValue(lhs.Int - rhs.Int)
+				} else {
+					frame.locals[slot] = value.FloatValue(lhs.Num - rhs.Num)
+				}
+			} else {
+				vm.push(lhs)
+				vm.push(rhs)
+				if err := vm.binaryNumberOp(bytecode.OpSubNum, func(a, b float64) float64 { return a - b }); err != nil {
+					return value.NilValue(), err
+				}
+				frame.locals[slot] = vm.pop()
+			}
+		case bytecode.OpMulToLocal:
+			slot := vm.readByte(frame)
+			rhs := vm.pop()
+			lhs := frame.locals[slot]
+			if lhs.Kind == value.Number && rhs.Kind == value.Number {
+				if lhs.NumberKind == value.NumberInt && rhs.NumberKind == value.NumberInt {
+					frame.locals[slot] = value.IntValue(lhs.Int * rhs.Int)
+				} else {
+					frame.locals[slot] = value.FloatValue(lhs.Num * rhs.Num)
+				}
+			} else {
+				vm.push(lhs)
+				vm.push(rhs)
+				if err := vm.binaryNumberOp(bytecode.OpMulNum, func(a, b float64) float64 { return a * b }); err != nil {
+					return value.NilValue(), err
+				}
+				frame.locals[slot] = vm.pop()
 			}
 		case bytecode.OpGetCapture:
 			slot := vm.readByte(frame)
@@ -443,6 +513,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if err := vm.binaryNumberOp(bytecode.OpDiv, func(a, b float64) float64 { return a / b }); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
+					frame = vm.frames[len(vm.frames)-1]
 					continue
 				}
 				return value.NilValue(), raised
@@ -450,6 +521,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 		case bytecode.OpModNum:
 			if err := vm.binaryNumberOp(bytecode.OpModNum, func(a, b float64) float64 { return math.Mod(a, b) }); err != nil {
 				if handled, raised := vm.handleRaised(baseDepth, frame, err); handled {
+					frame = vm.frames[len(vm.frames)-1]
 					continue
 				} else {
 					return value.NilValue(), raised
@@ -459,6 +531,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if err := vm.binaryNumberOp(bytecode.OpMod, func(a, b float64) float64 { return math.Mod(a, b) }); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
+					frame = vm.frames[len(vm.frames)-1]
 					continue
 				}
 				return value.NilValue(), raised
@@ -496,6 +569,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 		case bytecode.OpThrow:
 			if handled, err := vm.handleRaised(baseDepth, frame, vm.explicitThrow(vm.pop())); handled {
+				frame = vm.frames[len(vm.frames)-1]
 				continue
 			} else {
 				return value.NilValue(), err
@@ -532,6 +606,30 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 		case bytecode.OpJumpIfTrue:
 			offset := vm.readUint16(frame)
 			condition := vm.peek(0)
+			if booleanValue, ok := vm.booleanOperand(condition); ok {
+				if booleanValue {
+					frame.ip += int(offset)
+				}
+				continue
+			}
+			if condition.IsTruthy() {
+				frame.ip += int(offset)
+			}
+		case bytecode.OpJumpIfFalsePop:
+			offset := vm.readUint16(frame)
+			condition := vm.pop()
+			if booleanValue, ok := vm.booleanOperand(condition); ok {
+				if !booleanValue {
+					frame.ip += int(offset)
+				}
+				continue
+			}
+			if !condition.IsTruthy() {
+				frame.ip += int(offset)
+			}
+		case bytecode.OpJumpIfTruePop:
+			offset := vm.readUint16(frame)
+			condition := vm.pop()
 			if booleanValue, ok := vm.booleanOperand(condition); ok {
 				if booleanValue {
 					frame.ip += int(offset)
@@ -611,6 +709,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if err := vm.binaryNumberOp(bytecode.OpDivNum, func(a, b float64) float64 { return a / b }); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
+					frame = vm.frames[len(vm.frames)-1]
 					continue
 				}
 				return value.NilValue(), raised
@@ -702,20 +801,24 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if err := vm.call(argc); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
+					frame = vm.frames[len(vm.frames)-1]
 					continue
 				}
 				return value.NilValue(), raised
 			}
+			frame = vm.frames[len(vm.frames)-1]
 		case bytecode.OpCallConst:
 			callable := vm.constantToValue(frame.fn.Chunk.Constants[vm.readUint16(frame)])
 			argc := int(vm.readByte(frame))
 			if err := vm.callKnownValue(callable, argc); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
+					frame = vm.frames[len(vm.frames)-1]
 					continue
 				}
 				return value.NilValue(), raised
 			}
+			frame = vm.frames[len(vm.frames)-1]
 		case bytecode.OpCallConstLocalSubInt:
 			callable := vm.constantToValue(frame.fn.Chunk.Constants[vm.readUint16(frame)])
 			slot := vm.readByte(frame)
@@ -731,10 +834,12 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if err := vm.callKnownValueWithArgs(callable, value.IntValue(int64(current.Num)-subValue)); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
+					frame = vm.frames[len(vm.frames)-1]
 					continue
 				}
 				return value.NilValue(), raised
 			}
+			frame = vm.frames[len(vm.frames)-1]
 		case bytecode.OpCallSelfLocalSubInt:
 			slot := vm.readByte(frame)
 			constant := frame.fn.Chunk.Constants[vm.readUint16(frame)]
@@ -749,10 +854,12 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if err := vm.callSelfLocalSubInt(frame, int64(current.Num)-subValue); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
+					frame = vm.frames[len(vm.frames)-1]
 					continue
 				}
 				return value.NilValue(), raised
 			}
+			frame = vm.frames[len(vm.frames)-1]
 		case bytecode.OpCallGlobalSlot:
 			slot := int(vm.readByte(frame))
 			argc := int(vm.readByte(frame))
@@ -762,40 +869,48 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if err := vm.callGlobalSlot(slot, argc); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
+					frame = vm.frames[len(vm.frames)-1]
 					continue
 				}
 				return value.NilValue(), raised
 			}
+			frame = vm.frames[len(vm.frames)-1]
 		case bytecode.OpInvoke:
 			name := frame.fn.Chunk.Constants[vm.readUint16(frame)].(string)
 			argc := int(vm.readByte(frame))
 			if err := vm.invoke(name, argc); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
+					frame = vm.frames[len(vm.frames)-1]
 					continue
 				}
 				return value.NilValue(), raised
 			}
+			frame = vm.frames[len(vm.frames)-1]
 		case bytecode.OpInvokeMethod:
 			slot := int(vm.readByte(frame))
 			argc := int(vm.readByte(frame))
 			if err := vm.invokeMethodSlot(slot, argc); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
+					frame = vm.frames[len(vm.frames)-1]
 					continue
 				}
 				return value.NilValue(), raised
 			}
+			frame = vm.frames[len(vm.frames)-1]
 		case bytecode.OpInvokeSuper:
 			name := frame.fn.Chunk.Constants[vm.readUint16(frame)].(string)
 			argc := int(vm.readByte(frame))
 			if err := vm.invokeSuper(name, argc); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
+					frame = vm.frames[len(vm.frames)-1]
 					continue
 				}
 				return value.NilValue(), raised
 			}
+			frame = vm.frames[len(vm.frames)-1]
 		case bytecode.OpRange:
 			argc := int(vm.readByte(frame))
 			rng, err := vm.buildRange(argc)
@@ -1531,10 +1646,12 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if err := vm.callSuper(argc); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
+					frame = vm.frames[len(vm.frames)-1]
 					continue
 				}
 				return value.NilValue(), raised
 			}
+			frame = vm.frames[len(vm.frames)-1]
 		case bytecode.OpReturn:
 			result := vm.pop()
 			if frame.init && frame.receiver != nil {
@@ -1549,6 +1666,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				return result, nil
 			}
 			vm.push(result)
+			frame = vm.frames[len(vm.frames)-1]
 		default:
 			return value.NilValue(), fmt.Errorf("unknown opcode %d", op)
 		}
@@ -2411,20 +2529,11 @@ func sliceValues(items []value.Value, start, end int) ([]value.Value, error) {
 }
 
 func containsString(haystack string, needle string) bool {
-	if len(needle) == 0 {
-		return true
-	}
-	return indexString(haystack, needle) >= 0
+	return strings.Contains(haystack, needle)
 }
 
 func indexString(haystack string, needle string) int {
-	limit := len(haystack) - len(needle)
-	for i := 0; i <= limit; i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return i
-		}
-	}
-	return -1
+	return strings.Index(haystack, needle)
 }
 
 func containsValue(items []value.Value, needle value.Value, equals func(value.Value, value.Value) (bool, error)) (bool, error) {
