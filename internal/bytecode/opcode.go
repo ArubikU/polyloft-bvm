@@ -116,6 +116,9 @@ const (
 	OpJumpIfLocalLtLocalFalse       // if locals[a] < locals[b] is false (i.e. >=) → jump
 	OpJumpIfLocalGtLocalFalse       // if locals[a] > locals[b] is false (i.e. <=) → jump
 	OpJumpIfLocalLtLocalTrue        // if locals[a] < locals[b] → jump
+	// Fused array-field-vs-local comparison jumps; args: arr(1) idx(1) field(1) cmp(1) offset(2)
+	OpJumpIfArrayFieldGteLocalTrue  // if arr[idx].field >= locals[cmp] → jump (exit "while field<cmp" loop)
+	OpJumpIfArrayFieldLteLocalTrue  // if arr[idx].field <= locals[cmp] → jump (exit "while field>cmp" loop)
 )
 
 func (op Op) String() string {
@@ -344,6 +347,10 @@ func (op Op) String() string {
 		return "JUMP_IF_LOCAL_GT_LOCAL_FALSE"
 	case OpJumpIfLocalLtLocalTrue:
 		return "JUMP_IF_LOCAL_LT_LOCAL_TRUE"
+	case OpJumpIfArrayFieldGteLocalTrue:
+		return "JUMP_IF_ARRAY_FIELD_GTE_LOCAL_TRUE"
+	case OpJumpIfArrayFieldLteLocalTrue:
+		return "JUMP_IF_ARRAY_FIELD_LTE_LOCAL_TRUE"
 	default:
 		return "UNKNOWN"
 	}

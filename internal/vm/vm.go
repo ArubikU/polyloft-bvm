@@ -284,6 +284,36 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if frame.locals[slotA].Num < frame.locals[slotB].Num {
 				frame.ip += int(offset)
 			}
+		case bytecode.OpJumpIfArrayFieldGteLocalTrue:
+			arrSlot := vm.readByte(frame)
+			idxSlot := vm.readByte(frame)
+			fieldSlot := int(vm.readByte(frame))
+			cmpSlot := vm.readByte(frame)
+			offset := vm.readUint16(frame)
+			arr := frame.locals[arrSlot].Object.(*value.Array)
+			idx := int(frame.locals[idxSlot].Int)
+			if idx < 0 || idx >= len(arr.Elements) {
+				return value.NilValue(), fmt.Errorf("array index out of range")
+			}
+			instance := arr.Elements[idx].Object.(*value.Instance)
+			if instance.Fields[fieldSlot].Num >= frame.locals[cmpSlot].Num {
+				frame.ip += int(offset)
+			}
+		case bytecode.OpJumpIfArrayFieldLteLocalTrue:
+			arrSlot := vm.readByte(frame)
+			idxSlot := vm.readByte(frame)
+			fieldSlot := int(vm.readByte(frame))
+			cmpSlot := vm.readByte(frame)
+			offset := vm.readUint16(frame)
+			arr := frame.locals[arrSlot].Object.(*value.Array)
+			idx := int(frame.locals[idxSlot].Int)
+			if idx < 0 || idx >= len(arr.Elements) {
+				return value.NilValue(), fmt.Errorf("array index out of range")
+			}
+			instance := arr.Elements[idx].Object.(*value.Instance)
+			if instance.Fields[fieldSlot].Num <= frame.locals[cmpSlot].Num {
+				frame.ip += int(offset)
+			}
 		case bytecode.OpAddConstLocalInt:
 			slot := vm.readByte(frame)
 			constant := frame.fn.Chunk.Constants[vm.readUint16(frame)]

@@ -4566,30 +4566,70 @@ func (c *Compiler) emitJump(op bytecode.Op, line int) int {
 		n := len(code)
 		if n >= 5 {
 			compareOp := bytecode.Op(code[n-1])
-			if (compareOp == bytecode.OpLessNum || compareOp == bytecode.OpGreaterNum) &&
-				bytecode.Op(code[n-5]) == bytecode.OpGetLocal &&
-				bytecode.Op(code[n-3]) == bytecode.OpGetLocal {
-				slotA := code[n-4]
-				slotB := code[n-2]
-				var fusedOp bytecode.Op
-				switch {
-				case compareOp == bytecode.OpLessNum && op == bytecode.OpJumpIfTruePop:
-					fusedOp = bytecode.OpJumpIfLocalLtLocalTrue
-				case compareOp == bytecode.OpLessNum && op == bytecode.OpJumpIfFalsePop:
-					fusedOp = bytecode.OpJumpIfLocalLtLocalFalse
-				case compareOp == bytecode.OpGreaterNum && op == bytecode.OpJumpIfTruePop:
-					fusedOp = bytecode.OpJumpIfLocalGtLocalTrue
-				default: // GreaterNum + JumpIfFalsePop
-					fusedOp = bytecode.OpJumpIfLocalGtLocalFalse
+			if compareOp == bytecode.OpLessNum || compareOp == bytecode.OpGreaterNum {
+				// Pattern 1: GET_LOCAL_ARRAY_FIELD arr idx field; GET_LOCAL cmp; CMP; JUMP
+				// → JUMP_IF_ARRAY_FIELD_{GTE,LTE}_LOCAL_TRUE arr idx field cmp offset (7 bytes)
+				if n >= 7 && bytecode.Op(code[n-7]) == bytecode.OpGetLocalArrayField &&
+					bytecode.Op(code[n-3]) == bytecode.OpGetLocal {
+					arrSlot := code[n-6]
+					idxSlot := code[n-5]
+					fieldSlot := code[n-4]
+					cmpSlot := code[n-2]
+					var fusedOp bytecode.Op
+					// JUMP_IF_FALSE_POP: exit when condition is false
+					// arr.field < cmp → false means arr.field >= cmp → jump
+					// arr.field > cmp → false means arr.field <= cmp → jump
+					if op == bytecode.OpJumpIfFalsePop {
+						if compareOp == bytecode.OpLessNum {
+							fusedOp = bytecode.OpJumpIfArrayFieldGteLocalTrue
+						} else {
+							fusedOp = bytecode.OpJumpIfArrayFieldLteLocalTrue
+						}
+					} else {
+						// JUMP_IF_TRUE_POP — less common for this pattern but handle it
+						// arr.field < cmp → true → jump means arr.field < cmp
+						// arr.field > cmp → true → jump means arr.field > cmp
+						// These are covered by local-vs-local below, skip here
+						goto tryLocalLocal
+					}
+					c.state.chunk.Code = code[:n-7]
+					c.state.chunk.Lines = c.state.chunk.Lines[:n-7]
+					c.emit(fusedOp, line)
+					c.emitByte(arrSlot, line)
+					c.emitByte(idxSlot, line)
+					c.emitByte(fieldSlot, line)
+					c.emitByte(cmpSlot, line)
+					placeholder := len(c.state.chunk.Code)
+					c.emitUint16(0, line)
+					return placeholder
 				}
-				c.state.chunk.Code = code[:n-5]
-				c.state.chunk.Lines = c.state.chunk.Lines[:n-5]
-				c.emit(fusedOp, line)
-				c.emitByte(slotA, line)
-				c.emitByte(slotB, line)
-				placeholder := len(c.state.chunk.Code)
-				c.emitUint16(0, line)
-				return placeholder
+			tryLocalLocal:
+				// Pattern 2: GET_LOCAL a; GET_LOCAL b; CMP; JUMP
+				// → JUMP_IF_LOCAL_{LT,GT}_LOCAL_{TRUE,FALSE} a b offset (5 bytes, 1 opcode)
+				if n >= 5 && bytecode.Op(code[n-5]) == bytecode.OpGetLocal &&
+					bytecode.Op(code[n-3]) == bytecode.OpGetLocal {
+					slotA := code[n-4]
+					slotB := code[n-2]
+					var fusedOp bytecode.Op
+					switch {
+					case compareOp == bytecode.OpLessNum && op == bytecode.OpJumpIfTruePop:
+						fusedOp = bytecode.OpJumpIfLocalLtLocalTrue
+					case compareOp == bytecode.OpLessNum && op == bytecode.OpJumpIfFalsePop:
+						fusedOp = bytecode.OpJumpIfLocalLtLocalFalse
+					case compareOp == bytecode.OpGreaterNum && op == bytecode.OpJumpIfTruePop:
+						fusedOp = bytecode.OpJumpIfLocalGtLocalTrue
+					default: // GreaterNum + JumpIfFalsePop
+						fusedOp = bytecode.OpJumpIfLocalGtLocalFalse
+					}
+					c.state.chunk.Code = code[:n-5]
+					c.state.chunk.Lines = c.state.chunk.Lines[:n-5]
+					c.emit(fusedOp, line)
+					c.emitByte(slotA, line)
+					c.emitByte(slotB, line)
+					placeholder := len(c.state.chunk.Code)
+					c.emitUint16(0, line)
+					return placeholder
+				}
 			}
 		}
 	}
