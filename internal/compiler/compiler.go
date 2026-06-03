@@ -548,14 +548,16 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 		if err := c.compileBlock(node.Then); err != nil {
 			return err
 		}
-		jumpOverElse := c.emitJump(bytecode.OpJump, 0)
-		c.patchJump(jumpIfFalse)
 		if node.Else != nil {
+			jumpOverElse := c.emitJump(bytecode.OpJump, 0)
+			c.patchJump(jumpIfFalse)
 			if err := c.compileBlock(node.Else); err != nil {
 				return err
 			}
+			c.patchJump(jumpOverElse)
+		} else {
+			c.patchJump(jumpIfFalse)
 		}
-		c.patchJump(jumpOverElse)
 		return nil
 	case *ast.TryStmt:
 		return c.compileTry(node)
@@ -1810,14 +1812,16 @@ func (c *Compiler) compileFastIfStmt(node *ast.IfStmt) bool {
 		if err := c.compileBlock(node.Then); err != nil {
 			return false
 		}
-		jumpOverElse := c.emitJump(bytecode.OpJump, 0)
-		c.patchJump(jumpIfFalse)
 		if node.Else != nil {
+			jumpOverElse := c.emitJump(bytecode.OpJump, 0)
+			c.patchJump(jumpIfFalse)
 			if err := c.compileBlock(node.Else); err != nil {
 				return false
 			}
+			c.patchJump(jumpOverElse)
+		} else {
+			c.patchJump(jumpIfFalse)
 		}
-		c.patchJump(jumpOverElse)
 		return true
 	}
 	if slot, divisor, ok := c.matchLocalDivisibleByIntConstCondition(node.Condition); ok {
@@ -1825,14 +1829,16 @@ func (c *Compiler) compileFastIfStmt(node *ast.IfStmt) bool {
 		if err := c.compileBlock(node.Then); err != nil {
 			return false
 		}
-		jumpOverElse := c.emitJump(bytecode.OpJump, 0)
-		c.patchJump(jumpIfFalse)
 		if node.Else != nil {
+			jumpOverElse := c.emitJump(bytecode.OpJump, 0)
+			c.patchJump(jumpIfFalse)
 			if err := c.compileBlock(node.Else); err != nil {
 				return false
 			}
+			c.patchJump(jumpOverElse)
+		} else {
+			c.patchJump(jumpIfFalse)
 		}
-		c.patchJump(jumpOverElse)
 		return true
 	}
 	// Pattern: if const_string in local_var:
@@ -2128,27 +2134,31 @@ func (c *Compiler) compileIfInstanceOf(node *ast.IfStmt, condition *ast.Instance
 		if err := c.compileBlockStatements(node.Then); err != nil {
 			return err
 		}
-		jumpOverElse := c.emitJump(bytecode.OpJump, 0)
-		c.patchJump(skipThen)
 		if node.Else != nil {
+			jumpOverElse := c.emitJump(bytecode.OpJump, 0)
+			c.patchJump(skipThen)
 			if err := c.compileBlock(node.Else); err != nil {
 				return err
 			}
+			c.patchJump(jumpOverElse)
+		} else {
+			c.patchJump(skipThen)
 		}
-		c.patchJump(jumpOverElse)
 		return nil
 	}
 	if err := c.compileBlockStatements(node.Then); err != nil {
 		return err
 	}
-	jumpOverElse := c.emitJump(bytecode.OpJump, 0)
-	c.patchJump(jumpIfFalse)
 	if node.Else != nil {
+		jumpOverElse := c.emitJump(bytecode.OpJump, 0)
+		c.patchJump(jumpIfFalse)
 		if err := c.compileBlock(node.Else); err != nil {
 			return err
 		}
+		c.patchJump(jumpOverElse)
+	} else {
+		c.patchJump(jumpIfFalse)
 	}
-	c.patchJump(jumpOverElse)
 	return nil
 }
 

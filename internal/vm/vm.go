@@ -42,6 +42,7 @@ type stringAccumulator struct {
 type VM struct {
 	stdout          io.Writer
 	stack           []value.Value
+	sp              int // explicit stack pointer; always == len(stack) logically
 	frames          []*frame
 	framePool       []*frame
 	globals         map[string]value.Value
@@ -73,7 +74,8 @@ func newWithRegistry(stdout io.Writer, registry *bvmruntime.Registry, setProxy b
 	}
 	machine := &VM{
 		stdout:      stdout,
-		stack:       make([]value.Value, 0, 256),
+		stack:       make([]value.Value, 4096), // pre-allocated; sp tracks top
+		sp:          0,
 		frames:      make([]*frame, 0, 16),
 		framePool:   make([]*frame, 0, 16),
 		globals:     registry.Globals(),
@@ -153,13 +155,13 @@ func (vm *VM) CallClosureIsolated(closure value.Value, args []value.Value) (valu
 
 func (vm *VM) callValue(callable value.Value, args []value.Value) (value.Value, error) {
 	baseDepth := len(vm.frames)
-	baseStack := len(vm.stack)
+	baseStack := vm.sp
 	vm.push(callable)
 	for _, arg := range args {
 		vm.push(arg)
 	}
 	if err := vm.call(len(args)); err != nil {
-		vm.stack = vm.stack[:baseStack]
+		vm.sp = baseStack
 		return value.NilValue(), err
 	}
 	result, err := vm.executeUntilDepth(baseDepth)
@@ -169,11 +171,11 @@ func (vm *VM) callValue(callable value.Value, args []value.Value) (value.Value, 
 			vm.frames = vm.frames[:len(vm.frames)-1]
 			vm.releaseFrame(frame)
 		}
-		vm.stack = vm.stack[:baseStack]
+		vm.sp = baseStack
 		return value.NilValue(), err
 	}
-	if len(vm.stack) > baseStack {
-		vm.stack = vm.stack[:baseStack]
+	if vm.sp > baseStack {
+		vm.sp = baseStack
 	}
 	return result, nil
 }
@@ -562,7 +564,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 		case bytecode.OpPushHandler:
 			offset := vm.readUint16(frame)
-			frame.handlers = append(frame.handlers, exceptionHandler{catchIP: frame.ip + int(offset), stackDepth: len(vm.stack)})
+			frame.handlers = append(frame.handlers, exceptionHandler{catchIP: frame.ip + int(offset), stackDepth: vm.sp})
 		case bytecode.OpPopHandler:
 			if len(frame.handlers) > 0 {
 				frame.handlers = frame.handlers[:len(frame.handlers)-1]
@@ -643,50 +645,53 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			offset := vm.readUint16(frame)
 			frame.ip -= int(offset)
 		case bytecode.OpAddNum:
-			right := vm.pop()
-			left := vm.pop()
-			if left.Kind == value.Number && right.Kind == value.Number {
-				if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-					vm.push(value.IntValue(left.Int + right.Int))
-					continue
+			s1, s2 := vm.sp-1, vm.sp-2
+			if vm.stack[s2].Kind == value.Number && vm.stack[s1].Kind == value.Number {
+				if vm.stack[s2].NumberKind == value.NumberInt && vm.stack[s1].NumberKind == value.NumberInt {
+					vm.stack[s2].Int += vm.stack[s1].Int
+					vm.stack[s2].Num = float64(vm.stack[s2].Int)
+				} else {
+					vm.stack[s2].Num += vm.stack[s1].Num
+					vm.stack[s2].Int = int64(vm.stack[s2].Num)
+					vm.stack[s2].NumberKind = value.NumberFloat
 				}
-				vm.push(value.FloatValue(left.Num + right.Num))
+				vm.sp--
 				continue
 			}
-			vm.push(left)
-			vm.push(right)
 			if err := vm.binaryNumberOp(bytecode.OpAddNum, func(a, b float64) float64 { return a + b }); err != nil {
 				return value.NilValue(), err
 			}
 		case bytecode.OpSubNum:
-			right := vm.pop()
-			left := vm.pop()
-			if left.Kind == value.Number && right.Kind == value.Number {
-				if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-					vm.push(value.IntValue(left.Int - right.Int))
-					continue
+			s1, s2 := vm.sp-1, vm.sp-2
+			if vm.stack[s2].Kind == value.Number && vm.stack[s1].Kind == value.Number {
+				if vm.stack[s2].NumberKind == value.NumberInt && vm.stack[s1].NumberKind == value.NumberInt {
+					vm.stack[s2].Int -= vm.stack[s1].Int
+					vm.stack[s2].Num = float64(vm.stack[s2].Int)
+				} else {
+					vm.stack[s2].Num -= vm.stack[s1].Num
+					vm.stack[s2].Int = int64(vm.stack[s2].Num)
+					vm.stack[s2].NumberKind = value.NumberFloat
 				}
-				vm.push(value.FloatValue(left.Num - right.Num))
+				vm.sp--
 				continue
 			}
-			vm.push(left)
-			vm.push(right)
 			if err := vm.binaryNumberOp(bytecode.OpSubNum, func(a, b float64) float64 { return a - b }); err != nil {
 				return value.NilValue(), err
 			}
 		case bytecode.OpMulNum:
-			right := vm.pop()
-			left := vm.pop()
-			if left.Kind == value.Number && right.Kind == value.Number {
-				if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-					vm.push(value.IntValue(left.Int * right.Int))
-					continue
+			s1, s2 := vm.sp-1, vm.sp-2
+			if vm.stack[s2].Kind == value.Number && vm.stack[s1].Kind == value.Number {
+				if vm.stack[s2].NumberKind == value.NumberInt && vm.stack[s1].NumberKind == value.NumberInt {
+					vm.stack[s2].Int *= vm.stack[s1].Int
+					vm.stack[s2].Num = float64(vm.stack[s2].Int)
+				} else {
+					vm.stack[s2].Num *= vm.stack[s1].Num
+					vm.stack[s2].Int = int64(vm.stack[s2].Num)
+					vm.stack[s2].NumberKind = value.NumberFloat
 				}
-				vm.push(value.FloatValue(left.Num * right.Num))
+				vm.sp--
 				continue
 			}
-			vm.push(left)
-			vm.push(right)
 			if err := vm.binaryNumberOp(bytecode.OpMulNum, func(a, b float64) float64 { return a * b }); err != nil {
 				return value.NilValue(), err
 			}
@@ -695,17 +700,23 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				return value.NilValue(), err
 			}
 		case bytecode.OpDivNum:
-			right := vm.pop()
-			left := vm.pop()
-			if left.Kind == value.Number && right.Kind == value.Number {
-				if right.Num == 0 {
-					return value.NilValue(), fmt.Errorf("division by zero")
+			s1, s2 := vm.sp-1, vm.sp-2
+			if vm.stack[s2].Kind == value.Number && vm.stack[s1].Kind == value.Number {
+				if vm.stack[s1].Num == 0 {
+					err := fmt.Errorf("division by zero")
+					handled, raised := vm.handleRaised(baseDepth, frame, err)
+					if handled {
+						frame = vm.frames[len(vm.frames)-1]
+						continue
+					}
+					return value.NilValue(), raised
 				}
-				vm.push(value.FloatValue(left.Num / right.Num))
+				vm.stack[s2].Num /= vm.stack[s1].Num
+				vm.stack[s2].Int = int64(vm.stack[s2].Num)
+				vm.stack[s2].NumberKind = value.NumberFloat
+				vm.sp--
 				continue
 			}
-			vm.push(left)
-			vm.push(right)
 			if err := vm.binaryNumberOp(bytecode.OpDivNum, func(a, b float64) float64 { return a / b }); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
@@ -715,34 +726,36 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				return value.NilValue(), raised
 			}
 		case bytecode.OpLessNum:
-			right := vm.pop()
-			left := vm.pop()
-			if left.Kind == value.Number && right.Kind == value.Number {
-				if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-					vm.push(value.BoolValue(left.Int < right.Int))
+			s1, s2 := vm.sp-1, vm.sp-2
+			if vm.stack[s2].Kind == value.Number && vm.stack[s1].Kind == value.Number {
+				var result bool
+				if vm.stack[s2].NumberKind == value.NumberInt && vm.stack[s1].NumberKind == value.NumberInt {
+					result = vm.stack[s2].Int < vm.stack[s1].Int
 				} else {
-					vm.push(value.BoolValue(left.Num < right.Num))
+					result = vm.stack[s2].Num < vm.stack[s1].Num
 				}
+				vm.stack[s2].Kind = value.Bool
+				vm.stack[s2].Bool = result
+				vm.sp--
 				continue
 			}
-			vm.push(left)
-			vm.push(right)
 			if err := vm.binaryNumericCompareOp(bytecode.OpLessNum); err != nil {
 				return value.NilValue(), err
 			}
 		case bytecode.OpGreaterNum:
-			right := vm.pop()
-			left := vm.pop()
-			if left.Kind == value.Number && right.Kind == value.Number {
-				if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-					vm.push(value.BoolValue(left.Int > right.Int))
+			s1, s2 := vm.sp-1, vm.sp-2
+			if vm.stack[s2].Kind == value.Number && vm.stack[s1].Kind == value.Number {
+				var result bool
+				if vm.stack[s2].NumberKind == value.NumberInt && vm.stack[s1].NumberKind == value.NumberInt {
+					result = vm.stack[s2].Int > vm.stack[s1].Int
 				} else {
-					vm.push(value.BoolValue(left.Num > right.Num))
+					result = vm.stack[s2].Num > vm.stack[s1].Num
 				}
+				vm.stack[s2].Kind = value.Bool
+				vm.stack[s2].Bool = result
+				vm.sp--
 				continue
 			}
-			vm.push(left)
-			vm.push(right)
 			if err := vm.binaryNumericCompareOp(bytecode.OpGreaterNum); err != nil {
 				return value.NilValue(), err
 			}
@@ -1657,8 +1670,8 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if frame.init && frame.receiver != nil {
 				result = value.ObjectValue(frame.receiver)
 			}
-			if len(vm.stack) > frame.stackBase {
-				vm.stack = vm.stack[:frame.stackBase]
+			if vm.sp > frame.stackBase {
+				vm.sp = frame.stackBase
 			}
 			vm.frames = vm.frames[:len(vm.frames)-1]
 			vm.releaseFrame(frame)
@@ -1706,11 +1719,11 @@ func pickOverload(overloads []*bytecode.Function, argc int) *bytecode.Function {
 func (vm *VM) call(argc int) error {
 	callee := vm.peek(argc)
 	if wrapper, ok := callee.AsSAMWrapper(); ok {
-		vm.stack[len(vm.stack)-1-argc] = wrapper.Callable
+		vm.stack[vm.sp-1-argc] = wrapper.Callable
 		return vm.call(argc)
 	}
 	if bound, ok := callee.AsSAMBoundMethod(); ok {
-		vm.stack[len(vm.stack)-1-argc] = bound.Wrapper.Callable
+		vm.stack[vm.sp-1-argc] = bound.Wrapper.Callable
 		return vm.call(argc)
 	}
 	if bound, ok := callee.AsBoundMethod(); ok {
@@ -1731,7 +1744,7 @@ func (vm *VM) call(argc int) error {
 			vm.localSet(child, byte(i+1), vm.pop())
 		}
 		vm.pop()
-		child.stackBase = len(vm.stack)
+		child.stackBase = vm.sp
 		vm.frames = append(vm.frames, child)
 		return nil
 	}
@@ -1741,7 +1754,7 @@ func (vm *VM) call(argc int) error {
 		if !ok || fn == nil {
 			return fmt.Errorf("class %s has no static overload %s/%d", bound.Class.Name, bound.Name, argc)
 		}
-		vm.stack[len(vm.stack)-1-argc] = value.ObjectValue(fn)
+		vm.stack[vm.sp-1-argc] = value.ObjectValue(fn)
 		return vm.call(argc)
 	}
 	if class, ok := callee.AsClass(); ok {
@@ -1756,11 +1769,11 @@ func (vm *VM) call(argc int) error {
 				return fmt.Errorf("%s expects %d args, got %d", class.Name, fastCtor.Arity, argc)
 			}
 			instance := vm.acquireInstance(class)
-			baseIdx := len(vm.stack) - argc
+			baseIdx := vm.sp - argc
 			for i, slot := range fastCtor.FieldSlots {
 				instance.Fields[slot] = vm.stack[baseIdx+fastCtor.ArgIndexes[i]]
 			}
-			vm.stack = vm.stack[:len(vm.stack)-argc-1]
+			vm.sp -= argc + 1
 			vm.push(value.ObjectValue(instance))
 			return nil
 		}
@@ -1796,7 +1809,7 @@ func (vm *VM) call(argc int) error {
 			vm.localSet(child, byte(i+1), vm.pop())
 		}
 		vm.pop()
-		child.stackBase = len(vm.stack)
+		child.stackBase = vm.sp
 		vm.frames = append(vm.frames, child)
 		return nil
 	}
@@ -1835,7 +1848,7 @@ func (vm *VM) call(argc int) error {
 			vm.localSet(child, byte(i), vm.pop())
 		}
 		vm.pop()
-		child.stackBase = len(vm.stack)
+		child.stackBase = vm.sp
 		vm.frames = append(vm.frames, child)
 		return nil
 	}
@@ -1853,7 +1866,7 @@ func (vm *VM) call(argc int) error {
 		vm.localSet(child, byte(i), vm.pop())
 	}
 	vm.pop()
-	child.stackBase = len(vm.stack)
+	child.stackBase = vm.sp
 	vm.frames = append(vm.frames, child)
 	return nil
 }
@@ -1906,7 +1919,7 @@ func (vm *VM) callKnownValue(callee value.Value, argc int) error {
 		for i := argc - 1; i >= 0; i-- {
 			vm.localSet(child, byte(i), vm.pop())
 		}
-		child.stackBase = len(vm.stack)
+		child.stackBase = vm.sp
 		vm.frames = append(vm.frames, child)
 		return nil
 	}
@@ -1918,7 +1931,7 @@ func (vm *VM) callKnownValue(callee value.Value, argc int) error {
 		for i := argc - 1; i >= 0; i-- {
 			vm.localSet(child, byte(i), vm.pop())
 		}
-		child.stackBase = len(vm.stack)
+		child.stackBase = vm.sp
 		vm.frames = append(vm.frames, child)
 		return nil
 	}
@@ -1953,11 +1966,11 @@ func (vm *VM) callKnownValue(callee value.Value, argc int) error {
 				return fmt.Errorf("%s expects %d args, got %d", class.Name, fastCtor.Arity, argc)
 			}
 			instance := vm.acquireInstance(class)
-			baseIdx := len(vm.stack) - argc
+			baseIdx := vm.sp - argc
 			for i, slot := range fastCtor.FieldSlots {
 				instance.Fields[slot] = vm.stack[baseIdx+fastCtor.ArgIndexes[i]]
 			}
-			vm.stack = vm.stack[:len(vm.stack)-argc]
+			vm.sp -= argc
 			vm.push(value.ObjectValue(instance))
 			return nil
 		}
@@ -1974,7 +1987,7 @@ func (vm *VM) callKnownValue(callee value.Value, argc int) error {
 		for i := argc - 1; i >= 0; i-- {
 			vm.localSet(child, byte(i+1), vm.pop())
 		}
-		child.stackBase = len(vm.stack)
+		child.stackBase = vm.sp
 		vm.frames = append(vm.frames, child)
 		return nil
 	}
@@ -2556,7 +2569,7 @@ func (vm *VM) invoke(name string, argc int) error {
 		if !exists {
 			return fmt.Errorf("module %s has no member %s", module.Name, name)
 		}
-		vm.stack[len(vm.stack)-1-argc] = member
+		vm.stack[vm.sp-1-argc] = member
 		return vm.call(argc)
 	}
 	if instance, ok := receiver.AsInstance(); ok {
@@ -2573,7 +2586,7 @@ func (vm *VM) invoke(name string, argc int) error {
 				if result, ok, err := vm.tryFastMethodCall(instance, slot); err != nil {
 					return err
 				} else if ok {
-					vm.stack[len(vm.stack)-1] = result
+					vm.stack[vm.sp-1] = result
 					return nil
 				}
 			}
@@ -2584,7 +2597,7 @@ func (vm *VM) invoke(name string, argc int) error {
 		if name != wrapper.MethodName {
 			return fmt.Errorf("interface %s has no method %s", wrapper.InterfaceName, name)
 		}
-		vm.stack[len(vm.stack)-1-argc] = wrapper.Callable
+		vm.stack[vm.sp-1-argc] = wrapper.Callable
 		return vm.call(argc)
 	}
 	if class, ok := receiver.AsClass(); ok {
@@ -2594,7 +2607,7 @@ func (vm *VM) invoke(name string, argc int) error {
 			if err := vm.ensureAccess(owner, owner.StaticVisibility[name]); err != nil {
 				return err
 			}
-			vm.stack[len(vm.stack)-1-argc] = value.ObjectValue(fn)
+			vm.stack[vm.sp-1-argc] = value.ObjectValue(fn)
 			return vm.call(argc)
 		}
 		owner, member, exists := class.LookupStaticOwner(name)
@@ -2604,7 +2617,7 @@ func (vm *VM) invoke(name string, argc int) error {
 		if err := vm.ensureAccess(owner, owner.StaticVisibility[name]); err != nil {
 			return err
 		}
-		vm.stack[len(vm.stack)-1-argc] = member
+		vm.stack[vm.sp-1-argc] = member
 		return vm.call(argc)
 	}
 	return fmt.Errorf("cannot invoke %s on %s", name, receiver.String())
@@ -2624,7 +2637,7 @@ func (vm *VM) invokeMethodSlot(slot int, argc int) error {
 		if result, ok, err := vm.tryFastMethodCall(instance, slot); err != nil {
 			return err
 		} else if ok {
-			vm.stack[len(vm.stack)-1] = result
+			vm.stack[vm.sp-1] = result
 			return nil
 		}
 	}
@@ -2725,7 +2738,7 @@ func (vm *VM) callMethod(receiver *value.Instance, fn *bytecode.Function, owner 
 		child.locals[i+1] = vm.pop()
 	}
 	vm.pop()
-	child.stackBase = len(vm.stack)
+	child.stackBase = vm.sp
 	_ = owner
 	vm.frames = append(vm.frames, child)
 	return nil
@@ -2741,7 +2754,7 @@ func (vm *VM) callMethodDirect(receiver *value.Instance, fn *bytecode.Function, 
 	for i := argc - 1; i >= 0; i-- {
 		child.locals[i+1] = vm.pop()
 	}
-	child.stackBase = len(vm.stack)
+	child.stackBase = vm.sp
 	_ = owner
 	vm.frames = append(vm.frames, child)
 	return nil
@@ -2781,7 +2794,7 @@ func (vm *VM) callSuper(argc int) error {
 	for i := argc - 1; i >= 0; i-- {
 		vm.localSet(child, byte(i+1), vm.pop())
 	}
-	child.stackBase = len(vm.stack)
+	child.stackBase = vm.sp
 	vm.frames = append(vm.frames, child)
 	return nil
 }
@@ -3059,7 +3072,7 @@ func (vm *VM) acquireFrame(fn *bytecode.Function, closure *value.Closure, receiv
 	child.fn = fn
 	child.closure = closure
 	child.ip = 0
-	child.stackBase = len(vm.stack)
+	child.stackBase = vm.sp
 	child.receiver = receiver
 	child.init = init
 	child.hasCells = false // maps are lazily initialized; skip clear unless used
@@ -3126,7 +3139,7 @@ func (vm *VM) tryRecycleLocal(frame *frame, slot byte, old value.Value) {
 		}
 	}
 	// Check for aliases on the active expression stack
-	for i := frame.stackBase; i < len(vm.stack); i++ {
+	for i := frame.stackBase; i < vm.sp; i++ {
 		v := vm.stack[i]
 		if v.Kind == value.Object && v.Object == old.Object {
 			return
@@ -3154,17 +3167,17 @@ func (vm *VM) borrowBuiltinArgs(argc int) []value.Value {
 }
 
 func (vm *VM) push(v value.Value) {
-	vm.stack = append(vm.stack, v)
+	vm.stack[vm.sp] = v
+	vm.sp++
 }
 
 func (vm *VM) pop() value.Value {
-	v := vm.stack[len(vm.stack)-1]
-	vm.stack = vm.stack[:len(vm.stack)-1]
-	return v
+	vm.sp--
+	return vm.stack[vm.sp]
 }
 
 func (vm *VM) peek(distance int) value.Value {
-	return vm.stack[len(vm.stack)-1-distance]
+	return vm.stack[vm.sp-1-distance]
 }
 
 func (vm *VM) readByte(frame *frame) byte {
@@ -3507,8 +3520,8 @@ func (vm *VM) handleRaised(baseDepth int, frame *frame, err error) (bool, error)
 			vm.frames = vm.frames[:len(vm.frames)-1]
 			vm.releaseFrame(child)
 		}
-		if handler.stackDepth < len(vm.stack) {
-			vm.stack = vm.stack[:handler.stackDepth]
+		if handler.stackDepth < vm.sp {
+			vm.sp = handler.stackDepth
 		}
 		candidate.ip = handler.catchIP
 		vm.push(raised.CatchValue())
