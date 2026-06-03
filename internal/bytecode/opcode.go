@@ -109,6 +109,13 @@ const (
 	OpMulToLocal                    // locals[slot] *= pop() (numeric); args: slot(1)
 	OpJumpIfFalsePop                // pop TOS, then jump if it was falsy; args: offset(2)
 	OpJumpIfTruePop                 // pop TOS, then jump if it was truthy; args: offset(2)
+	OpIncLocal                      // locals[slot]++ (int); args: slot(1)
+	OpDecLocal                      // locals[slot]-- (int); args: slot(1)
+	// Fused local-vs-local comparison jumps; args: slot_a(1) slot_b(1) offset(2)
+	OpJumpIfLocalGtLocalTrue        // if locals[a] > locals[b] → jump
+	OpJumpIfLocalLtLocalFalse       // if locals[a] < locals[b] is false (i.e. >=) → jump
+	OpJumpIfLocalGtLocalFalse       // if locals[a] > locals[b] is false (i.e. <=) → jump
+	OpJumpIfLocalLtLocalTrue        // if locals[a] < locals[b] → jump
 )
 
 func (op Op) String() string {
@@ -325,6 +332,18 @@ func (op Op) String() string {
 		return "JUMP_IF_FALSE_POP"
 	case OpJumpIfTruePop:
 		return "JUMP_IF_TRUE_POP"
+	case OpIncLocal:
+		return "INC_LOCAL"
+	case OpDecLocal:
+		return "DEC_LOCAL"
+	case OpJumpIfLocalGtLocalTrue:
+		return "JUMP_IF_LOCAL_GT_LOCAL_TRUE"
+	case OpJumpIfLocalLtLocalFalse:
+		return "JUMP_IF_LOCAL_LT_LOCAL_FALSE"
+	case OpJumpIfLocalGtLocalFalse:
+		return "JUMP_IF_LOCAL_GT_LOCAL_FALSE"
+	case OpJumpIfLocalLtLocalTrue:
+		return "JUMP_IF_LOCAL_LT_LOCAL_TRUE"
 	default:
 		return "UNKNOWN"
 	}

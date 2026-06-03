@@ -1740,6 +1740,17 @@ func (c *Compiler) emitFastAddConstLocalAssign(targetSlot byte, node *ast.Assign
 	if negate {
 		intVal = -intVal
 	}
+	// Fast path: ±1 increments get the compact 2-byte INC_LOCAL / DEC_LOCAL
+	if intVal == 1 {
+		c.emit(bytecode.OpIncLocal, node.Name.Line)
+		c.emitByte(targetSlot, node.Name.Line)
+		return true
+	}
+	if intVal == -1 {
+		c.emit(bytecode.OpDecLocal, node.Name.Line)
+		c.emitByte(targetSlot, node.Name.Line)
+		return true
+	}
 	idx := c.constant(intVal)
 	c.emit(bytecode.OpAddConstLocalInt, node.Name.Line)
 	c.emitByte(targetSlot, node.Name.Line)
@@ -4543,6 +4554,42 @@ func (c *Compiler) emitJump(op bytecode.Op, line int) int {
 				op = bytecode.OpJumpIfTruePop
 			} else {
 				op = bytecode.OpJumpIfTrue
+			}
+		}
+	}
+	// Peephole: GET_LOCAL a; GET_LOCAL b; LESS/GREATER_NUM; JUMP_IF_{TRUE,FALSE}_POP
+	// → fused JUMP_IF_LOCAL_{LT,GT}_LOCAL_{TRUE,FALSE} a b offset  (5 bytes, 1 opcode)
+	// Use len(code) rather than lastOpcodeOffset so this fires even after the NOT peephole
+	// above has already truncated the code (NOT peephole doesn't update lastOpcodeOffset).
+	if op == bytecode.OpJumpIfTruePop || op == bytecode.OpJumpIfFalsePop {
+		code := c.state.chunk.Code
+		n := len(code)
+		if n >= 5 {
+			compareOp := bytecode.Op(code[n-1])
+			if (compareOp == bytecode.OpLessNum || compareOp == bytecode.OpGreaterNum) &&
+				bytecode.Op(code[n-5]) == bytecode.OpGetLocal &&
+				bytecode.Op(code[n-3]) == bytecode.OpGetLocal {
+				slotA := code[n-4]
+				slotB := code[n-2]
+				var fusedOp bytecode.Op
+				switch {
+				case compareOp == bytecode.OpLessNum && op == bytecode.OpJumpIfTruePop:
+					fusedOp = bytecode.OpJumpIfLocalLtLocalTrue
+				case compareOp == bytecode.OpLessNum && op == bytecode.OpJumpIfFalsePop:
+					fusedOp = bytecode.OpJumpIfLocalLtLocalFalse
+				case compareOp == bytecode.OpGreaterNum && op == bytecode.OpJumpIfTruePop:
+					fusedOp = bytecode.OpJumpIfLocalGtLocalTrue
+				default: // GreaterNum + JumpIfFalsePop
+					fusedOp = bytecode.OpJumpIfLocalGtLocalFalse
+				}
+				c.state.chunk.Code = code[:n-5]
+				c.state.chunk.Lines = c.state.chunk.Lines[:n-5]
+				c.emit(fusedOp, line)
+				c.emitByte(slotA, line)
+				c.emitByte(slotB, line)
+				placeholder := len(c.state.chunk.Code)
+				c.emitUint16(0, line)
+				return placeholder
 			}
 		}
 	}

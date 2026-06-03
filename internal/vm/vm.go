@@ -238,6 +238,52 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 		case bytecode.OpAppendLocalString:
 			slot := vm.readByte(frame)
 			vm.appendLocalString(frame, slot, vm.pop())
+		case bytecode.OpIncLocal:
+			slot := vm.readByte(frame)
+			if frame.hasCells {
+				v := vm.localGetSlow(frame, slot)
+				vm.localSetSlow(frame, slot, value.IntValue(v.Int+1))
+			} else {
+				frame.locals[slot].Int++
+				frame.locals[slot].Num++
+			}
+		case bytecode.OpDecLocal:
+			slot := vm.readByte(frame)
+			if frame.hasCells {
+				v := vm.localGetSlow(frame, slot)
+				vm.localSetSlow(frame, slot, value.IntValue(v.Int-1))
+			} else {
+				frame.locals[slot].Int--
+				frame.locals[slot].Num--
+			}
+		case bytecode.OpJumpIfLocalGtLocalTrue:
+			slotA := vm.readByte(frame)
+			slotB := vm.readByte(frame)
+			offset := vm.readUint16(frame)
+			if frame.locals[slotA].Num > frame.locals[slotB].Num {
+				frame.ip += int(offset)
+			}
+		case bytecode.OpJumpIfLocalLtLocalFalse:
+			slotA := vm.readByte(frame)
+			slotB := vm.readByte(frame)
+			offset := vm.readUint16(frame)
+			if frame.locals[slotA].Num >= frame.locals[slotB].Num {
+				frame.ip += int(offset)
+			}
+		case bytecode.OpJumpIfLocalGtLocalFalse:
+			slotA := vm.readByte(frame)
+			slotB := vm.readByte(frame)
+			offset := vm.readUint16(frame)
+			if frame.locals[slotA].Num <= frame.locals[slotB].Num {
+				frame.ip += int(offset)
+			}
+		case bytecode.OpJumpIfLocalLtLocalTrue:
+			slotA := vm.readByte(frame)
+			slotB := vm.readByte(frame)
+			offset := vm.readUint16(frame)
+			if frame.locals[slotA].Num < frame.locals[slotB].Num {
+				frame.ip += int(offset)
+			}
 		case bytecode.OpAddConstLocalInt:
 			slot := vm.readByte(frame)
 			constant := frame.fn.Chunk.Constants[vm.readUint16(frame)]

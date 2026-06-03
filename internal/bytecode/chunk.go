@@ -307,6 +307,12 @@ func (c *Chunk) disassembleInto(out *strings.Builder, name string) {
 		case OpAddToLocal, OpSubToLocal, OpMulToLocal:
 			fmt.Fprintf(out, "slot=%d", c.Code[offset+1])
 			offset += 2
+		case OpIncLocal, OpDecLocal:
+			fmt.Fprintf(out, "slot=%d", c.Code[offset+1])
+			offset += 2
+		case OpJumpIfLocalGtLocalTrue, OpJumpIfLocalLtLocalFalse, OpJumpIfLocalGtLocalFalse, OpJumpIfLocalLtLocalTrue:
+			fmt.Fprintf(out, "a=%d b=%d jump=%d", c.Code[offset+1], c.Code[offset+2], readUint16(c.Code[offset+3:]))
+			offset += 5
 		case OpArrayAlloc, OpArrayFill:
 			offset++
 		default:
