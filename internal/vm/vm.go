@@ -42,7 +42,8 @@ type stringAccumulator struct {
 type VM struct {
 	stdout          io.Writer
 	stack           []value.Value
-	sp              int // explicit stack pointer; always == len(stack) logically
+	sp              int // explicit stack pointer (next free slot index)
+	stackCap        int // cached len(stack); updated only when stack is grown
 	frames          []*frame
 	framePool       []*frame
 	globals         map[string]value.Value
@@ -76,6 +77,7 @@ func newWithRegistry(stdout io.Writer, registry *bvmruntime.Registry, setProxy b
 		stdout:      stdout,
 		stack:       make([]value.Value, 4096), // pre-allocated; sp tracks top
 		sp:          0,
+		stackCap:    4096,
 		frames:      make([]*frame, 0, 16),
 		framePool:   make([]*frame, 0, 16),
 		globals:     registry.Globals(),
@@ -239,79 +241,31 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			slot := vm.readByte(frame)
 			vm.appendLocalString(frame, slot, vm.pop())
 		case bytecode.OpIncLocal:
-			slot := vm.readByte(frame)
-			if frame.hasCells {
-				v := vm.localGetSlow(frame, slot)
-				vm.localSetSlow(frame, slot, value.IntValue(v.Int+1))
-			} else {
-				frame.locals[slot].Int++
-				frame.locals[slot].Num++
-			}
+			vm.adjustIntLocal(frame, vm.readByte(frame), 1)
 		case bytecode.OpDecLocal:
-			slot := vm.readByte(frame)
-			if frame.hasCells {
-				v := vm.localGetSlow(frame, slot)
-				vm.localSetSlow(frame, slot, value.IntValue(v.Int-1))
-			} else {
-				frame.locals[slot].Int--
-				frame.locals[slot].Num--
-			}
+			vm.adjustIntLocal(frame, vm.readByte(frame), -1)
 		case bytecode.OpJumpIfLocalGtLocalTrue:
-			slotA := vm.readByte(frame)
-			slotB := vm.readByte(frame)
-			offset := vm.readUint16(frame)
-			if frame.locals[slotA].Num > frame.locals[slotB].Num {
-				frame.ip += int(offset)
-			}
+			vm.jumpIfLocalCmp(frame, func(a, b float64) bool { return a > b })
 		case bytecode.OpJumpIfLocalLtLocalFalse:
-			slotA := vm.readByte(frame)
-			slotB := vm.readByte(frame)
-			offset := vm.readUint16(frame)
-			if frame.locals[slotA].Num >= frame.locals[slotB].Num {
-				frame.ip += int(offset)
-			}
+			vm.jumpIfLocalCmp(frame, func(a, b float64) bool { return a >= b })
 		case bytecode.OpJumpIfLocalGtLocalFalse:
-			slotA := vm.readByte(frame)
-			slotB := vm.readByte(frame)
-			offset := vm.readUint16(frame)
-			if frame.locals[slotA].Num <= frame.locals[slotB].Num {
-				frame.ip += int(offset)
-			}
+			vm.jumpIfLocalCmp(frame, func(a, b float64) bool { return a <= b })
 		case bytecode.OpJumpIfLocalLtLocalTrue:
-			slotA := vm.readByte(frame)
-			slotB := vm.readByte(frame)
-			offset := vm.readUint16(frame)
-			if frame.locals[slotA].Num < frame.locals[slotB].Num {
-				frame.ip += int(offset)
-			}
+			vm.jumpIfLocalCmp(frame, func(a, b float64) bool { return a < b })
 		case bytecode.OpJumpIfArrayFieldGteLocalTrue:
-			arrSlot := vm.readByte(frame)
-			idxSlot := vm.readByte(frame)
-			fieldSlot := int(vm.readByte(frame))
-			cmpSlot := vm.readByte(frame)
-			offset := vm.readUint16(frame)
-			arr := frame.locals[arrSlot].Object.(*value.Array)
-			idx := int(frame.locals[idxSlot].Int)
-			if idx < 0 || idx >= len(arr.Elements) {
-				return value.NilValue(), fmt.Errorf("array index out of range")
+			fieldNum, cmpSlot, offset, err := vm.readArrayFieldCmpArgs(frame)
+			if err != nil {
+				return value.NilValue(), err
 			}
-			instance := arr.Elements[idx].Object.(*value.Instance)
-			if instance.Fields[fieldSlot].Num >= frame.locals[cmpSlot].Num {
+			if fieldNum >= frame.locals[cmpSlot].Num {
 				frame.ip += int(offset)
 			}
 		case bytecode.OpJumpIfArrayFieldLteLocalTrue:
-			arrSlot := vm.readByte(frame)
-			idxSlot := vm.readByte(frame)
-			fieldSlot := int(vm.readByte(frame))
-			cmpSlot := vm.readByte(frame)
-			offset := vm.readUint16(frame)
-			arr := frame.locals[arrSlot].Object.(*value.Array)
-			idx := int(frame.locals[idxSlot].Int)
-			if idx < 0 || idx >= len(arr.Elements) {
-				return value.NilValue(), fmt.Errorf("array index out of range")
+			fieldNum, cmpSlot, offset, err := vm.readArrayFieldCmpArgs(frame)
+			if err != nil {
+				return value.NilValue(), err
 			}
-			instance := arr.Elements[idx].Object.(*value.Instance)
-			if instance.Fields[fieldSlot].Num <= frame.locals[cmpSlot].Num {
+			if fieldNum <= frame.locals[cmpSlot].Num {
 				frame.ip += int(offset)
 			}
 		case bytecode.OpAddConstLocalInt:
@@ -365,56 +319,75 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 		case bytecode.OpAddToLocal:
 			slot := vm.readByte(frame)
 			rhs := vm.pop()
-			lhs := frame.locals[slot]
-			if lhs.Kind == value.Number && rhs.Kind == value.Number {
-				if lhs.NumberKind == value.NumberInt && rhs.NumberKind == value.NumberInt {
-					frame.locals[slot] = value.IntValue(lhs.Int + rhs.Int)
-				} else {
-					frame.locals[slot] = value.FloatValue(lhs.Num + rhs.Num)
-				}
-			} else {
-				vm.push(lhs)
-				vm.push(rhs)
-				if err := vm.binaryNumberOp(bytecode.OpAddNum, func(a, b float64) float64 { return a + b }); err != nil {
+			if frame.hasCells {
+				// Closure-captured local: route through cell abstraction (Fix: was bypassed).
+				if err := vm.applyToLocalSlow(frame, slot, rhs, bytecode.OpAddNum); err != nil {
 					return value.NilValue(), err
 				}
-				frame.locals[slot] = vm.pop()
+			} else {
+				lhs := frame.locals[slot]
+				if lhs.Kind == value.Number && rhs.Kind == value.Number {
+					if lhs.NumberKind == value.NumberInt && rhs.NumberKind == value.NumberInt {
+						frame.locals[slot] = value.IntValue(lhs.Int + rhs.Int)
+					} else {
+						frame.locals[slot] = value.FloatValue(lhs.Num + rhs.Num)
+					}
+				} else {
+					vm.push(lhs)
+					vm.push(rhs)
+					if err := vm.binaryNumberOp(bytecode.OpAddNum, func(a, b float64) float64 { return a + b }); err != nil {
+						return value.NilValue(), err
+					}
+					frame.locals[slot] = vm.pop()
+				}
 			}
 		case bytecode.OpSubToLocal:
 			slot := vm.readByte(frame)
 			rhs := vm.pop()
-			lhs := frame.locals[slot]
-			if lhs.Kind == value.Number && rhs.Kind == value.Number {
-				if lhs.NumberKind == value.NumberInt && rhs.NumberKind == value.NumberInt {
-					frame.locals[slot] = value.IntValue(lhs.Int - rhs.Int)
-				} else {
-					frame.locals[slot] = value.FloatValue(lhs.Num - rhs.Num)
-				}
-			} else {
-				vm.push(lhs)
-				vm.push(rhs)
-				if err := vm.binaryNumberOp(bytecode.OpSubNum, func(a, b float64) float64 { return a - b }); err != nil {
+			if frame.hasCells {
+				if err := vm.applyToLocalSlow(frame, slot, rhs, bytecode.OpSubNum); err != nil {
 					return value.NilValue(), err
 				}
-				frame.locals[slot] = vm.pop()
+			} else {
+				lhs := frame.locals[slot]
+				if lhs.Kind == value.Number && rhs.Kind == value.Number {
+					if lhs.NumberKind == value.NumberInt && rhs.NumberKind == value.NumberInt {
+						frame.locals[slot] = value.IntValue(lhs.Int - rhs.Int)
+					} else {
+						frame.locals[slot] = value.FloatValue(lhs.Num - rhs.Num)
+					}
+				} else {
+					vm.push(lhs)
+					vm.push(rhs)
+					if err := vm.binaryNumberOp(bytecode.OpSubNum, func(a, b float64) float64 { return a - b }); err != nil {
+						return value.NilValue(), err
+					}
+					frame.locals[slot] = vm.pop()
+				}
 			}
 		case bytecode.OpMulToLocal:
 			slot := vm.readByte(frame)
 			rhs := vm.pop()
-			lhs := frame.locals[slot]
-			if lhs.Kind == value.Number && rhs.Kind == value.Number {
-				if lhs.NumberKind == value.NumberInt && rhs.NumberKind == value.NumberInt {
-					frame.locals[slot] = value.IntValue(lhs.Int * rhs.Int)
-				} else {
-					frame.locals[slot] = value.FloatValue(lhs.Num * rhs.Num)
-				}
-			} else {
-				vm.push(lhs)
-				vm.push(rhs)
-				if err := vm.binaryNumberOp(bytecode.OpMulNum, func(a, b float64) float64 { return a * b }); err != nil {
+			if frame.hasCells {
+				if err := vm.applyToLocalSlow(frame, slot, rhs, bytecode.OpMulNum); err != nil {
 					return value.NilValue(), err
 				}
-				frame.locals[slot] = vm.pop()
+			} else {
+				lhs := frame.locals[slot]
+				if lhs.Kind == value.Number && rhs.Kind == value.Number {
+					if lhs.NumberKind == value.NumberInt && rhs.NumberKind == value.NumberInt {
+						frame.locals[slot] = value.IntValue(lhs.Int * rhs.Int)
+					} else {
+						frame.locals[slot] = value.FloatValue(lhs.Num * rhs.Num)
+					}
+				} else {
+					vm.push(lhs)
+					vm.push(rhs)
+					if err := vm.binaryNumberOp(bytecode.OpMulNum, func(a, b float64) float64 { return a * b }); err != nil {
+						return value.NilValue(), err
+					}
+					frame.locals[slot] = vm.pop()
+				}
 			}
 		case bytecode.OpGetCapture:
 			slot := vm.readByte(frame)
@@ -669,6 +642,11 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 		case bytecode.OpJump:
 			offset := vm.readUint16(frame)
 			frame.ip += int(offset)
+		// The four conditional-jump opcodes share the same truthiness logic
+		// (see evalCondition). They are intentionally inlined rather than
+		// delegated to evalCondition because these are among the hottest
+		// dispatch paths; even a single function call per jump is measurable
+		// on million-iteration loops.
 		case bytecode.OpJumpIfFalse:
 			offset := vm.readUint16(frame)
 			condition := vm.peek(0)
@@ -3243,6 +3221,15 @@ func (vm *VM) borrowBuiltinArgs(argc int) []value.Value {
 }
 
 func (vm *VM) push(v value.Value) {
+	if vm.sp >= vm.stackCap {
+		// Rare: grow the stack (doubles capacity). stackCap is read far less
+		// often than sp, so it is more likely to be held in a register by the
+		// branch predictor and not force a memory round-trip on every push.
+		grown := make([]value.Value, vm.stackCap*2)
+		copy(grown, vm.stack)
+		vm.stack = grown
+		vm.stackCap = len(grown)
+	}
 	vm.stack[vm.sp] = v
 	vm.sp++
 }
@@ -3266,6 +3253,127 @@ func (vm *VM) readUint16(frame *frame) uint16 {
 	high := uint16(vm.readByte(frame))
 	low := uint16(vm.readByte(frame))
 	return high<<8 | low
+}
+
+// adjustIntLocal adds delta to an integer local, updating both Int and Num
+// fields atomically. It respects hasCells so closure-captured locals are
+// kept in sync. Used by OpIncLocal (+1) and OpDecLocal (-1).
+func (vm *VM) adjustIntLocal(frame *frame, slot byte, delta int64) {
+	if frame.hasCells {
+		v := vm.localGetSlow(frame, slot)
+		vm.localSetSlow(frame, slot, value.IntValue(v.Int+delta))
+	} else {
+		frame.locals[slot].Int += delta
+		frame.locals[slot].Num += float64(delta)
+	}
+}
+
+// evalCondition returns the truthiness of v. This is the single source of
+// truth for all four conditional-jump opcodes (JumpIfFalse, JumpIfTrue,
+// JumpIfFalsePop, JumpIfTruePop).
+//
+// The Bool case is checked first with a direct field read so the common path
+// (comparisons, loop guards) never calls booleanOperand's expensive instance
+// unwrap logic.
+func (vm *VM) evalCondition(v value.Value) bool {
+	if v.Kind == value.Bool {
+		return v.Bool
+	}
+	// Rare: value is a boxed Boolean wrapper class instance.
+	if boolVal, ok := vm.booleanOperand(v); ok {
+		return boolVal
+	}
+	return v.IsTruthy()
+}
+
+// jumpIfLocalCmp implements OpJumpIfLocal*Local* opcodes.
+// It reads slotA, slotB, offset from the bytecode stream and jumps if cond(a, b) is true.
+func (vm *VM) jumpIfLocalCmp(frame *frame, cond func(a, b float64) bool) {
+	slotA := vm.readByte(frame)
+	slotB := vm.readByte(frame)
+	offset := vm.readUint16(frame)
+	if cond(frame.locals[slotA].Num, frame.locals[slotB].Num) {
+		frame.ip += int(offset)
+	}
+}
+
+// applyToLocalSlow handles OpAddToLocal/SubToLocal/MulToLocal when the local
+// is captured by a closure (frame.hasCells == true). It reads and writes
+// through localGetSlow/localSetSlow so the closure cell stays in sync.
+// The fast (non-closure) path is inlined directly in the dispatch switch.
+func (vm *VM) applyToLocalSlow(frame *frame, slot byte, rhs value.Value, op bytecode.Op) error {
+	lhs := vm.localGetSlow(frame, slot)
+	if lhs.Kind == value.Number && rhs.Kind == value.Number {
+		var result value.Value
+		if lhs.NumberKind == value.NumberInt && rhs.NumberKind == value.NumberInt {
+			switch op {
+			case bytecode.OpAddNum:
+				result = value.IntValue(lhs.Int + rhs.Int)
+			case bytecode.OpSubNum:
+				result = value.IntValue(lhs.Int - rhs.Int)
+			default:
+				result = value.IntValue(lhs.Int * rhs.Int)
+			}
+		} else {
+			switch op {
+			case bytecode.OpAddNum:
+				result = value.FloatValue(lhs.Num + rhs.Num)
+			case bytecode.OpSubNum:
+				result = value.FloatValue(lhs.Num - rhs.Num)
+			default:
+				result = value.FloatValue(lhs.Num * rhs.Num)
+			}
+		}
+		vm.localSetSlow(frame, slot, result)
+		return nil
+	}
+	vm.push(lhs)
+	vm.push(rhs)
+	if err := vm.binaryNumberOp(op, func(a, b float64) float64 {
+		switch op {
+		case bytecode.OpAddNum:
+			return a + b
+		case bytecode.OpSubNum:
+			return a - b
+		default:
+			return a * b
+		}
+	}); err != nil {
+		return err
+	}
+	vm.localSetSlow(frame, slot, vm.pop())
+	return nil
+}
+
+// readArrayFieldCmpArgs decodes the 4-byte argument block shared by
+// OpJumpIfArrayFieldGteLocalTrue and OpJumpIfArrayFieldLteLocalTrue:
+//
+//	arr_slot(1) idx_slot(1) field_slot(1) cmp_slot(1) offset(2)
+//
+// It returns the numeric value of arr[idx].field, the cmpSlot byte, the
+// jump offset, and a non-nil error if any runtime type check fails.
+func (vm *VM) readArrayFieldCmpArgs(frame *frame) (fieldNum float64, cmpSlot byte, offset uint16, err error) {
+	arrSlot := vm.readByte(frame)
+	idxSlot := vm.readByte(frame)
+	fieldSlot := int(vm.readByte(frame))
+	cmpSlot = vm.readByte(frame)
+	offset = vm.readUint16(frame)
+	arr, ok := frame.locals[arrSlot].AsArray()
+	if !ok {
+		return 0, 0, 0, fmt.Errorf("JUMP_IF_ARRAY_FIELD: slot %d is not an array", arrSlot)
+	}
+	idx := int(frame.locals[idxSlot].Int)
+	if idx < 0 || idx >= len(arr.Elements) {
+		return 0, 0, 0, fmt.Errorf("array index %d out of range [0, %d)", idx, len(arr.Elements))
+	}
+	instance, ok := arr.Elements[idx].AsInstance()
+	if !ok {
+		return 0, 0, 0, fmt.Errorf("JUMP_IF_ARRAY_FIELD: element is not an instance")
+	}
+	if fieldSlot < 0 || fieldSlot >= len(instance.Fields) {
+		return 0, 0, 0, fmt.Errorf("JUMP_IF_ARRAY_FIELD: field slot %d out of range", fieldSlot)
+	}
+	return instance.Fields[fieldSlot].Num, cmpSlot, offset, nil
 }
 
 func (vm *VM) constantToValue(item any) value.Value {

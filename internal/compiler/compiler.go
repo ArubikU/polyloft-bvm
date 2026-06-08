@@ -4541,102 +4541,131 @@ func (c *Compiler) emitUint16(v uint16, line int) {
 	c.state.chunk.WriteUint16(v, line)
 }
 
+// emitJump emits a conditional or unconditional jump instruction and returns
+// the offset of the placeholder uint16 that must be patched later via patchJump.
+// It applies up to three peephole optimisations before emitting:
+//  1. peepholeNotFold  – NOT + JumpIfFalse[Pop] → JumpIfTrue[Pop]
+//  2. peepholeArrayFieldCmp – GET_LOCAL_ARRAY_FIELD … GET_LOCAL CMP JUMP_*_POP → fused opcode
+//  3. peepholeLocalLocalCmp – GET_LOCAL … GET_LOCAL CMP JUMP_*_POP → fused opcode
 func (c *Compiler) emitJump(op bytecode.Op, line int) int {
-	// Peephole: NOT + JUMP_IF_FALSE → JUMP_IF_TRUE (eliminates the NOT instruction)
-	// Same peephole for the Pop variants.
-	if op == bytecode.OpJumpIfFalse || op == bytecode.OpJumpIfFalsePop {
-		code := c.state.chunk.Code
-		lastOff := c.state.lastOpcodeOffset
-		if lastOff < len(code) && bytecode.Op(code[lastOff]) == bytecode.OpNot {
-			c.state.chunk.Code = code[:lastOff]
-			c.state.chunk.Lines = c.state.chunk.Lines[:lastOff]
-			if op == bytecode.OpJumpIfFalsePop {
-				op = bytecode.OpJumpIfTruePop
-			} else {
-				op = bytecode.OpJumpIfTrue
-			}
-		}
+	op = c.peepholeNotFold(op)
+	if placeholder, ok := c.peepholeArrayFieldCmp(op, line); ok {
+		return placeholder
 	}
-	// Peephole: GET_LOCAL a; GET_LOCAL b; LESS/GREATER_NUM; JUMP_IF_{TRUE,FALSE}_POP
-	// → fused JUMP_IF_LOCAL_{LT,GT}_LOCAL_{TRUE,FALSE} a b offset  (5 bytes, 1 opcode)
-	// Use len(code) rather than lastOpcodeOffset so this fires even after the NOT peephole
-	// above has already truncated the code (NOT peephole doesn't update lastOpcodeOffset).
-	if op == bytecode.OpJumpIfTruePop || op == bytecode.OpJumpIfFalsePop {
-		code := c.state.chunk.Code
-		n := len(code)
-		if n >= 5 {
-			compareOp := bytecode.Op(code[n-1])
-			if compareOp == bytecode.OpLessNum || compareOp == bytecode.OpGreaterNum {
-				// Pattern 1: GET_LOCAL_ARRAY_FIELD arr idx field; GET_LOCAL cmp; CMP; JUMP
-				// → JUMP_IF_ARRAY_FIELD_{GTE,LTE}_LOCAL_TRUE arr idx field cmp offset (7 bytes)
-				if n >= 7 && bytecode.Op(code[n-7]) == bytecode.OpGetLocalArrayField &&
-					bytecode.Op(code[n-3]) == bytecode.OpGetLocal {
-					arrSlot := code[n-6]
-					idxSlot := code[n-5]
-					fieldSlot := code[n-4]
-					cmpSlot := code[n-2]
-					var fusedOp bytecode.Op
-					// JUMP_IF_FALSE_POP: exit when condition is false
-					// arr.field < cmp → false means arr.field >= cmp → jump
-					// arr.field > cmp → false means arr.field <= cmp → jump
-					if op == bytecode.OpJumpIfFalsePop {
-						if compareOp == bytecode.OpLessNum {
-							fusedOp = bytecode.OpJumpIfArrayFieldGteLocalTrue
-						} else {
-							fusedOp = bytecode.OpJumpIfArrayFieldLteLocalTrue
-						}
-					} else {
-						// JUMP_IF_TRUE_POP — less common for this pattern but handle it
-						// arr.field < cmp → true → jump means arr.field < cmp
-						// arr.field > cmp → true → jump means arr.field > cmp
-						// These are covered by local-vs-local below, skip here
-						goto tryLocalLocal
-					}
-					c.state.chunk.Code = code[:n-7]
-					c.state.chunk.Lines = c.state.chunk.Lines[:n-7]
-					c.emit(fusedOp, line)
-					c.emitByte(arrSlot, line)
-					c.emitByte(idxSlot, line)
-					c.emitByte(fieldSlot, line)
-					c.emitByte(cmpSlot, line)
-					placeholder := len(c.state.chunk.Code)
-					c.emitUint16(0, line)
-					return placeholder
-				}
-			tryLocalLocal:
-				// Pattern 2: GET_LOCAL a; GET_LOCAL b; CMP; JUMP
-				// → JUMP_IF_LOCAL_{LT,GT}_LOCAL_{TRUE,FALSE} a b offset (5 bytes, 1 opcode)
-				if n >= 5 && bytecode.Op(code[n-5]) == bytecode.OpGetLocal &&
-					bytecode.Op(code[n-3]) == bytecode.OpGetLocal {
-					slotA := code[n-4]
-					slotB := code[n-2]
-					var fusedOp bytecode.Op
-					switch {
-					case compareOp == bytecode.OpLessNum && op == bytecode.OpJumpIfTruePop:
-						fusedOp = bytecode.OpJumpIfLocalLtLocalTrue
-					case compareOp == bytecode.OpLessNum && op == bytecode.OpJumpIfFalsePop:
-						fusedOp = bytecode.OpJumpIfLocalLtLocalFalse
-					case compareOp == bytecode.OpGreaterNum && op == bytecode.OpJumpIfTruePop:
-						fusedOp = bytecode.OpJumpIfLocalGtLocalTrue
-					default: // GreaterNum + JumpIfFalsePop
-						fusedOp = bytecode.OpJumpIfLocalGtLocalFalse
-					}
-					c.state.chunk.Code = code[:n-5]
-					c.state.chunk.Lines = c.state.chunk.Lines[:n-5]
-					c.emit(fusedOp, line)
-					c.emitByte(slotA, line)
-					c.emitByte(slotB, line)
-					placeholder := len(c.state.chunk.Code)
-					c.emitUint16(0, line)
-					return placeholder
-				}
-			}
-		}
+	if placeholder, ok := c.peepholeLocalLocalCmp(op, line); ok {
+		return placeholder
 	}
 	c.emit(op, line)
 	offset := len(c.state.chunk.Code)
 	c.emitUint16(0, line)
 	return offset
+}
+
+// peepholeNotFold folds a trailing OpNot into the jump direction:
+//
+//	NOT + JUMP_IF_FALSE[Pop] → JUMP_IF_TRUE[Pop]  (and vice-versa)
+func (c *Compiler) peepholeNotFold(op bytecode.Op) bytecode.Op {
+	if op != bytecode.OpJumpIfFalse && op != bytecode.OpJumpIfFalsePop {
+		return op
+	}
+	code := c.state.chunk.Code
+	lastOff := c.state.lastOpcodeOffset
+	if lastOff >= len(code) || bytecode.Op(code[lastOff]) != bytecode.OpNot {
+		return op
+	}
+	c.state.chunk.Code = code[:lastOff]
+	c.state.chunk.Lines = c.state.chunk.Lines[:lastOff]
+	if op == bytecode.OpJumpIfFalsePop {
+		return bytecode.OpJumpIfTruePop
+	}
+	return bytecode.OpJumpIfTrue
+}
+
+// peepholeArrayFieldCmp fuses:
+//
+//	GET_LOCAL_ARRAY_FIELD arr idx field; GET_LOCAL cmp; LESS/GREATER_NUM; JUMP_IF_FALSE_POP
+//	→ JUMP_IF_ARRAY_FIELD_{GTE,LTE}_LOCAL_TRUE arr idx field cmp offset  (7 bytes)
+//
+// Returns the placeholder offset and true on success, or 0 and false if the
+// pattern is not present.
+func (c *Compiler) peepholeArrayFieldCmp(op bytecode.Op, line int) (int, bool) {
+	if op != bytecode.OpJumpIfFalsePop {
+		return 0, false
+	}
+	code := c.state.chunk.Code
+	n := len(code)
+	if n < 7 {
+		return 0, false
+	}
+	compareOp := bytecode.Op(code[n-1])
+	if compareOp != bytecode.OpLessNum && compareOp != bytecode.OpGreaterNum {
+		return 0, false
+	}
+	if bytecode.Op(code[n-7]) != bytecode.OpGetLocalArrayField || bytecode.Op(code[n-3]) != bytecode.OpGetLocal {
+		return 0, false
+	}
+	arrSlot, idxSlot, fieldSlot, cmpSlot := code[n-6], code[n-5], code[n-4], code[n-2]
+	var fusedOp bytecode.Op
+	if compareOp == bytecode.OpLessNum {
+		fusedOp = bytecode.OpJumpIfArrayFieldGteLocalTrue // field < cmp is false → field >= cmp
+	} else {
+		fusedOp = bytecode.OpJumpIfArrayFieldLteLocalTrue // field > cmp is false → field <= cmp
+	}
+	c.state.chunk.Code = code[:n-7]
+	c.state.chunk.Lines = c.state.chunk.Lines[:n-7]
+	c.emit(fusedOp, line)
+	c.emitByte(arrSlot, line)
+	c.emitByte(idxSlot, line)
+	c.emitByte(fieldSlot, line)
+	c.emitByte(cmpSlot, line)
+	placeholder := len(c.state.chunk.Code)
+	c.emitUint16(0, line)
+	return placeholder, true
+}
+
+// peepholeLocalLocalCmp fuses:
+//
+//	GET_LOCAL a; GET_LOCAL b; LESS/GREATER_NUM; JUMP_IF_{TRUE,FALSE}_POP
+//	→ JUMP_IF_LOCAL_{LT,GT}_LOCAL_{TRUE,FALSE} a b offset  (5 bytes)
+//
+// Uses len(code) rather than lastOpcodeOffset so it fires correctly even
+// after peepholeNotFold has already truncated the bytecode stream.
+func (c *Compiler) peepholeLocalLocalCmp(op bytecode.Op, line int) (int, bool) {
+	if op != bytecode.OpJumpIfTruePop && op != bytecode.OpJumpIfFalsePop {
+		return 0, false
+	}
+	code := c.state.chunk.Code
+	n := len(code)
+	if n < 5 {
+		return 0, false
+	}
+	compareOp := bytecode.Op(code[n-1])
+	if compareOp != bytecode.OpLessNum && compareOp != bytecode.OpGreaterNum {
+		return 0, false
+	}
+	if bytecode.Op(code[n-5]) != bytecode.OpGetLocal || bytecode.Op(code[n-3]) != bytecode.OpGetLocal {
+		return 0, false
+	}
+	slotA, slotB := code[n-4], code[n-2]
+	var fusedOp bytecode.Op
+	switch {
+	case compareOp == bytecode.OpLessNum && op == bytecode.OpJumpIfTruePop:
+		fusedOp = bytecode.OpJumpIfLocalLtLocalTrue
+	case compareOp == bytecode.OpLessNum && op == bytecode.OpJumpIfFalsePop:
+		fusedOp = bytecode.OpJumpIfLocalLtLocalFalse
+	case compareOp == bytecode.OpGreaterNum && op == bytecode.OpJumpIfTruePop:
+		fusedOp = bytecode.OpJumpIfLocalGtLocalTrue
+	default: // GreaterNum + JumpIfFalsePop
+		fusedOp = bytecode.OpJumpIfLocalGtLocalFalse
+	}
+	c.state.chunk.Code = code[:n-5]
+	c.state.chunk.Lines = c.state.chunk.Lines[:n-5]
+	c.emit(fusedOp, line)
+	c.emitByte(slotA, line)
+	c.emitByte(slotB, line)
+	placeholder := len(c.state.chunk.Code)
+	c.emitUint16(0, line)
+	return placeholder, true
 }
 
 func (c *Compiler) emitLoop(loopStart int, line int) {
