@@ -182,27 +182,52 @@ func (vm *VM) callValue(callable value.Value, args []value.Value) (value.Value, 
 	return result, nil
 }
 
+// readB and readU16At are the dispatch-loop bytecode readers. They take the
+// cached code slice as an explicit argument instead of chasing
+// frame.fn.Chunk.Code on every read, and they are deliberately tiny:
+// executeUntilDepth exceeds the compiler's big-function node limit, so calls
+// inside it are only inlined when the callee cost is ≤ 20
+// (inlineBigFunctionMaxCost). Check with `go build -gcflags='-m -m'` after
+// editing these.
+func readB(code []byte, f *frame) byte {
+	b := code[f.ip]
+	f.ip++
+	return b
+}
+
+// readU16At is stateless — the caller advances frame.ip by 2 itself. Folding
+// the ip update into this function pushed its inline cost to 26 (> 20), which
+// blocked inlining inside the dispatch loop.
+func readU16At(code []byte, i int) uint16 {
+	return uint16(code[i])<<8 | uint16(code[i+1])
+}
+
 func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 	if len(vm.frames) <= baseDepth {
 		return value.NilValue(), nil
 	}
 	frame := vm.frames[len(vm.frames)-1]
+	// code mirrors frame.fn.Chunk.Code; it must be refreshed together with
+	// frame (after calls, returns and handled exceptions).
+	code := frame.fn.Chunk.Code
 	for {
-		if frame.ip >= len(frame.fn.Chunk.Code) {
+		if frame.ip >= len(code) {
 			if handled, raised := vm.handleRaised(baseDepth, frame, diagnostic.Runtime("RuntimeError", "unexpected end of bytecode", value.NilValue())); handled {
 				frame = vm.frames[len(vm.frames)-1]
+				code = frame.fn.Chunk.Code
 				continue
 			} else {
 				return value.NilValue(), raised
 			}
 		}
 
-		op := bytecode.Op(frame.fn.Chunk.Code[frame.ip])
+		op := bytecode.Op(code[frame.ip])
 		frame.ip++
 
 		switch op {
 		case bytecode.OpConstant:
-			idx := vm.readUint16(frame)
+			idx := readU16At(code, frame.ip)
+			frame.ip += 2
 			vm.push(vm.constantToValue(frame.fn.Chunk.Constants[idx]))
 		case bytecode.OpNil:
 			vm.push(value.NilValue())
@@ -220,10 +245,16 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			vm.push(first)
 			vm.push(second)
 		case bytecode.OpGetLocal:
-			slot := vm.readByte(frame)
-			vm.push(vm.localGet(frame, slot))
+			slot := readB(code, frame)
+			// localGet hand-inlined: its cost (71) exceeds the big-function
+			// inline limit (20), and this is the hottest opcode in the VM.
+			if !frame.hasCells {
+				vm.push(frame.locals[slot])
+			} else {
+				vm.push(vm.localGetSlow(frame, slot))
+			}
 		case bytecode.OpSetLocal:
-			slot := vm.readByte(frame)
+			slot := readB(code, frame)
 			newVal := vm.pop()
 			// Fast path: peek at old local and recycle if it's an Instance with no aliases
 			if !frame.hasCells {
@@ -238,12 +269,12 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				vm.localSetSlow(frame, slot, newVal)
 			}
 		case bytecode.OpAppendLocalString:
-			slot := vm.readByte(frame)
+			slot := readB(code, frame)
 			vm.appendLocalString(frame, slot, vm.pop())
 		case bytecode.OpIncLocal:
-			vm.adjustIntLocal(frame, vm.readByte(frame), 1)
+			vm.adjustIntLocal(frame, readB(code, frame), 1)
 		case bytecode.OpDecLocal:
-			vm.adjustIntLocal(frame, vm.readByte(frame), -1)
+			vm.adjustIntLocal(frame, readB(code, frame), -1)
 		case bytecode.OpJumpIfLocalGtLocalTrue:
 			vm.jumpIfLocalCmp(frame, func(a, b float64) bool { return a > b })
 		case bytecode.OpJumpIfLocalLtLocalFalse:
@@ -269,33 +300,54 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				frame.ip += int(offset)
 			}
 		case bytecode.OpAddConstLocalInt:
-			slot := vm.readByte(frame)
-			constant := frame.fn.Chunk.Constants[vm.readUint16(frame)]
+			slot := readB(code, frame)
+			constant := frame.fn.Chunk.Constants[readU16At(code, frame.ip)]
+			frame.ip += 2
 			increment, ok := constant.(int64)
 			if !ok {
 				return value.NilValue(), fmt.Errorf("ADD_CONST_LOCAL_INT expects int constant")
 			}
-			current := vm.localGet(frame, slot)
+			// localGet/localSet hand-inlined (cost > big-function inline limit).
+			var current value.Value
+			if !frame.hasCells {
+				current = frame.locals[slot]
+			} else {
+				current = vm.localGetSlow(frame, slot)
+			}
 			if current.Kind != value.Number || current.NumberKind != value.NumberInt {
 				return value.NilValue(), fmt.Errorf("ADD_CONST_LOCAL_INT expects int local")
 			}
-			vm.localSet(frame, slot, value.IntValue(current.Int+increment))
+			if !frame.hasCells {
+				frame.locals[slot] = value.IntValue(current.Int + increment)
+			} else {
+				vm.localSetSlow(frame, slot, value.IntValue(current.Int+increment))
+			}
 		case bytecode.OpJumpIfLocalLessEqualIntConstFalse:
-			slot := vm.readByte(frame)
-			constant := frame.fn.Chunk.Constants[vm.readUint16(frame)]
-			offset := vm.readUint16(frame)
+			slot := readB(code, frame)
+			constant := frame.fn.Chunk.Constants[readU16At(code, frame.ip)]
+			frame.ip += 2
+			offset := readU16At(code, frame.ip)
+			frame.ip += 2
 			limit, ok := constant.(int64)
 			if !ok {
 				return value.NilValue(), fmt.Errorf("JUMP_IF_LOCAL_LE_INT_CONST_FALSE expects int constant")
 			}
-			current := vm.localGet(frame, slot)
+			// localGet hand-inlined: hottest branch opcode (fib's base case).
+			var current value.Value
+			if !frame.hasCells {
+				current = frame.locals[slot]
+			} else {
+				current = vm.localGetSlow(frame, slot)
+			}
 			if current.Kind != value.Number || current.Num > float64(limit) {
 				frame.ip += int(offset)
 			}
 		case bytecode.OpJumpIfLocalDivisibleByIntConstFalse:
-			slot := vm.readByte(frame)
-			constant := frame.fn.Chunk.Constants[vm.readUint16(frame)]
-			offset := vm.readUint16(frame)
+			slot := readB(code, frame)
+			constant := frame.fn.Chunk.Constants[readU16At(code, frame.ip)]
+			frame.ip += 2
+			offset := readU16At(code, frame.ip)
+			frame.ip += 2
 			divisor, ok := constant.(int64)
 			if !ok || divisor == 0 {
 				return value.NilValue(), fmt.Errorf("JUMP_IF_LOCAL_DIVISIBLE_INT_CONST_FALSE expects non-zero int constant")
@@ -305,9 +357,11 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				frame.ip += int(offset)
 			}
 		case bytecode.OpJumpIfNotContainsStringConst:
-			haystackSlot := vm.readByte(frame)
-			needleConst := frame.fn.Chunk.Constants[vm.readUint16(frame)]
-			offset := vm.readUint16(frame)
+			haystackSlot := readB(code, frame)
+			needleConst := frame.fn.Chunk.Constants[readU16At(code, frame.ip)]
+			frame.ip += 2
+			offset := readU16At(code, frame.ip)
+			frame.ip += 2
 			needle, ok := needleConst.(string)
 			if !ok {
 				return value.NilValue(), fmt.Errorf("JUMP_IF_NOT_CONTAINS_STRING_CONST expects string constant")
@@ -317,7 +371,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				frame.ip += int(offset)
 			}
 		case bytecode.OpAddToLocal:
-			slot := vm.readByte(frame)
+			slot := readB(code, frame)
 			rhs := vm.pop()
 			if frame.hasCells {
 				// Closure-captured local: route through cell abstraction (Fix: was bypassed).
@@ -342,7 +396,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				}
 			}
 		case bytecode.OpSubToLocal:
-			slot := vm.readByte(frame)
+			slot := readB(code, frame)
 			rhs := vm.pop()
 			if frame.hasCells {
 				if err := vm.applyToLocalSlow(frame, slot, rhs, bytecode.OpSubNum); err != nil {
@@ -366,7 +420,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				}
 			}
 		case bytecode.OpMulToLocal:
-			slot := vm.readByte(frame)
+			slot := readB(code, frame)
 			rhs := vm.pop()
 			if frame.hasCells {
 				if err := vm.applyToLocalSlow(frame, slot, rhs, bytecode.OpMulNum); err != nil {
@@ -390,39 +444,42 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				}
 			}
 		case bytecode.OpGetCapture:
-			slot := vm.readByte(frame)
+			slot := readB(code, frame)
 			vm.push(frame.closure.Captures[slot].Value)
 		case bytecode.OpSetCapture:
-			slot := vm.readByte(frame)
+			slot := readB(code, frame)
 			frame.closure.Captures[slot].Value = vm.pop()
 		case bytecode.OpDefineGlobal:
-			name := frame.fn.Chunk.Constants[vm.readUint16(frame)].(string)
+			name := frame.fn.Chunk.Constants[readU16At(code, frame.ip)].(string)
+			frame.ip += 2
 			vm.globals[name] = vm.pop()
 		case bytecode.OpDefineGlobalSlot:
-			slot := int(vm.readByte(frame))
+			slot := int(readB(code, frame))
 			vm.globalSlots[slot] = vm.pop()
 			vm.globalDefined[slot] = true
 		case bytecode.OpGetGlobal:
-			name := frame.fn.Chunk.Constants[vm.readUint16(frame)].(string)
+			name := frame.fn.Chunk.Constants[readU16At(code, frame.ip)].(string)
+			frame.ip += 2
 			val, ok := vm.globals[name]
 			if !ok {
 				return value.NilValue(), fmt.Errorf("undefined variable %s", name)
 			}
 			vm.push(val)
 		case bytecode.OpGetGlobalSlot:
-			slot := int(vm.readByte(frame))
+			slot := int(readB(code, frame))
 			if !vm.globalDefined[slot] {
 				return value.NilValue(), fmt.Errorf("undefined global slot %d", slot)
 			}
 			vm.push(vm.globalSlots[slot])
 		case bytecode.OpSetGlobal:
-			name := frame.fn.Chunk.Constants[vm.readUint16(frame)].(string)
+			name := frame.fn.Chunk.Constants[readU16At(code, frame.ip)].(string)
+			frame.ip += 2
 			if _, ok := vm.globals[name]; !ok {
 				return value.NilValue(), fmt.Errorf("undefined variable %s", name)
 			}
 			vm.globals[name] = vm.pop()
 		case bytecode.OpSetGlobalSlot:
-			slot := int(vm.readByte(frame))
+			slot := int(readB(code, frame))
 			if !vm.globalDefined[slot] {
 				return value.NilValue(), fmt.Errorf("undefined global slot %d", slot)
 			}
@@ -436,11 +493,13 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 			vm.push(value.BoolValue(equal))
 		case bytecode.OpMatchType:
-			typeName := frame.fn.Chunk.Constants[vm.readUint16(frame)].(string)
+			typeName := frame.fn.Chunk.Constants[readU16At(code, frame.ip)].(string)
+			frame.ip += 2
 			candidate := vm.pop()
 			vm.push(value.BoolValue(vm.matchesType(candidate, typeName)))
 		case bytecode.OpCastRef:
-			typeName := frame.fn.Chunk.Constants[vm.readUint16(frame)].(string)
+			typeName := frame.fn.Chunk.Constants[readU16At(code, frame.ip)].(string)
+			frame.ip += 2
 			candidate := vm.pop()
 			if converted, ok, err := vm.convertReferenceCast(candidate, typeName); err != nil {
 				return value.NilValue(), err
@@ -565,6 +624,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
+					code = frame.fn.Chunk.Code
 					continue
 				}
 				return value.NilValue(), raised
@@ -573,6 +633,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if err := vm.binaryNumberOp(bytecode.OpModNum, func(a, b float64) float64 { return math.Mod(a, b) }); err != nil {
 				if handled, raised := vm.handleRaised(baseDepth, frame, err); handled {
 					frame = vm.frames[len(vm.frames)-1]
+					code = frame.fn.Chunk.Code
 					continue
 				} else {
 					return value.NilValue(), raised
@@ -583,6 +644,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
+					code = frame.fn.Chunk.Code
 					continue
 				}
 				return value.NilValue(), raised
@@ -612,7 +674,8 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				vm.push(value.FloatValue(-numericValue))
 			}
 		case bytecode.OpPushHandler:
-			offset := vm.readUint16(frame)
+			offset := readU16At(code, frame.ip)
+			frame.ip += 2
 			frame.handlers = append(frame.handlers, exceptionHandler{catchIP: frame.ip + int(offset), stackDepth: vm.sp})
 		case bytecode.OpPopHandler:
 			if len(frame.handlers) > 0 {
@@ -621,6 +684,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 		case bytecode.OpThrow:
 			if handled, err := vm.handleRaised(baseDepth, frame, vm.explicitThrow(vm.pop())); handled {
 				frame = vm.frames[len(vm.frames)-1]
+				code = frame.fn.Chunk.Code
 				continue
 			} else {
 				return value.NilValue(), err
@@ -640,7 +704,8 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 			vm.push(value.FloatValue(numericValue))
 		case bytecode.OpJump:
-			offset := vm.readUint16(frame)
+			offset := readU16At(code, frame.ip)
+			frame.ip += 2
 			frame.ip += int(offset)
 		// The four conditional-jump opcodes repeat the same truthiness logic
 		// (booleanOperand fast path, IsTruthy fallback) on purpose: they are
@@ -648,7 +713,8 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 		// per jump is measurable on million-iteration loops. If you change
 		// the truthiness rules, update all four cases together.
 		case bytecode.OpJumpIfFalse:
-			offset := vm.readUint16(frame)
+			offset := readU16At(code, frame.ip)
+			frame.ip += 2
 			condition := vm.peek(0)
 			if booleanValue, ok := vm.booleanOperand(condition); ok {
 				if !booleanValue {
@@ -660,7 +726,8 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				frame.ip += int(offset)
 			}
 		case bytecode.OpJumpIfTrue:
-			offset := vm.readUint16(frame)
+			offset := readU16At(code, frame.ip)
+			frame.ip += 2
 			condition := vm.peek(0)
 			if booleanValue, ok := vm.booleanOperand(condition); ok {
 				if booleanValue {
@@ -672,7 +739,8 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				frame.ip += int(offset)
 			}
 		case bytecode.OpJumpIfFalsePop:
-			offset := vm.readUint16(frame)
+			offset := readU16At(code, frame.ip)
+			frame.ip += 2
 			condition := vm.pop()
 			if booleanValue, ok := vm.booleanOperand(condition); ok {
 				if !booleanValue {
@@ -684,7 +752,8 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				frame.ip += int(offset)
 			}
 		case bytecode.OpJumpIfTruePop:
-			offset := vm.readUint16(frame)
+			offset := readU16At(code, frame.ip)
+			frame.ip += 2
 			condition := vm.pop()
 			if booleanValue, ok := vm.booleanOperand(condition); ok {
 				if booleanValue {
@@ -696,7 +765,8 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				frame.ip += int(offset)
 			}
 		case bytecode.OpLoop:
-			offset := vm.readUint16(frame)
+			offset := readU16At(code, frame.ip)
+			frame.ip += 2
 			frame.ip -= int(offset)
 		case bytecode.OpAddNum:
 			s1, s2 := vm.sp-1, vm.sp-2
@@ -761,6 +831,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 					handled, raised := vm.handleRaised(baseDepth, frame, err)
 					if handled {
 						frame = vm.frames[len(vm.frames)-1]
+						code = frame.fn.Chunk.Code
 						continue
 					}
 					return value.NilValue(), raised
@@ -775,6 +846,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
+					code = frame.fn.Chunk.Code
 					continue
 				}
 				return value.NilValue(), raised
@@ -814,9 +886,9 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				return value.NilValue(), err
 			}
 		case bytecode.OpAddLocalMulThisField:
-			targetSlot := vm.readByte(frame)
-			localSlot := vm.readByte(frame)
-			fieldSlot := int(vm.readByte(frame))
+			targetSlot := readB(code, frame)
+			localSlot := readB(code, frame)
+			fieldSlot := int(readB(code, frame))
 			if frame.receiver == nil {
 				return value.NilValue(), fmt.Errorf("ADD_LOCAL_MUL_THIS_FIELD expects receiver")
 			}
@@ -832,10 +904,10 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 			frame.locals[targetSlot] = value.NumberValue(target.Num + multiplier.Num*factor.Num)
 		case bytecode.OpAddLocalMulThisFieldAddThisField:
-			targetSlot := vm.readByte(frame)
-			localSlot := vm.readByte(frame)
-			mulFieldSlot := int(vm.readByte(frame))
-			addFieldSlot := int(vm.readByte(frame))
+			targetSlot := readB(code, frame)
+			localSlot := readB(code, frame)
+			mulFieldSlot := int(readB(code, frame))
+			addFieldSlot := int(readB(code, frame))
 			if frame.receiver == nil {
 				return value.NilValue(), fmt.Errorf("ADD_LOCAL_MUL_THIS_FIELD_ADD_THIS_FIELD expects receiver")
 			}
@@ -852,7 +924,8 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 			frame.locals[targetSlot] = value.NumberValue(target.Num + multiplier.Num*mulField.Num + addField.Num)
 		case bytecode.OpClosure:
-			idx := vm.readUint16(frame)
+			idx := readU16At(code, frame.ip)
+			frame.ip += 2
 			fn := frame.fn.Chunk.Constants[idx].(*bytecode.Function)
 			captures := make([]*value.Cell, len(fn.Upvalues))
 			for i, upvalue := range fn.Upvalues {
@@ -864,32 +937,39 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 			vm.push(value.ObjectValue(&value.Closure{Function: fn, Captures: captures}))
 		case bytecode.OpCall:
-			argc := int(vm.readByte(frame))
+			argc := int(readB(code, frame))
 			if err := vm.call(argc); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
+					code = frame.fn.Chunk.Code
 					continue
 				}
 				return value.NilValue(), raised
 			}
 			frame = vm.frames[len(vm.frames)-1]
+			code = frame.fn.Chunk.Code
 		case bytecode.OpCallConst:
-			callable := vm.constantToValue(frame.fn.Chunk.Constants[vm.readUint16(frame)])
-			argc := int(vm.readByte(frame))
+			callable := vm.constantToValue(frame.fn.Chunk.Constants[readU16At(code, frame.ip)])
+			frame.ip += 2
+			argc := int(readB(code, frame))
 			if err := vm.callKnownValue(callable, argc); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
+					code = frame.fn.Chunk.Code
 					continue
 				}
 				return value.NilValue(), raised
 			}
 			frame = vm.frames[len(vm.frames)-1]
+			code = frame.fn.Chunk.Code
 		case bytecode.OpCallConstLocalSubInt:
-			callable := vm.constantToValue(frame.fn.Chunk.Constants[vm.readUint16(frame)])
-			slot := vm.readByte(frame)
-			constant := frame.fn.Chunk.Constants[vm.readUint16(frame)]
+			callable := vm.constantToValue(frame.fn.Chunk.Constants[readU16At(code, frame.ip)])
+			frame.ip += 2
+			slot := readB(code, frame)
+			constant := frame.fn.Chunk.Constants[readU16At(code, frame.ip)]
+			frame.ip += 2
 			subValue, ok := constant.(int64)
 			if !ok {
 				return value.NilValue(), fmt.Errorf("CALL_CONST_LOCAL_SUB_INT expects int constant")
@@ -902,19 +982,28 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
+					code = frame.fn.Chunk.Code
 					continue
 				}
 				return value.NilValue(), raised
 			}
 			frame = vm.frames[len(vm.frames)-1]
+			code = frame.fn.Chunk.Code
 		case bytecode.OpCallSelfLocalSubInt:
-			slot := vm.readByte(frame)
-			constant := frame.fn.Chunk.Constants[vm.readUint16(frame)]
+			slot := readB(code, frame)
+			constant := frame.fn.Chunk.Constants[readU16At(code, frame.ip)]
+			frame.ip += 2
 			subValue, ok := constant.(int64)
 			if !ok {
 				return value.NilValue(), fmt.Errorf("CALL_SELF_LOCAL_SUB_INT expects int constant")
 			}
-			current := vm.localGet(frame, slot)
+			// localGet hand-inlined: the recursion hot path (fib).
+			var current value.Value
+			if !frame.hasCells {
+				current = frame.locals[slot]
+			} else {
+				current = vm.localGetSlow(frame, slot)
+			}
 			if current.Kind != value.Number || current.Num != math.Trunc(current.Num) {
 				return value.NilValue(), fmt.Errorf("CALL_SELF_LOCAL_SUB_INT expects int local")
 			}
@@ -922,14 +1011,16 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
+					code = frame.fn.Chunk.Code
 					continue
 				}
 				return value.NilValue(), raised
 			}
 			frame = vm.frames[len(vm.frames)-1]
+			code = frame.fn.Chunk.Code
 		case bytecode.OpCallGlobalSlot:
-			slot := int(vm.readByte(frame))
-			argc := int(vm.readByte(frame))
+			slot := int(readB(code, frame))
+			argc := int(readB(code, frame))
 			if !vm.globalDefined[slot] {
 				return value.NilValue(), fmt.Errorf("undefined global slot %d", slot)
 			}
@@ -937,59 +1028,69 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
+					code = frame.fn.Chunk.Code
 					continue
 				}
 				return value.NilValue(), raised
 			}
 			frame = vm.frames[len(vm.frames)-1]
+			code = frame.fn.Chunk.Code
 		case bytecode.OpInvoke:
-			name := frame.fn.Chunk.Constants[vm.readUint16(frame)].(string)
-			argc := int(vm.readByte(frame))
+			name := frame.fn.Chunk.Constants[readU16At(code, frame.ip)].(string)
+			frame.ip += 2
+			argc := int(readB(code, frame))
 			if err := vm.invoke(name, argc); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
+					code = frame.fn.Chunk.Code
 					continue
 				}
 				return value.NilValue(), raised
 			}
 			frame = vm.frames[len(vm.frames)-1]
+			code = frame.fn.Chunk.Code
 		case bytecode.OpInvokeMethod:
-			slot := int(vm.readByte(frame))
-			argc := int(vm.readByte(frame))
+			slot := int(readB(code, frame))
+			argc := int(readB(code, frame))
 			if err := vm.invokeMethodSlot(slot, argc); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
+					code = frame.fn.Chunk.Code
 					continue
 				}
 				return value.NilValue(), raised
 			}
 			frame = vm.frames[len(vm.frames)-1]
+			code = frame.fn.Chunk.Code
 		case bytecode.OpInvokeSuper:
-			name := frame.fn.Chunk.Constants[vm.readUint16(frame)].(string)
-			argc := int(vm.readByte(frame))
+			name := frame.fn.Chunk.Constants[readU16At(code, frame.ip)].(string)
+			frame.ip += 2
+			argc := int(readB(code, frame))
 			if err := vm.invokeSuper(name, argc); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
+					code = frame.fn.Chunk.Code
 					continue
 				}
 				return value.NilValue(), raised
 			}
 			frame = vm.frames[len(vm.frames)-1]
+			code = frame.fn.Chunk.Code
 		case bytecode.OpRange:
-			argc := int(vm.readByte(frame))
+			argc := int(readB(code, frame))
 			rng, err := vm.buildRange(argc)
 			if err != nil {
 				return value.NilValue(), err
 			}
 			vm.push(value.ObjectValue(rng))
 		case bytecode.OpRangeInitFast:
-			currentSlot := vm.readByte(frame)
-			endSlot := vm.readByte(frame)
-			stepSlot := vm.readByte(frame)
-			argc := int(vm.readByte(frame))
+			currentSlot := readB(code, frame)
+			endSlot := readB(code, frame)
+			stepSlot := readB(code, frame)
+			argc := int(readB(code, frame))
 			switch argc {
 			case 1:
 				end := vm.pop()
@@ -1048,11 +1149,12 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				return value.NilValue(), fmt.Errorf("range expects 1, 2, or 3 arguments")
 			}
 		case bytecode.OpRangeNextFast:
-			currentSlot := vm.readByte(frame)
-			endSlot := vm.readByte(frame)
-			stepSlot := vm.readByte(frame)
-			valueSlot := vm.readByte(frame)
-			offset := vm.readUint16(frame)
+			currentSlot := readB(code, frame)
+			endSlot := readB(code, frame)
+			stepSlot := readB(code, frame)
+			valueSlot := readB(code, frame)
+			offset := readU16At(code, frame.ip)
+			frame.ip += 2
 			current := frame.locals[currentSlot]
 			end := frame.locals[endSlot]
 			step := frame.locals[stepSlot]
@@ -1080,8 +1182,8 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			frame.locals[currentSlot] = nextVal
 			frame.locals[valueSlot] = nextVal
 		case bytecode.OpIterInit:
-			slot := vm.readByte(frame)
-			mode := vm.readByte(frame)
+			slot := readB(code, frame)
+			mode := readB(code, frame)
 			iterable := vm.pop()
 			if instance, ok := iterable.AsInstance(); ok {
 				lengthMethod := instance.Class.SpecialMethod(value.SpecialMethodIterableLength)
@@ -1129,9 +1231,10 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 			return value.NilValue(), fmt.Errorf("ITER_INIT expects iterable")
 		case bytecode.OpIterNext:
-			iterSlot := vm.readByte(frame)
-			valueSlot := vm.readByte(frame)
-			offset := vm.readUint16(frame)
+			iterSlot := readB(code, frame)
+			valueSlot := readB(code, frame)
+			offset := readU16At(code, frame.ip)
+			frame.ip += 2
 			iterator, ok := vm.localGet(frame, iterSlot).AsIterator()
 			if !ok {
 				return value.NilValue(), fmt.Errorf("ITER_NEXT expects iterator")
@@ -1174,7 +1277,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 			vm.localSet(frame, valueSlot, value.NumberValue(float64(iterator.Current)))
 		case bytecode.OpGetField:
-			slot := int(vm.readByte(frame))
+			slot := int(readB(code, frame))
 			object := vm.pop()
 			if instance, ok := object.Object.(*value.Instance); ok {
 				vm.push(instance.Fields[slot])
@@ -1182,10 +1285,10 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 			return value.NilValue(), fmt.Errorf("GET_FIELD expects instance")
 		case bytecode.OpGetThisField:
-			slot := int(vm.readByte(frame))
+			slot := int(readB(code, frame))
 			vm.push(frame.receiver.Fields[slot])
 		case bytecode.OpSetField:
-			slot := int(vm.readByte(frame))
+			slot := int(readB(code, frame))
 			assigned := vm.pop()
 			object := vm.pop()
 			if instance, ok := object.Object.(*value.Instance); ok {
@@ -1197,14 +1300,15 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 			return value.NilValue(), fmt.Errorf("SET_FIELD expects instance")
 		case bytecode.OpSetThisField:
-			slot := int(vm.readByte(frame))
+			slot := int(readB(code, frame))
 			assigned := vm.pop()
 			if frame.receiver.Frozen {
 				return value.NilValue(), fmt.Errorf("instance %s is frozen", frame.receiver.Class.Name)
 			}
 			frame.receiver.Fields[slot] = assigned
 		case bytecode.OpGetProperty:
-			name := frame.fn.Chunk.Constants[vm.readUint16(frame)].(string)
+			name := frame.fn.Chunk.Constants[readU16At(code, frame.ip)].(string)
+			frame.ip += 2
 			object := vm.pop()
 			if module, ok := object.AsModule(); ok {
 				member, exists := module.Members[name]
@@ -1256,7 +1360,8 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 			return value.NilValue(), fmt.Errorf("cannot access property %s on %s", name, object.String())
 		case bytecode.OpSetProperty:
-			name := frame.fn.Chunk.Constants[vm.readUint16(frame)].(string)
+			name := frame.fn.Chunk.Constants[readU16At(code, frame.ip)].(string)
+			frame.ip += 2
 			assigned := vm.pop()
 			object := vm.pop()
 			instance, ok := object.AsInstance()
@@ -1284,12 +1389,14 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				return value.NilValue(), fmt.Errorf("instance %s has no field %s", instance.Class.Name, name)
 			}
 		case bytecode.OpWrapInterface:
-			ifaceName := frame.fn.Chunk.Constants[vm.readUint16(frame)].(string)
-			methodName := frame.fn.Chunk.Constants[vm.readUint16(frame)].(string)
+			ifaceName := frame.fn.Chunk.Constants[readU16At(code, frame.ip)].(string)
+			frame.ip += 2
+			methodName := frame.fn.Chunk.Constants[readU16At(code, frame.ip)].(string)
+			frame.ip += 2
 			callable := vm.pop()
 			vm.push(value.ObjectValue(&value.SAMWrapper{InterfaceName: ifaceName, MethodName: methodName, Callable: callable}))
 		case bytecode.OpArray:
-			count := int(vm.readByte(frame))
+			count := int(readB(code, frame))
 			elements := make([]value.Value, count)
 			for i := count - 1; i >= 0; i-- {
 				elements[i] = vm.pop()
@@ -1315,9 +1422,9 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 			vm.push(value.ObjectValue(&value.Array{Elements: elements}))
 		case bytecode.OpSetLocalArrayBool:
-			arrSlot := vm.readByte(frame)
-			idxSlot := vm.readByte(frame)
-			boolByte := vm.readByte(frame)
+			arrSlot := readB(code, frame)
+			idxSlot := readB(code, frame)
+			boolByte := readB(code, frame)
 			arr, ok := frame.locals[arrSlot].AsArray()
 			if !ok {
 				return value.NilValue(), fmt.Errorf("SET_LOCAL_ARRAY_BOOL expects array")
@@ -1328,13 +1435,13 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 			arr.Elements[idx] = value.BoolValue(boolByte != 0)
 		case bytecode.OpAddLocalLocal:
-			dstSlot := vm.readByte(frame)
-			srcSlot := vm.readByte(frame)
+			dstSlot := readB(code, frame)
+			srcSlot := readB(code, frame)
 			frame.locals[dstSlot] = value.IntValue(frame.locals[dstSlot].Int + frame.locals[srcSlot].Int)
 		case bytecode.OpGetLocalArrayField:
-			arrSlot := vm.readByte(frame)
-			idxSlot := vm.readByte(frame)
-			fieldSlot := int(vm.readByte(frame))
+			arrSlot := readB(code, frame)
+			idxSlot := readB(code, frame)
+			fieldSlot := int(readB(code, frame))
 			arr, ok := frame.locals[arrSlot].AsArray()
 			if !ok {
 				return value.NilValue(), fmt.Errorf("GET_LOCAL_ARRAY_FIELD expects array")
@@ -1349,7 +1456,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 			vm.push(instance.Fields[fieldSlot])
 		case bytecode.OpMap:
-			count := int(vm.readByte(frame))
+			count := int(readB(code, frame))
 			entries := map[string]value.Value{}
 			for i := 0; i < count; i++ {
 				val := vm.pop()
@@ -1361,14 +1468,14 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 			vm.push(value.ObjectValue(&value.Map{Entries: entries}))
 		case bytecode.OpTuple:
-			count := int(vm.readByte(frame))
+			count := int(readB(code, frame))
 			elements := make([]value.Value, count)
 			for i := count - 1; i >= 0; i-- {
 				elements[i] = vm.pop()
 			}
 			vm.push(value.ObjectValue(&value.Tuple{Elements: elements}))
 		case bytecode.OpUnpack:
-			count := int(vm.readByte(frame))
+			count := int(readB(code, frame))
 			source := vm.pop()
 			if instance, ok := source.AsInstance(); ok {
 				piecesMethod := instance.Class.SpecialMethod(value.SpecialMethodPieces)
@@ -1709,16 +1816,18 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 			vm.push(frozen)
 		case bytecode.OpCallSuper:
-			argc := int(vm.readByte(frame))
+			argc := int(readB(code, frame))
 			if err := vm.callSuper(argc); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
+					code = frame.fn.Chunk.Code
 					continue
 				}
 				return value.NilValue(), raised
 			}
 			frame = vm.frames[len(vm.frames)-1]
+			code = frame.fn.Chunk.Code
 		case bytecode.OpReturn:
 			result := vm.pop()
 			if frame.init && frame.receiver != nil {
@@ -1734,6 +1843,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 			vm.push(result)
 			frame = vm.frames[len(vm.frames)-1]
+			code = frame.fn.Chunk.Code
 		default:
 			return value.NilValue(), fmt.Errorf("unknown opcode %d", op)
 		}
@@ -3130,16 +3240,22 @@ func (vm *VM) acquireFrame(fn *bytecode.Function, closure *value.Closure, receiv
 	child.init = init
 	child.hasCells = false // maps are lazily initialized; skip clear unless used
 	child.handlers = child.handlers[:0]
+	// Invariant: a pooled frame's locals backing array is all-zero up to its
+	// capacity (fresh arrays start zeroed; releaseFrame re-zeroes the used
+	// prefix before pooling). Re-slicing therefore exposes only zeroed slots
+	// and no clear is needed here — locals are cleared exactly once per call,
+	// in releaseFrame.
 	if cap(child.locals) < fn.MaxLocals {
 		child.locals = make([]value.Value, fn.MaxLocals)
 	} else {
 		child.locals = child.locals[:fn.MaxLocals]
-		clear(child.locals)
 	}
 	return child
 }
 
 func (vm *VM) releaseFrame(child *frame) {
+	// Re-zero the used prefix to release object references for GC and to
+	// uphold the acquireFrame invariant that pooled locals are all-zero.
 	clear(child.locals)
 	child.fn = nil
 	child.closure = nil
@@ -3267,10 +3383,15 @@ func (vm *VM) readByte(frame *frame) byte {
 	return b
 }
 
+// readUint16 must stay below inline cost 20: executeUntilDepth exceeds the
+// compiler's big-function node limit, and calls inside big functions are only
+// inlined when the callee cost is ≤ inlineBigFunctionMaxCost (20). Keep this
+// body minimal — check with `go build -gcflags='-m -m'` after editing.
 func (vm *VM) readUint16(frame *frame) uint16 {
-	high := uint16(vm.readByte(frame))
-	low := uint16(vm.readByte(frame))
-	return high<<8 | low
+	c := frame.fn.Chunk.Code
+	i := frame.ip
+	frame.ip = i + 2
+	return uint16(c[i])<<8 | uint16(c[i+1])
 }
 
 // adjustIntLocal adds delta to an integer local, updating both Int and Num
