@@ -1,0 +1,13 @@
+def make() -> int:
+    let total = 0
+    let read = () => total
+    // Compound-assign on a closure-captured local in the ENCLOSING frame:
+    // must go through the cell so the closure sees the update.
+    total += 5
+    total += 7
+    total *= 2
+    total -= 4
+    return read()
+end
+
+println("total=" + make())

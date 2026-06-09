@@ -183,6 +183,33 @@ println(ll.asArray()[0])
 	}
 }
 
+// Regression: compound assignment (+=, -=, *=) on a closure-captured local
+// must write through the capture cell, not just the frame slot. Previously
+// OpAddToLocal/SubToLocal/MulToLocal bypassed hasCells, so closures read
+// stale values (this program returned 8 instead of 20).
+func TestClosureSeesCompoundAssignOnCapturedLocal(t *testing.T) {
+	out, err := runPreparedFile(t, filepath.Join("testdata", "programs", "test_closure_compound.pf"))
+	if err != nil {
+		t.Fatalf("execution failed: %v", err)
+	}
+	if out != "total=20\n" {
+		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", "total=20\n", out)
+	}
+}
+
+// Regression: the value stack is pre-allocated (4096 slots) and push() has no
+// bounds check; ensureStackHeadroom in acquireFrame must grow it for deep
+// recursion instead of panicking with an out-of-range index.
+func TestDeepRecursionGrowsValueStack(t *testing.T) {
+	out, err := runPreparedFile(t, filepath.Join("testdata", "programs", "test_deep_recursion.pf"))
+	if err != nil {
+		t.Fatalf("execution failed: %v", err)
+	}
+	if out != "depth=20000\n" {
+		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", "depth=20000\n", out)
+	}
+}
+
 func TestNewArrayTooManyValues(t *testing.T) {
 	source := `
 let bad: int[] = new int[2]{0,1,2}

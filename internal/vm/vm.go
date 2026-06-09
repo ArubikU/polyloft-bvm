@@ -642,11 +642,11 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 		case bytecode.OpJump:
 			offset := vm.readUint16(frame)
 			frame.ip += int(offset)
-		// The four conditional-jump opcodes share the same truthiness logic
-		// (see evalCondition). They are intentionally inlined rather than
-		// delegated to evalCondition because these are among the hottest
-		// dispatch paths; even a single function call per jump is measurable
-		// on million-iteration loops.
+		// The four conditional-jump opcodes repeat the same truthiness logic
+		// (booleanOperand fast path, IsTruthy fallback) on purpose: they are
+		// among the hottest dispatch paths and even one extra function call
+		// per jump is measurable on million-iteration loops. If you change
+		// the truthiness rules, update all four cases together.
 		case bytecode.OpJumpIfFalse:
 			offset := vm.readUint16(frame)
 			condition := vm.peek(0)
@@ -1738,8 +1738,6 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			return value.NilValue(), fmt.Errorf("unknown opcode %d", op)
 		}
 	}
-
-	return value.NilValue(), nil
 }
 
 func (vm *VM) invokeInstanceMethod(receiver *value.Instance, fn *bytecode.Function, args ...value.Value) (value.Value, error) {
@@ -3115,6 +3113,7 @@ func (vm *VM) ResolveGlobal(fn *bytecode.Function, name string) (value.Value, bo
 }
 
 func (vm *VM) acquireFrame(fn *bytecode.Function, closure *value.Closure, receiver *value.Instance, init bool) *frame {
+	vm.ensureStackHeadroom()
 	var child *frame
 	if len(vm.framePool) > 0 {
 		last := len(vm.framePool) - 1
@@ -3220,18 +3219,37 @@ func (vm *VM) borrowBuiltinArgs(argc int) []value.Value {
 	return vm.builtinArgs
 }
 
+// push has deliberately NO bounds check: it is the single hottest function in
+// the VM (executed once or more per opcode) and even a predicted branch here
+// costs several percent across all benchmarks. Overflow safety is instead
+// guaranteed by ensureStackHeadroom, called once per frame creation in
+// acquireFrame: a frame's expression-stack usage is bounded by its bytecode,
+// so reserving frameStackHeadroom slots per live frame keeps push in bounds.
 func (vm *VM) push(v value.Value) {
-	if vm.sp >= vm.stackCap {
-		// Rare: grow the stack (doubles capacity). stackCap is read far less
-		// often than sp, so it is more likely to be held in a register by the
-		// branch predictor and not force a memory round-trip on every push.
-		grown := make([]value.Value, vm.stackCap*2)
-		copy(grown, vm.stack)
-		vm.stack = grown
-		vm.stackCap = len(grown)
-	}
 	vm.stack[vm.sp] = v
 	vm.sp++
+}
+
+// frameStackHeadroom is the number of free value-stack slots guaranteed to a
+// frame when it is created. A frame's peak expression stack depth is bounded
+// by its bytecode (expression nesting + at most 255 pending args/elements per
+// call or literal), which in practice is a few dozen; 1024 is very generous.
+const frameStackHeadroom = 1024
+
+// ensureStackHeadroom grows the value stack until at least
+// frameStackHeadroom slots are free above sp.
+func (vm *VM) ensureStackHeadroom() {
+	if vm.sp+frameStackHeadroom <= vm.stackCap {
+		return
+	}
+	newCap := vm.stackCap * 2
+	for vm.sp+frameStackHeadroom > newCap {
+		newCap *= 2
+	}
+	grown := make([]value.Value, newCap)
+	copy(grown, vm.stack)
+	vm.stack = grown
+	vm.stackCap = newCap
 }
 
 func (vm *VM) pop() value.Value {
@@ -3266,24 +3284,6 @@ func (vm *VM) adjustIntLocal(frame *frame, slot byte, delta int64) {
 		frame.locals[slot].Int += delta
 		frame.locals[slot].Num += float64(delta)
 	}
-}
-
-// evalCondition returns the truthiness of v. This is the single source of
-// truth for all four conditional-jump opcodes (JumpIfFalse, JumpIfTrue,
-// JumpIfFalsePop, JumpIfTruePop).
-//
-// The Bool case is checked first with a direct field read so the common path
-// (comparisons, loop guards) never calls booleanOperand's expensive instance
-// unwrap logic.
-func (vm *VM) evalCondition(v value.Value) bool {
-	if v.Kind == value.Bool {
-		return v.Bool
-	}
-	// Rare: value is a boxed Boolean wrapper class instance.
-	if boolVal, ok := vm.booleanOperand(v); ok {
-		return boolVal
-	}
-	return v.IsTruthy()
 }
 
 // jumpIfLocalCmp implements OpJumpIfLocal*Local* opcodes.
