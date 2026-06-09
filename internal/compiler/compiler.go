@@ -2608,8 +2608,15 @@ func (c *Compiler) detectFastMethodExpr(classValue *value.Class, expr ast.Expr) 
 }
 
 func (c *Compiler) detectFastConstructor(classValue *value.Class, method ast.MethodDecl) *value.FastConstructorPlan {
-	if classValue.Superclass != nil {
-		return nil
+	// A superclass is fine as long as no ancestor declares a constructor:
+	// the statement scan below guarantees the body is only `this.f = param`
+	// assignments (so no super(...) call is being skipped), and NewInstance
+	// applies field defaults for the whole chain. Only an ancestor
+	// constructor body would make the fast path observably different.
+	for super := classValue.Superclass; super != nil; super = super.Superclass {
+		if super.Constructor != nil || len(super.ConstructorOverloads) > 0 {
+			return nil
+		}
 	}
 	if method.Static || !method.IsConstructor {
 		return nil
