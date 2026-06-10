@@ -294,6 +294,9 @@ func (c *Chunk) disassembleInto(out *strings.Builder, name string) {
 		case OpAddLocalLocal:
 			fmt.Fprintf(out, "dst=%d src=%d", c.Code[offset+1], c.Code[offset+2])
 			offset += 3
+		case OpSetArrayLocals:
+			fmt.Fprintf(out, "arr=%d idx=%d", c.Code[offset+1], c.Code[offset+2])
+			offset += 3
 		case OpGetLocalArrayField:
 			fmt.Fprintf(out, "arr=%d idx=%d field=%d", c.Code[offset+1], c.Code[offset+2], c.Code[offset+3])
 			offset += 4

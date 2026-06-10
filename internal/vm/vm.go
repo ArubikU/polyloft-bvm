@@ -1428,6 +1428,28 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				return value.NilValue(), fmt.Errorf("ARRAY_PUSH expects array on stack")
 			}
 			arr.Elements = append(arr.Elements, element)
+		case bytecode.OpSetArrayLocals:
+			arrSlot := readB(code, frame)
+			idxSlot := readB(code, frame)
+			assigned := vm.pop()
+			arrVal := frame.locals[arrSlot]
+			idxVal := frame.locals[idxSlot]
+			if frame.hasCells {
+				arrVal = vm.localGetSlow(frame, arrSlot)
+				idxVal = vm.localGetSlow(frame, idxSlot)
+			}
+			arr, ok := arrVal.AsArray()
+			if !ok {
+				return value.NilValue(), fmt.Errorf("SET_ARRAY_LOCALS expects array")
+			}
+			idx := int(idxVal.Int)
+			if idxVal.NumberKind != value.NumberInt {
+				idx = int(idxVal.Num)
+			}
+			if idx < 0 || idx >= len(arr.Elements) {
+				return value.NilValue(), fmt.Errorf("array index out of range")
+			}
+			arr.Elements[idx] = assigned
 		case bytecode.OpSetLocalArrayBool:
 			arrSlot := readB(code, frame)
 			idxSlot := readB(code, frame)

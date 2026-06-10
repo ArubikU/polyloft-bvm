@@ -120,6 +120,7 @@ const (
 	OpJumpIfArrayFieldGteLocalTrue  // if arr[idx].field >= locals[cmp] → jump (exit "while field<cmp" loop)
 	OpJumpIfArrayFieldLteLocalTrue  // if arr[idx].field <= locals[cmp] → jump (exit "while field>cmp" loop)
 	OpArrayPush                     // pop value, append to the array at TOS (array stays on stack)
+	OpSetArrayLocals                // locals[arr][locals[idx]] = pop(); args: arr_slot(1) idx_slot(1)
 )
 
 func (op Op) String() string {
@@ -354,6 +355,8 @@ func (op Op) String() string {
 		return "JUMP_IF_ARRAY_FIELD_LTE_LOCAL_TRUE"
 	case OpArrayPush:
 		return "ARRAY_PUSH"
+	case OpSetArrayLocals:
+		return "SET_ARRAY_LOCALS"
 	default:
 		return "UNKNOWN"
 	}

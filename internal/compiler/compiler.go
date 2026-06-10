@@ -520,6 +520,25 @@ func (c *Compiler) compileStmt(stmt ast.Stmt) error {
 				}
 			}
 		}
+		// Fast path: local_arr[local_idx] = <expr> → SET_ARRAY_LOCALS
+		// (generalizes the bool case above: only the value travels the stack)
+		if objVar, ok := node.Object.(*ast.VariableExpr); ok {
+			if idxVar, ok := node.Index.(*ast.VariableExpr); ok {
+				if isArrayType(c.inferExprType(node.Object)) {
+					if arrSlot, aok := c.resolveLocal(objVar.Name.Lexeme); aok {
+						if idxSlot, iok := c.resolveLocal(idxVar.Name.Lexeme); iok {
+							if err := c.compileExpr(node.Value); err != nil {
+								return err
+							}
+							c.emit(bytecode.OpSetArrayLocals, objVar.Name.Line)
+							c.emitByte(arrSlot, objVar.Name.Line)
+							c.emitByte(idxSlot, objVar.Name.Line)
+							return nil
+						}
+					}
+				}
+			}
+		}
 		if err := c.compileExpr(node.Object); err != nil {
 			return err
 		}
