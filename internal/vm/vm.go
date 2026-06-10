@@ -33,6 +33,9 @@ type frame struct {
 	receiver      *value.Instance
 	init          bool
 	hasCells      bool // true only when localRefs or stringBuffers are non-empty
+	// consts is the chunk's constant pool pre-converted to value.Value,
+	// fetched lazily from VM.constCache on first use (see resolvedConsts).
+	consts []value.Value
 }
 
 type stringAccumulator struct {
@@ -53,6 +56,7 @@ type VM struct {
 	globalSlotNames []string
 	callbackMu      sync.Mutex
 	instancePools   map[*value.Class][]*value.Instance
+	constCache      map[*bytecode.Chunk][]value.Value
 }
 
 func New(stdout io.Writer) *VM {
@@ -228,7 +232,10 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 		case bytecode.OpConstant:
 			idx := readU16At(code, frame.ip)
 			frame.ip += 2
-			vm.push(vm.constantToValue(frame.fn.Chunk.Constants[idx]))
+			if frame.consts == nil {
+				frame.consts = vm.resolvedConsts(frame.fn.Chunk)
+			}
+			vm.push(frame.consts[idx])
 		case bytecode.OpNil:
 			vm.push(value.NilValue())
 		case bytecode.OpTrue:
@@ -1003,7 +1010,10 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			frame = vm.frames[len(vm.frames)-1]
 			code = frame.fn.Chunk.Code
 		case bytecode.OpCallConst:
-			callable := vm.constantToValue(frame.fn.Chunk.Constants[readU16At(code, frame.ip)])
+			if frame.consts == nil {
+				frame.consts = vm.resolvedConsts(frame.fn.Chunk)
+			}
+			callable := frame.consts[readU16At(code, frame.ip)]
 			frame.ip += 2
 			argc := int(readB(code, frame))
 			if err := vm.callKnownValue(callable, argc); err != nil {
@@ -1018,7 +1028,10 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			frame = vm.frames[len(vm.frames)-1]
 			code = frame.fn.Chunk.Code
 		case bytecode.OpCallConstLocalSubInt:
-			callable := vm.constantToValue(frame.fn.Chunk.Constants[readU16At(code, frame.ip)])
+			if frame.consts == nil {
+				frame.consts = vm.resolvedConsts(frame.fn.Chunk)
+			}
+			callable := frame.consts[readU16At(code, frame.ip)]
 			frame.ip += 2
 			slot := readB(code, frame)
 			constant := frame.fn.Chunk.Constants[readU16At(code, frame.ip)]
@@ -3326,6 +3339,7 @@ func (vm *VM) acquireFrame(fn *bytecode.Function, closure *value.Closure, receiv
 	child.receiver = receiver
 	child.init = init
 	child.hasCells = false // maps are lazily initialized; skip clear unless used
+	child.consts = nil
 	child.handlers = child.handlers[:0]
 	// Invariant: a pooled frame's locals backing array is all-zero up to its
 	// capacity (fresh arrays start zeroed; releaseFrame re-zeroes the used
@@ -3571,6 +3585,26 @@ func (vm *VM) readArrayFieldCmpArgs(frame *frame) (fieldNum float64, cmpSlot byt
 		return 0, 0, 0, fmt.Errorf("JUMP_IF_ARRAY_FIELD: field slot %d out of range", fieldSlot)
 	}
 	return instance.Fields[fieldSlot].Num, cmpSlot, offset, nil
+}
+
+// resolvedConsts returns the chunk's constant pool converted to value.Value,
+// building and memoizing it on first request. Conversion through
+// constantToValue is deterministic and constants are immutable after
+// compilation, so the converted slice is shared by every frame running the
+// same chunk for the lifetime of this VM.
+func (vm *VM) resolvedConsts(chunk *bytecode.Chunk) []value.Value {
+	if cached, ok := vm.constCache[chunk]; ok {
+		return cached
+	}
+	if vm.constCache == nil {
+		vm.constCache = make(map[*bytecode.Chunk][]value.Value)
+	}
+	resolved := make([]value.Value, len(chunk.Constants))
+	for i, item := range chunk.Constants {
+		resolved[i] = vm.constantToValue(item)
+	}
+	vm.constCache[chunk] = resolved
+	return resolved
 }
 
 func (vm *VM) constantToValue(item any) value.Value {
