@@ -275,14 +275,43 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			vm.adjustIntLocal(frame, readB(code, frame), 1)
 		case bytecode.OpDecLocal:
 			vm.adjustIntLocal(frame, readB(code, frame), -1)
+		// The four local-vs-local fused jumps repeat the same 4-line body on
+		// purpose: a shared helper exceeds the big-function inline limit (20)
+		// and compiles to a real call plus an indirect comparator call per
+		// jump (~9% of bench_array). If you change the decode or comparison
+		// semantics, update all four cases together.
 		case bytecode.OpJumpIfLocalGtLocalTrue:
-			vm.jumpIfLocalCmp(frame, func(a, b float64) bool { return a > b })
+			slotA := readB(code, frame)
+			slotB := readB(code, frame)
+			offset := readU16At(code, frame.ip)
+			frame.ip += 2
+			if frame.locals[slotA].Num > frame.locals[slotB].Num {
+				frame.ip += int(offset)
+			}
 		case bytecode.OpJumpIfLocalLtLocalFalse:
-			vm.jumpIfLocalCmp(frame, func(a, b float64) bool { return a >= b })
+			slotA := readB(code, frame)
+			slotB := readB(code, frame)
+			offset := readU16At(code, frame.ip)
+			frame.ip += 2
+			if frame.locals[slotA].Num >= frame.locals[slotB].Num {
+				frame.ip += int(offset)
+			}
 		case bytecode.OpJumpIfLocalGtLocalFalse:
-			vm.jumpIfLocalCmp(frame, func(a, b float64) bool { return a <= b })
+			slotA := readB(code, frame)
+			slotB := readB(code, frame)
+			offset := readU16At(code, frame.ip)
+			frame.ip += 2
+			if frame.locals[slotA].Num <= frame.locals[slotB].Num {
+				frame.ip += int(offset)
+			}
 		case bytecode.OpJumpIfLocalLtLocalTrue:
-			vm.jumpIfLocalCmp(frame, func(a, b float64) bool { return a < b })
+			slotA := readB(code, frame)
+			slotB := readB(code, frame)
+			offset := readU16At(code, frame.ip)
+			frame.ip += 2
+			if frame.locals[slotA].Num < frame.locals[slotB].Num {
+				frame.ip += int(offset)
+			}
 		case bytecode.OpJumpIfArrayFieldGteLocalTrue:
 			fieldNum, cmpSlot, offset, err := vm.readArrayFieldCmpArgs(frame)
 			if err != nil {
@@ -716,6 +745,12 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			offset := readU16At(code, frame.ip)
 			frame.ip += 2
 			condition := vm.peek(0)
+			if condition.Kind == value.Bool {
+				if !condition.Bool {
+					frame.ip += int(offset)
+				}
+				continue
+			}
 			if booleanValue, ok := vm.booleanOperand(condition); ok {
 				if !booleanValue {
 					frame.ip += int(offset)
@@ -729,6 +764,12 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			offset := readU16At(code, frame.ip)
 			frame.ip += 2
 			condition := vm.peek(0)
+			if condition.Kind == value.Bool {
+				if condition.Bool {
+					frame.ip += int(offset)
+				}
+				continue
+			}
 			if booleanValue, ok := vm.booleanOperand(condition); ok {
 				if booleanValue {
 					frame.ip += int(offset)
@@ -742,6 +783,12 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			offset := readU16At(code, frame.ip)
 			frame.ip += 2
 			condition := vm.pop()
+			if condition.Kind == value.Bool {
+				if !condition.Bool {
+					frame.ip += int(offset)
+				}
+				continue
+			}
 			if booleanValue, ok := vm.booleanOperand(condition); ok {
 				if !booleanValue {
 					frame.ip += int(offset)
@@ -755,6 +802,12 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			offset := readU16At(code, frame.ip)
 			frame.ip += 2
 			condition := vm.pop()
+			if condition.Kind == value.Bool {
+				if condition.Bool {
+					frame.ip += int(offset)
+				}
+				continue
+			}
 			if booleanValue, ok := vm.booleanOperand(condition); ok {
 				if booleanValue {
 					frame.ip += int(offset)
@@ -1235,7 +1288,12 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			valueSlot := readB(code, frame)
 			offset := readU16At(code, frame.ip)
 			frame.ip += 2
-			iterator, ok := vm.localGet(frame, iterSlot).AsIterator()
+			// localGet hand-inlined: hottest iteration opcode.
+			iterVal := frame.locals[iterSlot]
+			if frame.hasCells {
+				iterVal = vm.localGetSlow(frame, iterSlot)
+			}
+			iterator, ok := iterVal.AsIterator()
 			if !ok {
 				return value.NilValue(), fmt.Errorf("ITER_NEXT expects iterator")
 			}
@@ -3433,17 +3491,6 @@ func (vm *VM) adjustIntLocal(frame *frame, slot byte, delta int64) {
 	} else {
 		frame.locals[slot].Int += delta
 		frame.locals[slot].Num += float64(delta)
-	}
-}
-
-// jumpIfLocalCmp implements OpJumpIfLocal*Local* opcodes.
-// It reads slotA, slotB, offset from the bytecode stream and jumps if cond(a, b) is true.
-func (vm *VM) jumpIfLocalCmp(frame *frame, cond func(a, b float64) bool) {
-	slotA := vm.readByte(frame)
-	slotB := vm.readByte(frame)
-	offset := vm.readUint16(frame)
-	if cond(frame.locals[slotA].Num, frame.locals[slotB].Num) {
-		frame.ip += int(offset)
 	}
 }
 

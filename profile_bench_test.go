@@ -45,3 +45,11 @@ func BenchmarkFloat(b *testing.B) {
 func BenchmarkPoly(b *testing.B) {
 	benchProgram(b, filepath.Join("testdata", "programs", "bench_poly.pf"))
 }
+
+func BenchmarkArray(b *testing.B) {
+	benchProgram(b, filepath.Join("testdata", "programs", "bench_array.pf"))
+}
+
+func BenchmarkSort(b *testing.B) {
+	benchProgram(b, filepath.Join("testdata", "programs", "bench_sort.pf"))
+}
