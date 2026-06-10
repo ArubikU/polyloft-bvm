@@ -887,6 +887,23 @@ func (c *Checker) checkExprWithExpected(expr ast.Expr, expected *Type) (Type, er
 		}
 		return ArrayOf(elementType), nil
 
+	case *ast.ArrayComprehensionExpr:
+		iterType, err := c.checkExpr(node.Iterable)
+		if err != nil {
+			return Unknown(), err
+		}
+		if !iterType.SupportsForIn() {
+			return Unknown(), fmt.Errorf("line %d:%d: comprehension expects Iterable, got %s", node.For.Line, node.For.Column, iterType.Name)
+		}
+		c.pushScope()
+		c.currentScope()[node.Variable.Lexeme] = symbol{Type: iterType.IterableItemType(), Mutable: true}
+		elementType, err := c.checkExpr(node.Element)
+		c.popScope()
+		if err != nil {
+			return Unknown(), err
+		}
+		return ArrayOf(elementType), nil
+
 	case *ast.ArrayNewExpr:
 		// Resolve the declared type.
 		// When the user writes `new T[]{...}` parseTypeRef already wraps T into

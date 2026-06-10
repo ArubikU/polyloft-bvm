@@ -316,7 +316,7 @@ func (c *Chunk) disassembleInto(out *strings.Builder, name string) {
 		case OpJumpIfArrayFieldGteLocalTrue, OpJumpIfArrayFieldLteLocalTrue:
 			fmt.Fprintf(out, "arr=%d idx=%d field=%d cmp=%d jump=%d", c.Code[offset+1], c.Code[offset+2], c.Code[offset+3], c.Code[offset+4], readUint16(c.Code[offset+5:]))
 			offset += 7
-		case OpArrayAlloc, OpArrayFill:
+		case OpArrayAlloc, OpArrayFill, OpArrayPush:
 			offset++
 		default:
 			fmt.Fprintf(out, "(unknown op %d)", byte(op))

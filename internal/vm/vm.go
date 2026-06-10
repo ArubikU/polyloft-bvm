@@ -1421,6 +1421,13 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				elements[i] = fill
 			}
 			vm.push(value.ObjectValue(&value.Array{Elements: elements}))
+		case bytecode.OpArrayPush:
+			element := vm.pop()
+			arr, ok := vm.peek(0).AsArray()
+			if !ok {
+				return value.NilValue(), fmt.Errorf("ARRAY_PUSH expects array on stack")
+			}
+			arr.Elements = append(arr.Elements, element)
 		case bytecode.OpSetLocalArrayBool:
 			arrSlot := readB(code, frame)
 			idxSlot := readB(code, frame)

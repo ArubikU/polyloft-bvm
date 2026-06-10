@@ -1,0 +1,22 @@
+// Array comprehension over range
+let squares = [i * i for i in range(0, 5)]
+println("sq=" + squares[4])
+let count = 0
+for s in squares:
+    count += 1
+end
+println("len=" + count)
+
+// Comprehension over an existing array
+let base = [10, 20, 30]
+let doubled = [x * 2 for x in base]
+println("d0=" + doubled[0])
+println("d2=" + doubled[2])
+
+// Nested expression element + use inside a function
+def build(n: int) -> any:
+    return [n - i for i in range(n)]
+end
+let arr = build(4)
+println("a0=" + arr[0])
+println("a3=" + arr[3])

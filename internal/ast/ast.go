@@ -432,6 +432,16 @@ type ArrayExpr struct {
 
 func (ArrayExpr) exprNode() {}
 
+// ArrayComprehensionExpr is `[Element for Variable in Iterable]`.
+type ArrayComprehensionExpr struct {
+	Element  Expr
+	Variable token.Token
+	Iterable Expr
+	For      token.Token
+}
+
+func (ArrayComprehensionExpr) exprNode() {}
+
 type MapEntry struct {
 	Key   string
 	Value Expr

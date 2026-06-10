@@ -2231,6 +2231,26 @@ func (p *Parser) primary() (ast.Expr, error) {
 				if err != nil {
 					return nil, err
 				}
+				// Array comprehension: [expr for var in iterable]
+				if len(elements) == 0 && p.check(token.For) {
+					forTok := p.advance()
+					variable, err := p.consume(token.Identifier, "expected loop variable after 'for' in comprehension")
+					if err != nil {
+						return nil, err
+					}
+					if _, err := p.consume(token.In, "expected 'in' after comprehension variable"); err != nil {
+						return nil, err
+					}
+					iterable, err := p.expression()
+					if err != nil {
+						return nil, err
+					}
+					p.skipNewlines()
+					if _, err := p.consume(token.RightBracket, "expected ']' after comprehension"); err != nil {
+						return nil, err
+					}
+					return &ast.ArrayComprehensionExpr{Element: element, Variable: variable, Iterable: iterable, For: forTok}, nil
+				}
 				elements = append(elements, element)
 				p.skipNewlines()
 				if !p.match(token.Comma) {

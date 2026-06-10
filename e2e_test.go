@@ -210,6 +210,19 @@ func TestDeepRecursionGrowsValueStack(t *testing.T) {
 	}
 }
 
+// Array comprehensions: [expr for var in iterable] over ranges and arrays,
+// including use inside function bodies.
+func TestArrayComprehension(t *testing.T) {
+	out, err := runPreparedFile(t, filepath.Join("testdata", "programs", "test_comprehension.pf"))
+	if err != nil {
+		t.Fatalf("execution failed: %v", err)
+	}
+	want := "sq=16\nlen=5\nd0=20\nd2=60\na0=4\na3=1\n"
+	if out != want {
+		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", want, out)
+	}
+}
+
 func TestNewArrayTooManyValues(t *testing.T) {
 	source := `
 let bad: int[] = new int[2]{0,1,2}

@@ -119,6 +119,7 @@ const (
 	// Fused array-field-vs-local comparison jumps; args: arr(1) idx(1) field(1) cmp(1) offset(2)
 	OpJumpIfArrayFieldGteLocalTrue  // if arr[idx].field >= locals[cmp] → jump (exit "while field<cmp" loop)
 	OpJumpIfArrayFieldLteLocalTrue  // if arr[idx].field <= locals[cmp] → jump (exit "while field>cmp" loop)
+	OpArrayPush                     // pop value, append to the array at TOS (array stays on stack)
 )
 
 func (op Op) String() string {
@@ -351,6 +352,8 @@ func (op Op) String() string {
 		return "JUMP_IF_ARRAY_FIELD_GTE_LOCAL_TRUE"
 	case OpJumpIfArrayFieldLteLocalTrue:
 		return "JUMP_IF_ARRAY_FIELD_LTE_LOCAL_TRUE"
+	case OpArrayPush:
+		return "ARRAY_PUSH"
 	default:
 		return "UNKNOWN"
 	}

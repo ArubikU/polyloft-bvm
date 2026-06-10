@@ -991,6 +991,8 @@ func (c *Compiler) compileExpr(expr ast.Expr) error {
 		c.emit(bytecode.OpTuple, 0)
 		c.emitByte(byte(len(node.Elements)), 0)
 		return nil
+	case *ast.ArrayComprehensionExpr:
+		return c.compileArrayComprehension(node)
 	case *ast.ArrayExpr:
 		for _, element := range node.Elements {
 			if err := c.compileExpr(element); err != nil {
@@ -3354,6 +3356,8 @@ func (c *Compiler) inferExprType(expr ast.Expr) string {
 		return bvmruntime.TypeTuple
 	case *ast.ArrayExpr:
 		return bvmruntime.TypeArray
+	case *ast.ArrayComprehensionExpr:
+		return bvmruntime.TypeArray
 	case *ast.ArrayNewExpr:
 		// Propagate element type so for-loop variables inherit it (e.g. new Shape[N] → array<Shape>)
 		if node.Type != nil && node.Type.Name.Lexeme != "" && len(node.Type.Args) == 0 {
@@ -3519,6 +3523,39 @@ func (c *Compiler) isRangeCall(expr ast.Expr) bool {
 		return false
 	}
 	return len(call.Arguments) >= 1 && len(call.Arguments) <= 3
+}
+
+// compileArrayComprehension compiles `[expr for var in iterable]` by keeping
+// the result array on the stack for the whole loop: each iteration evaluates
+// the element and appends it with OP_ARRAY_PUSH (which leaves the array on
+// top again), so the comprehension is a well-balanced expression.
+func (c *Compiler) compileArrayComprehension(node *ast.ArrayComprehensionExpr) error {
+	line := node.For.Line
+	c.emit(bytecode.OpArray, line)
+	c.emitByte(0, line)
+	c.beginScope()
+	iterName := token.Token{Lexeme: "__comp_iter_" + node.Variable.Lexeme, Line: line}
+	iterSlot := c.declareLocal(iterName, "Iterator")
+	elemType := c.inferIterableElementType(c.inferExprType(node.Iterable))
+	varSlot := c.declareLocal(node.Variable, elemType)
+	if err := c.compileExpr(node.Iterable); err != nil {
+		c.endScope(line)
+		return err
+	}
+	c.emit(bytecode.OpIterInit, line)
+	c.emitByte(iterSlot, line)
+	c.emitByte(0, line)
+	loopStart := len(c.state.chunk.Code)
+	exitJump := c.emitIterNext(iterSlot, varSlot, line)
+	if err := c.compileExpr(node.Element); err != nil {
+		c.endScope(line)
+		return err
+	}
+	c.emit(bytecode.OpArrayPush, line)
+	c.emitLoop(loopStart, line)
+	c.patchJump(exitJump)
+	c.endScope(line)
+	return nil
 }
 
 func (c *Compiler) compileFastRangeFor(node *ast.ForStmt) error {
@@ -4472,6 +4509,11 @@ func collectCapturedGlobalsExpr(expr ast.Expr, captured map[string]bool, inCalla
 		for _, element := range node.Elements {
 			collectCapturedGlobalsExpr(element, captured, inCallable, scope)
 		}
+	case *ast.ArrayComprehensionExpr:
+		collectCapturedGlobalsExpr(node.Iterable, captured, inCallable, scope)
+		compScope := cloneScope(scope)
+		compScope[node.Variable.Lexeme] = true
+		collectCapturedGlobalsExpr(node.Element, captured, inCallable, compScope)
 	case *ast.MapExpr:
 		for _, entry := range node.Entries {
 			collectCapturedGlobalsExpr(entry.Value, captured, inCallable, scope)
