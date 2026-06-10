@@ -523,6 +523,17 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 		case bytecode.OpEqual:
 			right := vm.pop()
 			left := vm.pop()
+			// Number-vs-number fast path: valuesEqual is a real call (cost
+			// above the big-function inline limit) and numeric equality is
+			// by far the most common case.
+			if left.Kind == value.Number && right.Kind == value.Number {
+				if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
+					vm.push(value.BoolValue(left.Int == right.Int))
+				} else {
+					vm.push(value.BoolValue(left.Num == right.Num))
+				}
+				continue
+			}
 			equal, err := vm.valuesEqual(left, right)
 			if err != nil {
 				return value.NilValue(), err
