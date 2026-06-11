@@ -1,9 +1,0 @@
-import polyloft.ui { UI, UIWindow }
-
-var app = UI.app("go")
-var win: UIWindow = nil
-var n: Nil = nil
-if win != nil:
-    win.show()
-end
-println("ok-nil")

@@ -1,3 +1,7 @@
 benchmarks/**
+<<<<<<< Updated upstream
 /benchmarks/tests
 *.exe
+=======
+/benchmarks/tests
+>>>>>>> Stashed changes
