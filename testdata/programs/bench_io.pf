@@ -1,0 +1,28 @@
+// I/O benchmark: build a multi-megabyte text payload, write it to a file, and
+// read it back repeatedly, exercising the standard-library file path rather than
+// a cache-resident compute kernel. Wall time includes the filesystem, so it is
+// reported with that caveat; the workload and its integer output (payload size
+// and total bytes read) are identical across CPython, gopher-lua, and this
+// interpreter.
+import polyloft.io { IO }
+
+let started = Sys.time()
+let N = 40000
+let content = ""
+for i in range(0, N):
+    content = content + "user" + (i % 1000) + ",action" + (i % 50) + ",ok\n"
+end
+let path = "iobench_tmp.txt"
+IO.writeFile(path, content)
+
+let total_read = 0
+for r in range(0, 20):
+    let data = IO.readFile(path)
+    total_read = total_read + len(data)
+end
+let ended = Sys.time()
+
+println("polyloft-bvm io benchmark")
+println("content_len=" + len(content))
+println("total_read=" + total_read)
+println("elapsed_ms=" + (ended - started))

@@ -1,7 +1,3 @@
 benchmarks/**
-<<<<<<< Updated upstream
 /benchmarks/tests
-*.exe
-=======
-/benchmarks/tests
->>>>>>> Stashed changes
+/tesis/**iobench_tmp.txt

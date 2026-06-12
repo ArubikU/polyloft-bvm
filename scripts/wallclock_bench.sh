@@ -68,7 +68,8 @@ hash bench_hash
 alloc alloc_bench
 macro bench_macro
 macro_large bench_macro_large
-concurrent bench_concurrent"
+concurrent bench_concurrent
+io bench_io"
 
 elapsed() { "$@" 2>/dev/null | grep -oE 'elapsed_ms=[0-9.]+' | tail -1 | cut -d= -f2; }
 stat() {  # median mean cv% min
