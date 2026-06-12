@@ -1,3 +1,7 @@
 benchmarks/**
 /benchmarks/tests
 /tesis/**iobench_tmp.txt
+
+# local tooling / nested repos
+.claude/
+tesis/

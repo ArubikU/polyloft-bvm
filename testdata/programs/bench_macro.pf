@@ -1,0 +1,131 @@
+// Macro benchmark: a small in-memory sales-analytics pipeline.
+// Unlike the single-mechanism kernels, this mixes object construction,
+// hashed-map aggregation, map iteration, an object quicksort and string
+// report building in one end-to-end workload. Integer-only (cents) so the
+// non-timing output is bit-identical to the CPython counterpart.
+
+class Order:
+    cust: int
+    prod: int
+    qty: int
+    price: int
+    rev: int
+
+    Order(c: int, p: int, q: int, pr: int):
+        this.cust = c
+        this.prod = p
+        this.qty = q
+        this.price = pr
+        this.rev = q * pr
+    end
+end
+
+// Quicksort orders by revenue, descending.
+def qsort(arr: Order[], lo: int, hi: int) -> void:
+    if lo >= hi:
+        return
+    end
+    let mid = lo + (int)((hi - lo) / 2)
+    let pivot = arr[mid].rev
+    let i = lo
+    let j = hi
+    loop i <= j:
+        loop arr[i].rev > pivot:
+            i += 1
+        end
+        loop arr[j].rev < pivot:
+            j -= 1
+        end
+        if i <= j:
+            let tmp = arr[i]
+            arr[i] = arr[j]
+            arr[j] = tmp
+            i += 1
+            j -= 1
+        end
+    end
+    qsort(arr, lo, j)
+    qsort(arr, i, hi)
+end
+
+let started = Sys.time()
+
+let N = 20000
+let C = 200
+let P = 50
+
+// Phase 1: generate orders with a deterministic LCG, building objects.
+let t1 = Sys.time()
+let orders = new Order[N]
+let seed = 12345
+for i in range(0, N):
+    seed = (seed * 1103515245 + 12345) % 2147483648
+    let cust = seed % C
+    seed = (seed * 1103515245 + 12345) % 2147483648
+    let prod = seed % P
+    seed = (seed * 1103515245 + 12345) % 2147483648
+    let qty = 1 + (seed % 10)
+    seed = (seed * 1103515245 + 12345) % 2147483648
+    let price = 100 + (seed % 900)
+    orders[i] = new Order(cust, prod, qty, price)
+end
+let gen_ms = Sys.time() - t1
+
+// Phase 2: aggregate revenue per customer in a hashed map, count distinct.
+let t2 = Sys.time()
+let rev_by_cust = {}
+let num_customers = 0
+let total_revenue = 0
+for order in orders:
+    let k = "c" + order.cust
+    if rev_by_cust[k] == nil:
+        rev_by_cust[k] = 0
+        num_customers += 1
+    end
+    rev_by_cust[k] = rev_by_cust[k] + order.rev
+    total_revenue += order.rev
+end
+let agg_ms = Sys.time() - t2
+
+// Phase 3: scan the map for the top customer revenue.
+let t3 = Sys.time()
+let max_cust_rev = 0
+for k in keys(rev_by_cust):
+    let v = rev_by_cust[k]
+    if v > max_cust_rev:
+        max_cust_rev = v
+    end
+end
+let scan_ms = Sys.time() - t3
+
+// Phase 4: sort all orders by revenue (descending).
+let t4 = Sys.time()
+qsort(orders, 0, N - 1)
+let sort_ms = Sys.time() - t4
+
+// Phase 5: build a string report from the top 20 orders.
+let t5 = Sys.time()
+let report = ""
+for i in range(0, 20):
+    report = report + "#" + (i + 1) + ":" + orders[i].rev + ";"
+end
+let report_ms = Sys.time() - t5
+
+let checksum = total_revenue + max_cust_rev + orders[0].rev
+
+let ended = Sys.time()
+
+println("polyloft-bvm macro benchmark")
+println("orders=" + N)
+println("customers=" + num_customers)
+println("total_revenue=" + total_revenue)
+println("max_customer_revenue=" + max_cust_rev)
+println("top_order_revenue=" + orders[0].rev)
+println("report_len=" + len(report))
+println("checksum=" + checksum)
+println("gen_ms=" + gen_ms)
+println("agg_ms=" + agg_ms)
+println("scan_ms=" + scan_ms)
+println("sort_ms=" + sort_ms)
+println("report_ms=" + report_ms)
+println("elapsed_ms=" + (ended - started))
