@@ -1,47 +1,49 @@
 #!/usr/bin/env bash
 # Wall-clock interleaved benchmark harness for the polyloft-bvm CPython-parity
-# study. Runs each .pf benchmark against its line-for-line CPython counterpart,
-# interleaving the two so slow machine drift cancels, and reports median, CV,
-# and min for both sides plus the interpreter/CPython ratio. Emits a plain
-# table and a LaTeX tabular ready to paste into the paper.
+# study. Each benchmark is run against up to two baselines: its line-for-line
+# CPython counterpart (.py) and, when present, an equal-work gopher-lua version
+# (.lua) executed by a pure-Go Lua interpreter. The Lua baseline is the key
+# control: it is itself an interpreter written in Go, so comparing against it
+# isolates the cost of *this* interpreter's engineering from the cost of the Go
+# host language. The three engines are interleaved so machine drift cancels;
+# median, coefficient of variation, and min are reported for each, plus the
+# interpreter/CPython and interpreter/gopher-lua ratios. A LaTeX tabular is
+# emitted ready to paste.
 #
-# Designed to run on Linux / WSL2 / macOS / git-bash. Self-times via each
-# program's own `elapsed_ms` output (not the process wall time), so startup and
-# compilation overhead are excluded.
+# Self-times via each program's own elapsed_ms output, so startup/compile cost is
+# excluded. Runs on Linux / WSL2 / macOS / git-bash.
 #
-# Usage:
-#   scripts/wallclock_bench.sh [N]          # N runs per side (default 30)
-#   N=50 scripts/wallclock_bench.sh
-#
-# Output goes to stdout; redirect to capture, e.g.
-#   scripts/wallclock_bench.sh 30 | tee bench_$(hostname)_$(uname -s).txt
+# Usage:  scripts/wallclock_bench.sh [N]      (N runs per engine, default 30)
+#   scripts/wallclock_bench.sh 30 | tee bench_$(hostname).txt
 
-# Resilient on purpose: a transient failure in one run must not abort the whole
-# sweep, and grep returning "no match" must not kill the pipeline.
 set -u
 cd "$(dirname "$0")/.."
 
 N="${1:-${N:-30}}"
 PROG_DIR="testdata/programs"
-BIN="$(mktemp -d)/polyloft-bvm"
+TMP="$(mktemp -d)"
+BIN="$TMP/polyloft-bvm"
+LUABIN="$TMP/luabench"
 
-# --- locate toolchain ----------------------------------------------------------
 GO_BIN="$(command -v go || true)"
 [ -z "$GO_BIN" ] && { echo "go not found in PATH" >&2; exit 1; }
 PY_BIN="$(command -v python3 || command -v python || true)"
-[ -z "$PY_BIN" ] && { echo "python3/python not found in PATH" >&2; exit 1; }
 
 echo "Building interpreter ..." >&2
-if ! "$GO_BIN" build -o "$BIN" ./cmd/polyloft-bvm; then
-  echo "build failed" >&2; exit 1
-fi
-# Verify the chosen Python actually runs (guards against the Windows Store stub).
-if ! "$PY_BIN" --version >/dev/null 2>&1; then
-  echo "python at '$PY_BIN' is not runnable (Windows Store stub?). Use WSL or a real python3." >&2
-  exit 1
-fi
+if ! "$GO_BIN" build -o "$BIN" ./cmd/polyloft-bvm; then echo "build failed" >&2; exit 1; fi
 
-# --- environment banner --------------------------------------------------------
+# gopher-lua baseline: separate module, only built if it compiles (needs the
+# gopher-lua dependency; first build fetches it).
+HAVE_LUA=0
+echo "Building gopher-lua baseline ..." >&2
+if ( cd bench/luabench && "$GO_BIN" build -o "$LUABIN" . ) 2>/dev/null; then HAVE_LUA=1
+else echo "gopher-lua baseline unavailable (skipping Lua column)" >&2; fi
+
+# CPython guard (the Windows Store stub is not runnable).
+HAVE_PY=0
+if [ -n "$PY_BIN" ] && "$PY_BIN" --version >/dev/null 2>&1; then HAVE_PY=1
+else echo "python3 not runnable (skipping CPython column); use WSL/native Linux" >&2; fi
+
 CPU="$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | sed 's/.*: //' || \
        sysctl -n machdep.cpu.brand_string 2>/dev/null || echo 'unknown CPU')"
 echo "# polyloft-bvm wall-clock benchmark"
@@ -49,12 +51,12 @@ echo "# host    : $(hostname)"
 echo "# os      : $(uname -srm)"
 echo "# cpu     : $CPU"
 echo "# go      : $("$GO_BIN" version | awk '{print $3}')"
-echo "# python  : $("$PY_BIN" --version 2>&1 | awk '{print $2}')"
+[ "$HAVE_PY" = 1 ] && echo "# python  : $("$PY_BIN" --version 2>&1 | awk '{print $2}')"
+[ "$HAVE_LUA" = 1 ] && echo "# lua     : gopher-lua (pure-Go interpreter)"
 echo "# n       : $N (interleaved, self-timed elapsed_ms)"
 echo "# date    : $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 echo
 
-# benchmarks: <name> <pf-stem>  (pf and py share the stem)
 BENCHES="fib bench_fib
 float bench_float
 string bench_string
@@ -67,56 +69,49 @@ alloc alloc_bench
 macro bench_macro
 concurrent bench_concurrent"
 
-# elapsed_ms extractor
 elapsed() { "$@" 2>/dev/null | grep -oE 'elapsed_ms=[0-9.]+' | tail -1 | cut -d= -f2; }
-
-# stats: median mean cv% min  (from stdin, one number per line)
-stats() {
+stat() {  # median mean cv% min
   sort -n | awk '
     { a[NR]=$1; s+=$1; ss+=$1*$1 }
-    END {
-      n=NR; if(n==0){print "0 0 0 0"; exit}
-      m=s/n
-      med=(n%2)?a[(n+1)/2]:(a[n/2]+a[n/2+1])/2
+    END { n=NR; if(n==0){print "- - - -"; exit}
+      m=s/n; med=(n%2)?a[(n+1)/2]:(a[n/2]+a[n/2+1])/2
       sd=sqrt((ss/n)-(m*m)); if(sd<0)sd=0
-      printf "%.3f %.3f %.1f %.3f", med, m, (m?100*sd/m:0), a[1]
-    }'
+      printf "%.2f %.2f %.1f %.2f", med, m, (m?100*sd/m:0), a[1] }'
 }
+rat() { awk -v a="$1" -v b="$2" 'BEGIN{ if(b+0>0) printf "%.2f", a/b; else printf "-" }'; }
 
-printf "%-8s | %10s %5s %6s | %10s %5s %6s | %7s\n" \
-  bench "py_med" "CV%" "py_min" "interp" "CV%" "i_min" "ratio"
-echo "---------+--------------------------+--------------------------+--------"
+printf "%-10s | %9s %5s | %9s %5s | %9s %5s | %6s %6s\n" \
+  bench "py_med" "CV%" "lua_med" "CV%" "interp" "CV%" "i/py" "i/lua"
+echo "-----------+-----------------+-----------------+-----------------+--------------"
 
-LATEX="$(mktemp)"
-{
-  echo "% --- paste into the paper (median / CV / ratio) ---"
+LX="$TMP/table.tex"
+{ echo "% --- paste into the paper ---"
   echo "\\begin{tabular}{@{}lrrrrr@{}}"
   echo "  \\toprule"
-  echo "  Benchmark & CPython & CV & Interp.\\ & CV & Ratio \\\\"
-  echo "  \\midrule"
-} > "$LATEX"
+  echo "  Benchmark & CPython & gopher-lua & Interp.\\ & Interp/Py & Interp/Lua \\\\"
+  echo "  \\midrule"; } > "$LX"
 
 while read -r name stem; do
   [ -z "$name" ] && continue
-  pf="$PROG_DIR/$stem.pf"; py="$PROG_DIR/$stem.py"
-  [ -f "$pf" ] && [ -f "$py" ] || { printf "%-8s | (missing program)\n" "$name"; continue; }
-  py_runs=""; in_runs=""
+  pf="$PROG_DIR/$stem.pf"; py="$PROG_DIR/$stem.py"; luaf="$PROG_DIR/$stem.lua"
+  [ -f "$pf" ] || continue
+  py_runs=""; lua_runs=""; in_runs=""
   for _ in $(seq 1 "$N"); do
-    py_runs+="$(elapsed "$PY_BIN" "$py")"$'\n'
+    [ "$HAVE_PY" = 1 ] && [ -f "$py" ] && py_runs+="$(elapsed "$PY_BIN" "$py")"$'\n'
+    [ "$HAVE_LUA" = 1 ] && [ -f "$luaf" ] && lua_runs+="$(elapsed "$LUABIN" "$luaf")"$'\n'
     in_runs+="$(elapsed "$BIN" run "$pf")"$'\n'
   done
-  read -r pmed pmean pcv pmin <<<"$(printf '%s' "$py_runs" | stats)"
-  read -r imed imean icv imin <<<"$(printf '%s' "$in_runs" | stats)"
-  ratio="$(awk -v a="$imed" -v b="$pmed" 'BEGIN{printf "%.2f", (b>0)?a/b:0}')"
-  printf "%-8s | %10s %5s %6s | %10s %5s %6s | %6sx\n" \
-    "$name" "$pmed" "$pcv" "$pmin" "$imed" "$icv" "$imin" "$ratio"
-  bold=""; [ "$(awk -v r="$ratio" 'BEGIN{print (r<1)?1:0}')" = "1" ] && bold="\\mathbf"
-  awk -v n="$name" -v pm="$pmed" -v pc="$pcv" -v im="$imed" -v ic="$icv" -v r="$ratio" -v b="$bold" \
-    'BEGIN{printf "  %s & $%s$\\,ms & $%s\\%%$ & $%s$\\,ms & $%s\\%%$ & $%s{%sx}$ \\\\\n", n, pm, pc, im, ic, (b==""?"":b), r}' >> "$LATEX"
+  read -r pmed pmean pcv pmin <<<"$(printf '%s' "$py_runs"  | stat)"
+  read -r lmed lmean lcv lmin <<<"$(printf '%s' "$lua_runs" | stat)"
+  read -r imed imean icv imin <<<"$(printf '%s' "$in_runs"  | stat)"
+  ipy="$(rat "$imed" "$pmed")"; ilua="$(rat "$imed" "$lmed")"
+  printf "%-10s | %9s %5s | %9s %5s | %9s %5s | %6s %6s\n" \
+    "$name" "$pmed" "$pcv" "$lmed" "$lcv" "$imed" "$icv" "$ipy" "$ilua"
+  awk -v n="$name" -v p="$pmed" -v l="$lmed" -v im="$imed" -v ipy="$ipy" -v ilua="$ilua" \
+    'BEGIN{ pf=(p=="-"?"--":"$"p"$\\,ms"); lf=(l=="-"?"--":"$"l"$\\,ms");
+      printf "  %s & %s & %s & $%s$\\,ms & $%s$ & $%s$ \\\\\n", n, pf, lf, im, ipy, ilua }' >> "$LX"
 done <<< "$BENCHES"
 
-{ echo "  \\bottomrule"; echo "\\end{tabular}"; } >> "$LATEX"
-echo
-cat "$LATEX"
-rm -f "$LATEX"
-rm -rf "$(dirname "$BIN")"
+{ echo "  \\bottomrule"; echo "\\end{tabular}"; } >> "$LX"
+echo; cat "$LX"
+rm -rf "$TMP"
