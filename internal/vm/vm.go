@@ -152,6 +152,18 @@ func (vm *VM) CallClosureIsolated(closure value.Value, args []value.Value) (valu
 		registry.Define(name, value.DeepCopy(vm.globalSlots[index]))
 	}
 	isolated := newWithRegistry(vm.stdout, registry, false)
+	// Carry the slot-indexed globals too: closures compiled to OpGetGlobalSlot
+	// resolve through globalSlots/globalDefined, which newWithRegistry leaves
+	// empty. Without this, a closure that references any slot-resolved global
+	// (e.g. a captured top-level `let`) panics with an out-of-range slot read.
+	isolated.globalSlotNames = append([]string(nil), vm.globalSlotNames...)
+	isolated.globalDefined = append([]bool(nil), vm.globalDefined...)
+	isolated.globalSlots = make([]value.Value, len(vm.globalSlots))
+	for i := range vm.globalSlots {
+		if i < len(vm.globalDefined) && vm.globalDefined[i] {
+			isolated.globalSlots[i] = value.DeepCopy(vm.globalSlots[i])
+		}
+	}
 	clonedArgs := make([]value.Value, len(args))
 	for i, arg := range args {
 		clonedArgs[i] = value.DeepCopy(arg)

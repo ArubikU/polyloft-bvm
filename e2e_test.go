@@ -2859,6 +2859,29 @@ func TestEmbeddedStdlibConcurrentAsyncAcceptsSupplierLambda(t *testing.T) {
 	}
 }
 
+func TestAsyncClosureCapturesGlobalVariable(t *testing.T) {
+	tempDir := t.TempDir()
+	mainPath := filepath.Join(tempDir, "main.pf")
+	// Regression: an async closure referencing a slot-resolved global (a
+	// top-level `let`) used to panic with an out-of-range global-slot read,
+	// because CallClosureIsolated built the isolated VM without the
+	// slot-indexed globals (globalSlots/globalDefined).
+	mainSource := "import polyloft.concurrent { async }\n" +
+		"let base = 100\n" +
+		"let f = async(() => base + 23)\n" +
+		"println(f.get())\n"
+	if err := os.WriteFile(mainPath, []byte(mainSource), 0o644); err != nil {
+		t.Fatalf("write main failed: %v", err)
+	}
+	output, err := runPreparedFile(t, mainPath)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if want := "123\n"; output != want {
+		t.Fatalf("unexpected output\nwant: %q\ngot:  %q", want, output)
+	}
+}
+
 func TestOmittedGenericArgsDefaultToAnyAndConcatWithString(t *testing.T) {
 	tempDir := t.TempDir()
 	mainPath := filepath.Join(tempDir, "main.pf")
