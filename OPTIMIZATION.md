@@ -535,3 +535,76 @@ Cada corrección quedó cubierta por un test e2e
 - **poly:** el gap se reparte entre la maquinaria de llamadas a métodos
   (~16 %) y GC de 30 000 instancias (~15 %); requeriría inline caching de
   métodos o un allocador de instancias por arena.
+
+
+---
+
+## 9. Reduccion de `value.Value` y arrays primitivos densos
+
+Esta seccion cierra dos items de Trabajo futuro (S8): reducir el struct
+`value.Value` y la criba de `bench_array`. El resultado matiza la prediccion
+original de que reducir `Value` aceleraria todo un 10-30 %: la palanca real
+no fue el tamano del struct sino la representacion de los arrays.
+
+### 9.1 Reordenar `value.Value`: 64 -> 56 bytes
+
+`Value` mantenia tres campos de un byte (`Kind`, `NumberKind`, `Bool`)
+intercalados entre los dos campos numericos de 8 bytes (`Num`, `Int`),
+desperdiciando 13 bytes de relleno por alineacion. Agrupar los tres tags en
+una sola palabra de 8 bytes baja el struct a 56 bytes (-12.5 %) sin cambiar
+ningun acceso a campo ni la serializacion gob. Reduce la copia por slot en
+cada push/pop/move de local. Medido neutro-a-positivo (2-8 %) en los
+benchmarks escalares.
+
+### 9.2 Resultado negativo: fusionar `Num`+`Int` en una palabra (48 bytes)
+
+Reinterpretar el payload numerico bit a bit en un unico `uint64` (con
+`math.Float64bits`/`frombits`) lleva el struct a 48 bytes. Medido **neto
+negativo**: los kernels numericos regresan 9-11 % (fib, float) porque cada
+lectura flotante paga un `Float64frombits` y, sobre todo, porque los
+accessors `Num()`/`Int()` no se inlinean dentro del switch gigante de
+despacho (el mismo limite de presupuesto de inline de S3.1), convirtiendo
+cada lectura en una llamada real. Se descarto.
+
+### 9.3 El muro de la linea de cache
+
+`Value` de 64 bytes equivale exactamente a una linea de cache. Un array
+contiguo `[]Value` queda con cada elemento alineado a linea. Cualquier tamano
+intermedio (33-63 B) es buen tradeoff para los escalares en la pila (acceso
+LIFO, caliente en L1) pero **rompe la alineacion de los arrays**: con stride
+de 56 B el elemento N empieza en 56*N y cruza fronteras de 64 B, anadiendo
+cache-line splits en el recorrido. Medido: `bench_array` (criba de 500k +
+prefix sums sobre 100k) regresa ~13 % solo por el cambio 64 -> 56. El
+siguiente divisor limpio es 32 B, inalcanzable sin pagar las dos tasas
+(fusion numerica + boxing de strings). 64 B es por tanto un optimo local de
+alineacion para el almacenamiento `[]Value`.
+
+### 9.4 La palanca real: almacenamiento nativo denso para arrays primitivos
+
+La conclusion es que el problema no era `Value` sino representar arrays de
+primitivos como `[]Value`. Los arrays homogeneos de `int`/`float`/`bool`
+ahora respaldan sus datos con `[]int64` / `[]float64` / `[]bool` en lugar de
+un `Value` de 56 B por elemento. Esto elimina el straddle (stride de 8 o 1
+byte, alineado) y la sobrecarga del struct por elemento.
+
+- `Array` lleva un backing tipado seleccionado por `AKind`; objetos, tipos
+  custom y arrays heterogeneos/mixtos conservan el almacenamiento `[]Value`
+  sin cambios.
+- Todo acceso se canaliza por los accessors `Len`/`At`/`SetAt`/`Append`/
+  `Values`. `SetAt`/`Append` promueven (materializan a `[]Value`) ante un
+  tipo discrepante, preservando la semantica exacta. Los arrays de objetos
+  indexan por un camino rapido `Raw()` para no pagar el coste del accessor.
+- `new T[N]` con T primitivo emite un fill tipado de ceros (compilador);
+  `OpArrayFill` elige el almacenamiento denso a partir del Kind del fill.
+  `for-in` itera arrays densos via `Iterator.Arr` sin materializar un
+  snapshot `[]Value`. `GobEncode`/`Decode` serializan por la vista `[]Value`,
+  asi que el formato `.pfbc` no cambia.
+
+Medido (intercalado, n=15, mismo binario de referencia): `bench_array`
+**-25 % a -30 %** respecto a la base de 64 B (de regresion +13 % a mejora
+neta); el resto de la suite (macro, sort, string, hash, float, poly, fib) en
+paridad dentro del ruido de la maquina. Salida byte-identica en los ocho
+benchmarks. Nota metodologica: en este equipo los benchmarks pequenos
+(sort ~5 ms, string ~6 ms, poly ~17 ms) oscilan en ambas direcciones entre
+corridas (ruido >5 %); solo `array` da senal estable, consistente con la
+varianza por GC ya reportada en S7.
