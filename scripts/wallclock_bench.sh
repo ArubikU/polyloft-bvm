@@ -67,6 +67,7 @@ closure bench_closure
 hash bench_hash
 alloc alloc_bench
 macro bench_macro
+macro_large bench_macro_large
 concurrent bench_concurrent"
 
 elapsed() { "$@" 2>/dev/null | grep -oE 'elapsed_ms=[0-9.]+' | tail -1 | cut -d= -f2; }
@@ -81,14 +82,14 @@ stat() {  # median mean cv% min
 rat() { awk -v a="$1" -v b="$2" 'BEGIN{ if(b+0>0) printf "%.2f", a/b; else printf "-" }'; }
 
 printf "%-10s | %9s %5s | %9s %5s | %9s %5s | %6s %6s\n" \
-  bench "py_med" "CV%" "lua_med" "CV%" "interp" "CV%" "i/py" "i/lua"
+  bench "py_med" "CV%" "lua_med" "CV%" "polyloft" "CV%" "pl/py" "pl/lua"
 echo "-----------+-----------------+-----------------+-----------------+--------------"
 
 LX="$TMP/table.tex"
 { echo "% --- paste into the paper ---"
   echo "\\begin{tabular}{@{}lrrrrr@{}}"
   echo "  \\toprule"
-  echo "  Benchmark & CPython & gopher-lua & Interp.\\ & Interp/Py & Interp/Lua \\\\"
+  echo "  Benchmark & CPython & gopher-lua & Polyloft & Polyloft/Py & Polyloft/Lua \\\\"
   echo "  \\midrule"; } > "$LX"
 
 while read -r name stem; do

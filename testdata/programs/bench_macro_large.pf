@@ -1,0 +1,146 @@
+// Large-heap macro benchmark: a sales-analytics pipeline over 200k order
+// objects with a product-catalog join and a per-group aggregation, sized to
+// exceed L1/L2 and exercise real allocation and garbage-collection pressure.
+// Uses a MINSTD LCG (multiplier 16807, modulus 2^31-1) so every intermediate
+// stays below 2^53 and the integer output is bit-identical across CPython and
+// a float64-numbered Lua interpreter (gopher-lua) as well as this interpreter.
+
+class Order:
+    cust: int
+    prod: int
+    qty: int
+    price: int
+    rev: int
+    Order(c: int, p: int, q: int, pr: int):
+        this.cust = c
+        this.prod = p
+        this.qty = q
+        this.price = pr
+        this.rev = q * pr
+    end
+end
+
+def qsort(arr: Order[], lo: int, hi: int) -> void:
+    if lo >= hi:
+        return
+    end
+    let mid = lo + (int)((hi - lo) / 2)
+    let pivot = arr[mid].rev
+    let i = lo
+    let j = hi
+    loop i <= j:
+        loop arr[i].rev > pivot:
+            i += 1
+        end
+        loop arr[j].rev < pivot:
+            j -= 1
+        end
+        if i <= j:
+            let tmp = arr[i]
+            arr[i] = arr[j]
+            arr[j] = tmp
+            i += 1
+            j -= 1
+        end
+    end
+    qsort(arr, lo, j)
+    qsort(arr, i, hi)
+end
+
+let started = Sys.time()
+
+let N = 200000
+let C = 10000
+let P = 1000
+
+// Phase 1: build N order objects with a MINSTD generator.
+let t1 = Sys.time()
+let orders = new Order[N]
+let seed = 1
+for i in range(0, N):
+    seed = (seed * 16807) % 2147483647
+    let cust = seed % C
+    seed = (seed * 16807) % 2147483647
+    let prod = seed % P
+    seed = (seed * 16807) % 2147483647
+    let qty = 1 + (seed % 100)
+    seed = (seed * 16807) % 2147483647
+    let price = 100 + (seed % 900)
+    orders[i] = new Order(cust, prod, qty, price)
+end
+let gen_ms = Sys.time() - t1
+
+// Phase 2: product catalog map (prod -> discount percent), deterministic.
+let t2 = Sys.time()
+let discount = {}
+for p in range(0, P):
+    discount["p" + p] = p % 30
+end
+let cat_ms = Sys.time() - t2
+
+// Phase 3: revenue per customer (hashed map, ~C keys) + totals.
+let t3 = Sys.time()
+let rev_by_cust = {}
+let num_customers = 0
+let total_revenue = 0
+for order in orders:
+    let k = "c" + order.cust
+    if rev_by_cust[k] == nil:
+        rev_by_cust[k] = 0
+        num_customers += 1
+    end
+    rev_by_cust[k] = rev_by_cust[k] + order.rev
+    total_revenue += order.rev
+end
+let agg_ms = Sys.time() - t3
+
+// Phase 4: join orders against the catalog, group net revenue per product.
+let t4 = Sys.time()
+let net_by_prod = {}
+let max_prod_net = 0
+for order in orders:
+    let dk = "p" + order.prod
+    let disc = discount[dk]
+    let net = order.rev - (int)((order.rev * disc) / 100)
+    let pk = "p" + order.prod
+    if net_by_prod[pk] == nil:
+        net_by_prod[pk] = 0
+    end
+    let acc = net_by_prod[pk] + net
+    net_by_prod[pk] = acc
+    if acc > max_prod_net:
+        max_prod_net = acc
+    end
+end
+let join_ms = Sys.time() - t4
+
+// Phase 5: sort all orders by revenue (descending).
+let t5 = Sys.time()
+qsort(orders, 0, N - 1)
+let sort_ms = Sys.time() - t5
+
+// Phase 6: top-20 report string.
+let t6 = Sys.time()
+let report = ""
+for i in range(0, 20):
+    report = report + "#" + (i + 1) + ":" + orders[i].rev + ";"
+end
+let report_ms = Sys.time() - t6
+
+let checksum = total_revenue + max_prod_net + orders[0].rev
+
+let ended = Sys.time()
+
+println("polyloft-bvm large macro benchmark")
+println("orders=" + N)
+println("customers=" + num_customers)
+println("total_revenue=" + total_revenue)
+println("max_product_net=" + max_prod_net)
+println("top_order_revenue=" + orders[0].rev)
+println("report_len=" + len(report))
+println("checksum=" + checksum)
+println("gen_ms=" + gen_ms)
+println("agg_ms=" + agg_ms)
+println("join_ms=" + join_ms)
+println("sort_ms=" + sort_ms)
+println("elapsed_ms=" + (ended - started))
