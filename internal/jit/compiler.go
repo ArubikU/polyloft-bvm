@@ -873,7 +873,7 @@ func executeProgram(program *Program, receiver *value.Instance, args []value.Val
 			elements := make([]value.Value, count)
 			copy(elements, stack[len(stack)-count:])
 			stack = stack[:len(stack)-count]
-			stack = append(stack, value.ObjectValue(&value.Array{Elements: elements}))
+			stack = append(stack, value.ObjectValue(value.NewArray(elements)))
 			ip++
 		case ops.mapValue:
 			count := int(instruction.Operand)
@@ -1155,11 +1155,11 @@ func jitSlice(object value.Value, start value.Value, end value.Value) (value.Val
 		return value.StringValue(string(sliced)), nil
 	}
 	if array, ok := object.AsArray(); ok {
-		sliced, err := jitSliceValues(array.Elements, startIdx, endIdx)
+		sliced, err := jitSliceValues(array.Values(), startIdx, endIdx)
 		if err != nil {
 			return value.NilValue(), err
 		}
-		return value.ObjectValue(&value.Array{Elements: append([]value.Value(nil), sliced...)}), nil
+		return value.ObjectValue(value.NewArray(append([]value.Value(nil), sliced...))), nil
 	}
 	if tuple, ok := object.AsTuple(); ok {
 		sliced, err := jitSliceValues(tuple.Elements, startIdx, endIdx)
@@ -1188,10 +1188,10 @@ func jitArrayIndex(array *value.Array, index value.Value) (value.Value, error) {
 		return value.NilValue(), fmt.Errorf("array index must be number")
 	}
 	idx := int(index.Num)
-	if idx < 0 || idx >= len(array.Elements) {
+	if idx < 0 || idx >= len(array.Values()) {
 		return value.NilValue(), fmt.Errorf("array index out of range")
 	}
-	return array.Elements[idx], nil
+	return array.Values()[idx], nil
 }
 
 func jitTupleIndex(tuple *value.Tuple, index value.Value) (value.Value, error) {
@@ -1220,10 +1220,10 @@ func jitArrayAssign(array *value.Array, index value.Value, assigned value.Value)
 		return fmt.Errorf("array index must be number")
 	}
 	idx := int(index.Num)
-	if idx < 0 || idx >= len(array.Elements) {
+	if idx < 0 || idx >= len(array.Values()) {
 		return fmt.Errorf("array index out of range")
 	}
-	array.Elements[idx] = assigned
+	array.Values()[idx] = assigned
 	return nil
 }
 

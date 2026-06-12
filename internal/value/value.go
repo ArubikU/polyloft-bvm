@@ -1,6 +1,7 @@
 package value
 
 import (
+	"bytes"
 	"encoding/gob"
 	"fmt"
 	"strconv"
@@ -65,8 +66,217 @@ type Tuple struct {
 	Elements []Value
 }
 
+// ArrayKind selects an Array's storage. Homogeneous primitive arrays use a
+// dense native backing (no per-element Value struct), which keeps contiguous
+// traversal cache-line friendly; everything else (objects, custom types,
+// mixed element types) uses the canonical []Value storage.
+type ArrayKind uint8
+
+const (
+	ArrAny ArrayKind = iota // []Value backing (elems)
+	ArrInt                  // []int64 backing
+	ArrFloat                // []float64 backing
+	ArrBool                 // []bool backing
+)
+
+// Array is a growable sequence. When AKind is a primitive kind the data lives
+// in the matching dense slice and elems is nil; any access that cannot be
+// served densely (heterogeneous store, object element, serialization) calls
+// materialize() to fold the dense backing back into elems and revert to ArrAny.
+// Always go through the Len/At/SetAt/Append/Values accessors, never touch the
+// backing fields directly.
 type Array struct {
-	Elements []Value
+	elems  []Value
+	ints   []int64
+	floats []float64
+	bools  []bool
+	AKind  ArrayKind
+}
+
+// NewArray wraps an existing []Value slice (ArrAny storage).
+func NewArray(elems []Value) *Array { return &Array{elems: elems} }
+
+// NewIntArray returns a dense int array of n zeroes.
+func NewIntArray(n int) *Array { return &Array{ints: make([]int64, n), AKind: ArrInt} }
+
+// NewIntArrayFill returns a dense int array of n copies of fill.
+func NewIntArrayFill(n int, fill int64) *Array {
+	s := make([]int64, n)
+	if fill != 0 {
+		for i := range s {
+			s[i] = fill
+		}
+	}
+	return &Array{ints: s, AKind: ArrInt}
+}
+
+// NewFloatArray returns a dense float array of n zeroes.
+func NewFloatArray(n int) *Array { return &Array{floats: make([]float64, n), AKind: ArrFloat} }
+
+// NewFloatArrayFill returns a dense float array of n copies of fill.
+func NewFloatArrayFill(n int, fill float64) *Array {
+	s := make([]float64, n)
+	if fill != 0 {
+		for i := range s {
+			s[i] = fill
+		}
+	}
+	return &Array{floats: s, AKind: ArrFloat}
+}
+
+// NewBoolArray returns a dense bool array of n copies of fill.
+func NewBoolArray(n int, fill bool) *Array {
+	b := make([]bool, n)
+	if fill {
+		for i := range b {
+			b[i] = true
+		}
+	}
+	return &Array{bools: b, AKind: ArrBool}
+}
+
+// Raw returns the underlying []Value backing for ArrAny arrays (the common
+// object/heterogeneous case), enabling hot opcodes to index directly without
+// the accessor's storage-kind branch. Returns nil for dense primitive arrays;
+// callers must gate on AKind == ArrAny.
+func (a *Array) Raw() []Value { return a.elems }
+
+// Len reports the element count regardless of storage.
+func (a *Array) Len() int {
+	switch a.AKind {
+	case ArrInt:
+		return len(a.ints)
+	case ArrFloat:
+		return len(a.floats)
+	case ArrBool:
+		return len(a.bools)
+	default:
+		return len(a.elems)
+	}
+}
+
+// At returns element i as a Value.
+func (a *Array) At(i int) Value {
+	switch a.AKind {
+	case ArrInt:
+		return IntValue(a.ints[i])
+	case ArrFloat:
+		return FloatValue(a.floats[i])
+	case ArrBool:
+		return BoolValue(a.bools[i])
+	default:
+		return a.elems[i]
+	}
+}
+
+// SetAt stores v at index i, promoting to []Value storage if v's type does not
+// match the dense backing.
+func (a *Array) SetAt(i int, v Value) {
+	switch a.AKind {
+	case ArrInt:
+		if v.Kind == Number && v.NumberKind == NumberInt {
+			a.ints[i] = v.Int
+			return
+		}
+	case ArrFloat:
+		if v.Kind == Number {
+			a.floats[i] = v.Num
+			return
+		}
+	case ArrBool:
+		if v.Kind == Bool {
+			a.bools[i] = v.Bool
+			return
+		}
+	default:
+		a.elems[i] = v
+		return
+	}
+	a.materialize()
+	a.elems[i] = v
+}
+
+// Append adds v to the end, promoting if v's type does not match.
+func (a *Array) Append(v Value) {
+	switch a.AKind {
+	case ArrInt:
+		if v.Kind == Number && v.NumberKind == NumberInt {
+			a.ints = append(a.ints, v.Int)
+			return
+		}
+	case ArrFloat:
+		if v.Kind == Number {
+			a.floats = append(a.floats, v.Num)
+			return
+		}
+	case ArrBool:
+		if v.Kind == Bool {
+			a.bools = append(a.bools, v.Bool)
+			return
+		}
+	default:
+		a.elems = append(a.elems, v)
+		return
+	}
+	a.materialize()
+	a.elems = append(a.elems, v)
+}
+
+// materialize folds a dense backing into elems and reverts to ArrAny storage.
+// No-op for ArrAny arrays.
+func (a *Array) materialize() {
+	switch a.AKind {
+	case ArrInt:
+		e := make([]Value, len(a.ints))
+		for i, n := range a.ints {
+			e[i] = IntValue(n)
+		}
+		a.elems, a.ints = e, nil
+	case ArrFloat:
+		e := make([]Value, len(a.floats))
+		for i, f := range a.floats {
+			e[i] = FloatValue(f)
+		}
+		a.elems, a.floats = e, nil
+	case ArrBool:
+		e := make([]Value, len(a.bools))
+		for i, b := range a.bools {
+			e[i] = BoolValue(b)
+		}
+		a.elems, a.bools = e, nil
+	default:
+		return
+	}
+	a.AKind = ArrAny
+}
+
+// Values returns the canonical []Value view, materializing dense storage. The
+// returned slice aliases internal storage; callers may read and in-place mutate
+// but the length is owned by the Array (use Append to grow).
+func (a *Array) Values() []Value {
+	a.materialize()
+	return a.elems
+}
+
+// GobEncode serializes the array via its []Value view so the .pfbc format is
+// independent of dense storage.
+func (a *Array) GobEncode() ([]byte, error) {
+	vals := a.Values()
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(vals); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// GobDecode restores an array as ArrAny []Value storage.
+func (a *Array) GobDecode(data []byte) error {
+	var vals []Value
+	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&vals); err != nil {
+		return err
+	}
+	a.elems, a.ints, a.floats, a.bools, a.AKind = vals, nil, nil, nil, ArrAny
+	return nil
 }
 
 type Map struct {
@@ -363,6 +573,7 @@ type Iterator struct {
 	Current  int
 	Started  bool
 	Items    []Value
+	Arr      *Array // dense-array iteration without materializing Items
 	Index    int
 	Receiver *Instance
 	Length   int
@@ -804,11 +1015,11 @@ func Equal(left, right Value) bool {
 		}
 		if leftArray, ok := left.AsArray(); ok {
 			rightArray, ok := right.AsArray()
-			if !ok || len(leftArray.Elements) != len(rightArray.Elements) {
+			if !ok || leftArray.Len() != rightArray.Len() {
 				return false
 			}
-			for i := range leftArray.Elements {
-				if !Equal(leftArray.Elements[i], rightArray.Elements[i]) {
+			for i := 0; i < leftArray.Len(); i++ {
+				if !Equal(leftArray.At(i), rightArray.At(i)) {
 					return false
 				}
 			}
@@ -858,8 +1069,8 @@ func (v Value) String() string {
 		case *Tuple:
 			return fmt.Sprintf("<tuple %d>", len(obj.Elements))
 		case *Array:
-			parts := make([]string, len(obj.Elements))
-			for i, element := range obj.Elements {
+			vals := obj.Values(); parts := make([]string, len(vals))
+			for i, element := range vals {
 				parts[i] = element.String()
 			}
 			return "[" + join(parts, ", ") + "]"

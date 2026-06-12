@@ -84,7 +84,7 @@ func InstallCoreGlobals(registry *Registry, stdout io.Writer) {
 			return value.IntValue(int64(len([]rune(item.Str)))), nil
 		}
 		if array, ok := item.AsArray(); ok {
-			return value.IntValue(int64(len(array.Elements))), nil
+			return value.IntValue(int64(len(array.Values()))), nil
 		}
 		if tuple, ok := item.AsTuple(); ok {
 			return value.IntValue(int64(len(tuple.Elements))), nil
@@ -107,7 +107,7 @@ func InstallCoreGlobals(registry *Registry, stdout io.Writer) {
 		for i := range items {
 			items[i] = value.NilValue()
 		}
-		return value.ObjectValue(&value.Array{Elements: items}), nil
+		return value.ObjectValue(value.NewArray(items)), nil
 	})
 
 	registry.DefineTypedBuiltin("sqrt", []string{TypeNumber}, TypeFloat, false, func(args []value.Value) (value.Value, error) {
@@ -148,7 +148,7 @@ func InstallCoreGlobals(registry *Registry, stdout io.Writer) {
 		for i, key := range ordered {
 			items[i] = value.StringValue(key)
 		}
-		return value.ObjectValue(&value.Array{Elements: items}), nil
+		return value.ObjectValue(value.NewArray(items)), nil
 	})
 
 	registry.DefineGenericBuiltin("values", []string{"V"}, []string{"map<String, V>"}, "array<V>", false, func(args []value.Value) (value.Value, error) {
@@ -165,7 +165,7 @@ func InstallCoreGlobals(registry *Registry, stdout io.Writer) {
 		for i, key := range ordered {
 			items[i] = m.Entries[key]
 		}
-		return value.ObjectValue(&value.Array{Elements: items}), nil
+		return value.ObjectValue(value.NewArray(items)), nil
 	})
 
 	registry.DefineTypedBuiltin("hash", []string{TypeAny}, TypeString, false, func(args []value.Value) (value.Value, error) {

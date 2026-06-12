@@ -487,8 +487,8 @@ func uiValueToNative(candidate value.Value) any {
 			return entries
 		}
 		if arr, ok := candidate.AsArray(); ok {
-			items := make([]any, len(arr.Elements))
-			for i, item := range arr.Elements {
+			items := make([]any, len(arr.Values()))
+			for i, item := range arr.Values() {
 				items[i] = uiValueToNative(item)
 			}
 			return items

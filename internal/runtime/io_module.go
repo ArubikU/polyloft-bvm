@@ -98,7 +98,7 @@ func BuildIoModule() *RuntimeModule {
 		for i, name := range names {
 			items[i] = value.StringValue(name)
 		}
-		return value.ObjectValue(&value.Array{Elements: items}), nil
+		return value.ObjectValue(value.NewArray(items)), nil
 	})
 
 	builder.AddTypedFunction("is_dir", []string{TypeString}, TypeBool, false, func(args []value.Value) (value.Value, error) {

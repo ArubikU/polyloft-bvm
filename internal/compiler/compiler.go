@@ -1030,8 +1030,26 @@ func (c *Compiler) compileExpr(expr ast.Expr) error {
 			}
 			switch len(node.Initializer) {
 			case 0:
-				// new T[N]  →  allocate N nils
-				c.emit(bytecode.OpArrayAlloc, 0)
+				// new T[N]: for primitive element types emit a typed zero-fill so
+				// the array uses dense native storage (cache-line friendly); other
+				// element types allocate N nils as a []Value array.
+				switch node.Type.Name.Lexeme {
+				case "int":
+					idx := c.constant(value.IntValue(0))
+					c.emit(bytecode.OpConstant, 0)
+					c.emitUint16(idx, 0)
+					c.emit(bytecode.OpArrayFill, 0)
+				case "float":
+					idx := c.constant(value.FloatValue(0))
+					c.emit(bytecode.OpConstant, 0)
+					c.emitUint16(idx, 0)
+					c.emit(bytecode.OpArrayFill, 0)
+				case "bool":
+					c.emit(bytecode.OpFalse, 0)
+					c.emit(bytecode.OpArrayFill, 0)
+				default:
+					c.emit(bytecode.OpArrayAlloc, 0)
+				}
 			case 1:
 				// new T[N]{fill}  →  N copies of fill
 				if err := c.compileExpr(node.Initializer[0]); err != nil {
@@ -2721,7 +2739,7 @@ func (c *Compiler) initializeEnumClass(classValue *value.Class, stmt *ast.ClassS
 		classValue.StaticValues["values"] = value.ObjectValue(&value.Builtin{Name: classValue.Name + ".values", Arity: 0, Fn: func(args []value.Value) (value.Value, error) {
 			items := make([]value.Value, len(enumInstances))
 			copy(items, enumInstances)
-			return value.ObjectValue(&value.Array{Elements: items}), nil
+			return value.ObjectValue(value.NewArray(items)), nil
 		}})
 		classValue.StaticVisibility["values"] = string(ast.VisibilityPublic)
 	}
@@ -2729,7 +2747,7 @@ func (c *Compiler) initializeEnumClass(classValue *value.Class, stmt *ast.ClassS
 		classValue.StaticValues["names"] = value.ObjectValue(&value.Builtin{Name: classValue.Name + ".names", Arity: 0, Fn: func(args []value.Value) (value.Value, error) {
 			items := make([]value.Value, len(enumNames))
 			copy(items, enumNames)
-			return value.ObjectValue(&value.Array{Elements: items}), nil
+			return value.ObjectValue(value.NewArray(items)), nil
 		}})
 		classValue.StaticVisibility["names"] = string(ast.VisibilityPublic)
 	}
@@ -3030,7 +3048,7 @@ func (c *Compiler) evalConstExpr(expr ast.Expr) (value.Value, bool) {
 			}
 			elements[i] = val
 		}
-		return value.ObjectValue(&value.Array{Elements: elements}), true
+		return value.ObjectValue(value.NewArray(elements)), true
 	case *ast.MapExpr:
 		entries := make(map[string]value.Value, len(node.Entries))
 		for _, entry := range node.Entries {

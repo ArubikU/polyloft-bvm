@@ -106,7 +106,7 @@ func BuildCollectionsModule() *RuntimeModule {
 			return value.NilValue(), err
 		}
 		items := append([]value.Value(nil), handle.items[:handle.size]...)
-		return value.ObjectValue(&value.Array{Elements: items}), nil
+		return value.ObjectValue(value.NewArray(items)), nil
 	})
 
 	builder.AddTypedFunction("list_get", []string{TypeAny, TypeInt}, TypeAny, false, func(args []value.Value) (value.Value, error) {

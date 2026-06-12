@@ -60,8 +60,8 @@ func valueToNative(v value.Value) any {
 			return result
 		}
 		if arr, ok := v.AsArray(); ok {
-			result := make([]any, len(arr.Elements))
-			for i, el := range arr.Elements {
+			result := make([]any, len(arr.Values()))
+			for i, el := range arr.Values() {
 				result[i] = valueToNative(el)
 			}
 			return result
@@ -95,9 +95,9 @@ func nativeToValue(raw any) value.Value {
 	case string:
 		return value.StringValue(v)
 	case []any:
-		arr := &value.Array{Elements: make([]value.Value, len(v))}
+		arr := value.NewArray(make([]value.Value, len(v)))
 		for i, el := range v {
-			arr.Elements[i] = nativeToValue(el)
+			arr.Values()[i] = nativeToValue(el)
 		}
 		return value.ObjectValue(arr)
 	case map[string]any:

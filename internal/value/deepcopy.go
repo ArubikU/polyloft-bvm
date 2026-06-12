@@ -28,11 +28,29 @@ func deepCopyValue(v Value, visited map[any]Value) Value {
 		}
 		return copied
 	case *Array:
-		clone := &Array{Elements: make([]Value, len(obj.Elements))}
+		if obj.AKind != ArrAny {
+			// Dense primitive array: elements are scalar value types with no
+			// nested references, so a shallow copy of the backing preserves both
+			// correctness and density.
+			clone := &Array{AKind: obj.AKind}
+			switch obj.AKind {
+			case ArrInt:
+				clone.ints = append([]int64(nil), obj.ints...)
+			case ArrFloat:
+				clone.floats = append([]float64(nil), obj.floats...)
+			case ArrBool:
+				clone.bools = append([]bool(nil), obj.bools...)
+			}
+			copied := ObjectValue(clone)
+			visited[obj] = copied
+			return copied
+		}
+		vals := obj.Values()
+		clone := NewArray(make([]Value, len(vals)))
 		copied := ObjectValue(clone)
 		visited[obj] = copied
-		for i, element := range obj.Elements {
-			clone.Elements[i] = deepCopyValue(element, visited)
+		for i, element := range vals {
+			clone.elems[i] = deepCopyValue(element, visited)
 		}
 		return copied
 	case *Map:
@@ -118,6 +136,10 @@ func deepCopyValue(v Value, visited map[any]Value) Value {
 			for i, item := range obj.Items {
 				clone.Items[i] = deepCopyValue(item, visited)
 			}
+		}
+		if obj.Arr != nil {
+			arrCopy := deepCopyValue(ObjectValue(obj.Arr), visited)
+			clone.Arr, _ = arrCopy.Object.(*Array)
 		}
 		return copied
 	case *bytecode.Function, *Builtin, *Module, *Class:

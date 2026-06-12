@@ -605,10 +605,10 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			// array concatenation support
 			if la, ok := left.Object.(*value.Array); ok {
 				if ra, ok2 := right.Object.(*value.Array); ok2 {
-					elems := make([]value.Value, len(la.Elements)+len(ra.Elements))
-					copy(elems, la.Elements)
-					copy(elems[len(la.Elements):], ra.Elements)
-					vm.push(value.ObjectValue(&value.Array{Elements: elems}))
+					elems := make([]value.Value, la.Len()+ra.Len())
+					copy(elems, la.Values())
+					copy(elems[la.Len():], ra.Values())
+					vm.push(value.ObjectValue(value.NewArray(elems)))
 					continue
 				}
 			}
@@ -1282,7 +1282,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				continue
 			}
 			if array, ok := iterable.AsArray(); ok {
-				vm.localSet(frame, slot, value.ObjectValue(&value.Iterator{Items: array.Elements, Index: 0, Length: len(array.Elements)}))
+				vm.localSet(frame, slot, value.ObjectValue(&value.Iterator{Arr: array, Index: 0, Length: array.Len()}))
 				continue
 			}
 			if tuple, ok := iterable.AsTuple(); ok {
@@ -1320,6 +1320,17 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			iterator, ok := iterVal.AsIterator()
 			if !ok {
 				return value.NilValue(), fmt.Errorf("ITER_NEXT expects iterator")
+			}
+			if iterator.Arr != nil {
+				if iterator.Index >= iterator.Length {
+					frame.ip += int(offset)
+					continue
+				}
+				// Dense-array iteration: read straight from the typed backing,
+				// no []Value snapshot. At() reconstructs the Value in-register.
+				frame.locals[valueSlot] = iterator.Arr.At(iterator.Index)
+				iterator.Index++
+				continue
 			}
 			if iterator.Items != nil {
 				if iterator.Index >= iterator.Length {
@@ -1483,14 +1494,14 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			for i := count - 1; i >= 0; i-- {
 				elements[i] = vm.pop()
 			}
-			vm.push(value.ObjectValue(&value.Array{Elements: elements}))
+			vm.push(value.ObjectValue(value.NewArray(elements)))
 		case bytecode.OpArrayAlloc:
 			sizeVal := vm.pop()
 			n := int(sizeVal.Int)
 			if n < 0 {
 				return value.NilValue(), fmt.Errorf("array size must be non-negative, got %d", n)
 			}
-			vm.push(value.ObjectValue(&value.Array{Elements: make([]value.Value, n)}))
+			vm.push(value.ObjectValue(value.NewArray(make([]value.Value, n))))
 		case bytecode.OpArrayFill:
 			fill := vm.pop()
 			sizeVal := vm.pop()
@@ -1498,18 +1509,31 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if n < 0 {
 				return value.NilValue(), fmt.Errorf("array size must be non-negative, got %d", n)
 			}
-			elements := make([]value.Value, n)
-			for i := range elements {
-				elements[i] = fill
+			// Homogeneous primitive fills use dense native storage so the array
+			// stays cache-line friendly under contiguous traversal.
+			var arr *value.Array
+			switch {
+			case fill.Kind == value.Number && fill.NumberKind == value.NumberInt:
+				arr = value.NewIntArrayFill(n, fill.Int)
+			case fill.Kind == value.Number:
+				arr = value.NewFloatArrayFill(n, fill.Num)
+			case fill.Kind == value.Bool:
+				arr = value.NewBoolArray(n, fill.Bool)
+			default:
+				elements := make([]value.Value, n)
+				for i := range elements {
+					elements[i] = fill
+				}
+				arr = value.NewArray(elements)
 			}
-			vm.push(value.ObjectValue(&value.Array{Elements: elements}))
+			vm.push(value.ObjectValue(arr))
 		case bytecode.OpArrayPush:
 			element := vm.pop()
 			arr, ok := vm.peek(0).AsArray()
 			if !ok {
 				return value.NilValue(), fmt.Errorf("ARRAY_PUSH expects array on stack")
 			}
-			arr.Elements = append(arr.Elements, element)
+			arr.Append(element)
 		case bytecode.OpSetArrayLocals:
 			arrSlot := readB(code, frame)
 			idxSlot := readB(code, frame)
@@ -1528,10 +1552,10 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if idxVal.NumberKind != value.NumberInt {
 				idx = int(idxVal.Num)
 			}
-			if idx < 0 || idx >= len(arr.Elements) {
+			if idx < 0 || idx >= arr.Len() {
 				return value.NilValue(), fmt.Errorf("array index out of range")
 			}
-			arr.Elements[idx] = assigned
+			arr.SetAt(idx, assigned)
 		case bytecode.OpSetLocalArrayBool:
 			arrSlot := readB(code, frame)
 			idxSlot := readB(code, frame)
@@ -1541,10 +1565,10 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				return value.NilValue(), fmt.Errorf("SET_LOCAL_ARRAY_BOOL expects array")
 			}
 			idx := int(frame.locals[idxSlot].Int)
-			if idx < 0 || idx >= len(arr.Elements) {
+			if idx < 0 || idx >= arr.Len() {
 				return value.NilValue(), fmt.Errorf("array index out of range")
 			}
-			arr.Elements[idx] = value.BoolValue(boolByte != 0)
+			arr.SetAt(idx, value.BoolValue(boolByte != 0))
 		case bytecode.OpAddLocalLocal:
 			dstSlot := readB(code, frame)
 			srcSlot := readB(code, frame)
@@ -1558,10 +1582,10 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				return value.NilValue(), fmt.Errorf("GET_LOCAL_ARRAY_FIELD expects array")
 			}
 			idx := int(frame.locals[idxSlot].Int)
-			if idx < 0 || idx >= len(arr.Elements) {
+			if idx < 0 || idx >= arr.Len() {
 				return value.NilValue(), fmt.Errorf("array index out of range")
 			}
-			instance, ok := arr.Elements[idx].Object.(*value.Instance)
+			instance, ok := arr.At(idx).Object.(*value.Instance)
 			if !ok {
 				return value.NilValue(), fmt.Errorf("GET_LOCAL_ARRAY_FIELD expects instance element")
 			}
@@ -1622,10 +1646,10 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				continue
 			}
 			if array, ok := source.AsArray(); ok {
-				if len(array.Elements) != count {
-					return value.NilValue(), fmt.Errorf("cannot unpack %d values from array of size %d", count, len(array.Elements))
+				if array.Len() != count {
+					return value.NilValue(), fmt.Errorf("cannot unpack %d values from array of size %d", count, array.Len())
 				}
-				for _, element := range array.Elements {
+				for _, element := range array.Values() {
 					vm.push(element)
 				}
 				continue
@@ -1656,10 +1680,10 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				} else {
 					idx = int(index.Num)
 				}
-				if idx < 0 || idx >= len(array.Elements) {
+				if idx < 0 || idx >= array.Len() {
 					return value.NilValue(), fmt.Errorf("array index out of range")
 				}
-				vm.push(array.Elements[idx])
+				vm.push(array.At(idx))
 				continue
 			}
 			if tuple, ok := object.AsTuple(); ok {
@@ -1712,10 +1736,18 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			} else {
 				idx = int(index.Num)
 			}
-			if idx < 0 || idx >= len(array.Elements) {
-				return value.NilValue(), fmt.Errorf("array index out of range")
+			if array.AKind == value.ArrAny {
+				raw := array.Raw()
+				if idx < 0 || idx >= len(raw) {
+					return value.NilValue(), fmt.Errorf("array index out of range")
+				}
+				vm.push(raw[idx])
+			} else {
+				if idx < 0 || idx >= array.Len() {
+					return value.NilValue(), fmt.Errorf("array index out of range")
+				}
+				vm.push(array.At(idx))
 			}
-			vm.push(array.Elements[idx])
 		case bytecode.OpGetIndexMap:
 			index := vm.pop()
 			object := vm.pop()
@@ -1743,7 +1775,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				continue
 			}
 			if array, ok := container.AsArray(); ok {
-				contains, err := containsValue(array.Elements, needle, vm.valuesEqual)
+				contains, err := containsValue(array.Values(), needle, vm.valuesEqual)
 				if err != nil {
 					return value.NilValue(), err
 				}
@@ -1776,7 +1808,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if !ok {
 				return value.NilValue(), fmt.Errorf("CONTAINS_ARRAY expects array")
 			}
-			contains, err := containsValue(array.Elements, needle, vm.valuesEqual)
+			contains, err := containsValue(array.Values(), needle, vm.valuesEqual)
 			if err != nil {
 				return value.NilValue(), err
 			}
@@ -1823,12 +1855,12 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				continue
 			}
 			if array, ok := object.AsArray(); ok {
-				sliced, err := sliceValues(array.Elements, startIdx, endIdx)
+				sliced, err := sliceValues(array.Values(), startIdx, endIdx)
 				if err != nil {
 					return value.NilValue(), err
 				}
 				copyElements := append([]value.Value(nil), sliced...)
-				vm.push(value.ObjectValue(&value.Array{Elements: copyElements}))
+				vm.push(value.ObjectValue(value.NewArray(copyElements)))
 				continue
 			}
 			if tuple, ok := object.AsTuple(); ok {
@@ -1865,10 +1897,10 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				} else {
 					idx = int(index.Num)
 				}
-				if idx < 0 || idx >= len(array.Elements) {
+				if idx < 0 || idx >= array.Len() {
 					return value.NilValue(), fmt.Errorf("array index out of range")
 				}
-				array.Elements[idx] = assigned
+				array.SetAt(idx, assigned)
 				continue
 			}
 			if m, ok := object.AsMap(); ok {
@@ -1904,10 +1936,18 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			} else {
 				idx = int(index.Num)
 			}
-			if idx < 0 || idx >= len(array.Elements) {
-				return value.NilValue(), fmt.Errorf("array index out of range")
+			if array.AKind == value.ArrAny {
+				raw := array.Raw()
+				if idx < 0 || idx >= len(raw) {
+					return value.NilValue(), fmt.Errorf("array index out of range")
+				}
+				raw[idx] = assigned
+			} else {
+				if idx < 0 || idx >= array.Len() {
+					return value.NilValue(), fmt.Errorf("array index out of range")
+				}
+				array.SetAt(idx, assigned)
 			}
-			array.Elements[idx] = assigned
 		case bytecode.OpSetIndexMap:
 			assigned := vm.pop()
 			index := vm.pop()
@@ -2335,7 +2375,7 @@ func (vm *VM) writeHashValue(hasher io.Writer, v value.Value, seen map[string]bo
 		seen[key] = true
 		defer delete(seen, key)
 		_, _ = io.WriteString(hasher, "array[")
-		for _, element := range obj.Elements {
+		for _, element := range obj.Values() {
 			if err := vm.writeHashValue(hasher, element, seen); err != nil {
 				return err
 			}
@@ -2447,7 +2487,7 @@ func (vm *VM) matchesType(candidate value.Value, typeName string) bool {
 			if len(args) != 1 {
 				return true
 			}
-			for _, element := range array.Elements {
+			for _, element := range array.Values() {
 				if !vm.matchesType(element, args[0]) {
 					return false
 				}
@@ -3585,10 +3625,10 @@ func (vm *VM) readArrayFieldCmpArgs(frame *frame) (fieldNum float64, cmpSlot byt
 		return 0, 0, 0, fmt.Errorf("JUMP_IF_ARRAY_FIELD: slot %d is not an array", arrSlot)
 	}
 	idx := int(frame.locals[idxSlot].Int)
-	if idx < 0 || idx >= len(arr.Elements) {
-		return 0, 0, 0, fmt.Errorf("array index %d out of range [0, %d)", idx, len(arr.Elements))
+	if idx < 0 || idx >= arr.Len() {
+		return 0, 0, 0, fmt.Errorf("array index %d out of range [0, %d)", idx, arr.Len())
 	}
-	instance, ok := arr.Elements[idx].AsInstance()
+	instance, ok := arr.At(idx).AsInstance()
 	if !ok {
 		return 0, 0, 0, fmt.Errorf("JUMP_IF_ARRAY_FIELD: element is not an instance")
 	}
