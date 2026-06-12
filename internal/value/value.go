@@ -369,12 +369,17 @@ type Iterator struct {
 	GetFn    *bytecode.Function
 }
 
+// Field order is chosen so the three single-byte tags (Kind, NumberKind, Bool)
+// pack into one 8-byte word instead of being scattered between the 8-byte
+// numeric fields. This drops the struct from 64 to 56 bytes (-12.5%) with no
+// change to field access, shrinking the per-slot copy cost on every
+// push/pop/local move. All fields stay exported so gob (.pfbc) serializes them.
 type Value struct {
 	Kind       Kind
-	Num        float64
-	Int        int64
 	NumberKind NumberKind
 	Bool       bool
+	Num        float64
+	Int        int64
 	Str        string
 	Object     any
 }
