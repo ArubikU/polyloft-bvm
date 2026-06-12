@@ -64,7 +64,8 @@ poly bench_poly
 closure bench_closure
 hash bench_hash
 alloc alloc_bench
-macro bench_macro"
+macro bench_macro
+concurrent bench_concurrent"
 
 # elapsed_ms extractor
 elapsed() { "$@" 2>/dev/null | grep -oE 'elapsed_ms=[0-9.]+' | tail -1 | cut -d= -f2; }

@@ -1,0 +1,32 @@
+// Thread-parallel CPU workload. Four workers each reduce a disjoint slice of an
+// integer sequence on its own isolated VM (a Go goroutine), so what is measured
+// is the runtime's ability to use multiple cores. CPython's counterpart uses the
+// same four-thread structure; its threads are GIL-serialized on this CPU-bound
+// work, so the comparison is an honest architectural one. All arithmetic is
+// integer, so the per-worker output is bit-identical to CPython.
+import polyloft.concurrent { async }
+
+def work(lo: int, hi: int) -> int:
+    let s = 0
+    let i = lo
+    loop i < hi:
+        s += i % 997
+        i += 1
+    end
+    return s
+end
+
+let started = Sys.time()
+let f1 = async(() => work(0, 4000000))
+let f2 = async(() => work(4000000, 8000000))
+let f3 = async(() => work(8000000, 12000000))
+let f4 = async(() => work(12000000, 16000000))
+println("p1=" + f1.get())
+println("p2=" + f2.get())
+println("p3=" + f3.get())
+println("p4=" + f4.get())
+let ended = Sys.time()
+
+println("polyloft-bvm concurrent benchmark")
+println("workers=4")
+println("elapsed_ms=" + (ended - started))
