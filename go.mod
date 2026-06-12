@@ -2,7 +2,7 @@ module github.com/ArubikU/polyloft-bvm
 
 go 1.25.0
 
-require github.com/ArubikU/giocss v0.0.0
+require github.com/ArubikU/giocss v0.1.1-0.20260408194954-fb4439bae314
 
 require (
 	gioui.org v0.9.0 // indirect
@@ -13,5 +13,3 @@ require (
 	golang.org/x/sys v0.33.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
 )
-
-replace github.com/ArubikU/giocss => ../giocss
