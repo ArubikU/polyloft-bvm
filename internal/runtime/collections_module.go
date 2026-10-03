@@ -114,7 +114,7 @@ func BuildCollectionsModule() *RuntimeModule {
 		if err != nil {
 			return value.NilValue(), err
 		}
-		idx := int(args[1].Num)
+		idx := int(args[1].F())
 		if idx < 0 || idx >= handle.size {
 			return value.NilValue(), fmt.Errorf("array list index out of range")
 		}
@@ -155,7 +155,7 @@ func BuildCollectionsModule() *RuntimeModule {
 		if err != nil {
 			return value.NilValue(), err
 		}
-		idx := int(args[1].Num)
+		idx := int(args[1].F())
 		if idx < 0 || idx >= handle.size {
 			return value.NilValue(), fmt.Errorf("array list index out of range")
 		}

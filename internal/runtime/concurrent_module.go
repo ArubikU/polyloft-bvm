@@ -243,7 +243,7 @@ func BuildConcurrentModule() *RuntimeModule {
 		if !ok {
 			return value.NilValue(), fmt.Errorf("future_get_timeout expects future handle")
 		}
-		return future.await(time.Duration(int(args[1].Num))*time.Millisecond, true)
+		return future.await(time.Duration(int(args[1].F()))*time.Millisecond, true)
 	})
 	builder.AddTypedFunction("future_is_done", []string{TypeAny}, TypeBool, false, func(args []value.Value) (value.Value, error) {
 		future, ok := args[0].Object.(*futureHandle)
@@ -339,7 +339,7 @@ func BuildConcurrentModule() *RuntimeModule {
 	})
 
 	builder.AddTypedFunction("channel_new", []string{TypeInt}, TypeAny, false, func(args []value.Value) (value.Value, error) {
-		return value.ObjectValue(newChannelHandle(int(args[0].Num))), nil
+		return value.ObjectValue(newChannelHandle(int(args[0].F()))), nil
 	})
 	builder.AddTypedFunction("channel_send", []string{TypeAny, TypeAny}, TypeVoid, false, func(args []value.Value) (value.Value, error) {
 		handle, ok := args[0].Object.(*channelHandle)

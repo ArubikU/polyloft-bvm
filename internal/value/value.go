@@ -2,6 +2,7 @@ package value
 
 import (
 	"bytes"
+	"math"
 	"encoding/gob"
 	"fmt"
 	"strconv"
@@ -185,12 +186,12 @@ func (a *Array) SetAt(i int, v Value) {
 	switch a.AKind {
 	case ArrInt:
 		if v.Kind == Number && v.NumberKind == NumberInt {
-			a.ints[i] = v.Int
+			a.ints[i] = v.I()
 			return
 		}
 	case ArrFloat:
 		if v.Kind == Number {
-			a.floats[i] = v.Num
+			a.floats[i] = v.F()
 			return
 		}
 	case ArrBool:
@@ -211,12 +212,12 @@ func (a *Array) Append(v Value) {
 	switch a.AKind {
 	case ArrInt:
 		if v.Kind == Number && v.NumberKind == NumberInt {
-			a.ints = append(a.ints, v.Int)
+			a.ints = append(a.ints, v.I())
 			return
 		}
 	case ArrFloat:
 		if v.Kind == Number {
-			a.floats = append(a.floats, v.Num)
+			a.floats = append(a.floats, v.F())
 			return
 		}
 	case ArrBool:
@@ -489,9 +490,9 @@ func (p *FastMethodPlan) EvalOps(inst *Instance) Value {
 			v := &stack[sp-1]
 			if v.Kind == Number {
 				if v.NumberKind == NumberInt {
-					stack[sp-1] = IntValue(-v.Int)
+					stack[sp-1] = IntValue(-v.I())
 				} else {
-					stack[sp-1] = FloatValue(-v.Num)
+					stack[sp-1] = FloatValue(-v.F())
 				}
 			}
 		case FastMethodExprAdd, FastMethodExprSub, FastMethodExprMul, FastMethodExprDiv:
@@ -502,26 +503,26 @@ func (p *FastMethodPlan) EvalOps(inst *Instance) Value {
 				if l.NumberKind == NumberInt && r.NumberKind == NumberInt {
 					switch op.Kind {
 					case FastMethodExprAdd:
-						stack[sp-1] = IntValue(l.Int + r.Int)
+						stack[sp-1] = IntValue(l.I() + r.I())
 					case FastMethodExprSub:
-						stack[sp-1] = IntValue(l.Int - r.Int)
+						stack[sp-1] = IntValue(l.I() - r.I())
 					case FastMethodExprMul:
-						stack[sp-1] = IntValue(l.Int * r.Int)
+						stack[sp-1] = IntValue(l.I() * r.I())
 					default:
-						if r.Int != 0 {
-							stack[sp-1] = IntValue(l.Int / r.Int)
+						if r.I() != 0 {
+							stack[sp-1] = IntValue(l.I() / r.I())
 						}
 					}
 				} else {
 					switch op.Kind {
 					case FastMethodExprAdd:
-						stack[sp-1] = FloatValue(l.Num + r.Num)
+						stack[sp-1] = FloatValue(l.F() + r.F())
 					case FastMethodExprSub:
-						stack[sp-1] = FloatValue(l.Num - r.Num)
+						stack[sp-1] = FloatValue(l.F() - r.F())
 					case FastMethodExprMul:
-						stack[sp-1] = FloatValue(l.Num * r.Num)
+						stack[sp-1] = FloatValue(l.F() * r.F())
 					default:
-						stack[sp-1] = FloatValue(l.Num / r.Num)
+						stack[sp-1] = FloatValue(l.F() / r.F())
 					}
 				}
 			}
@@ -594,8 +595,9 @@ type Value struct {
 	Kind       Kind
 	NumberKind NumberKind
 	Bool       bool
-	Num        float64
-	Int        int64
+	// W is the single numeric payload: the exact integer for NumberInt values, the IEEE-754 bits
+	// of the float for NumberFloat values. Use I() / F() to read it as an integer / a float.
+	W int64
 	Str        string
 	Object     any
 }
@@ -609,11 +611,39 @@ func NumberValue(v float64) Value {
 }
 
 func IntValue(v int64) Value {
-	return Value{Kind: Number, Num: float64(v), Int: v, NumberKind: NumberInt}
+	return Value{Kind: Number, W: v, NumberKind: NumberInt}
+}
+
+// F returns the numeric payload as a float64 (integers are converted).
+func (v *Value) F() float64 {
+	if v.NumberKind == NumberInt {
+		return float64(v.W)
+	}
+	return math.Float64frombits(uint64(v.W))
+}
+
+// I returns the numeric payload as an int64 (floats are truncated toward zero).
+func (v *Value) I() int64 {
+	if v.NumberKind == NumberInt {
+		return v.W
+	}
+	return int64(math.Float64frombits(uint64(v.W)))
+}
+
+// SetFloatBits stores f as the payload of a float Value.
+func (v *Value) SetF(f float64) {
+	v.NumberKind = NumberFloat
+	v.W = int64(math.Float64bits(f))
+}
+
+// SetI stores i as the payload of an int Value.
+func (v *Value) SetI(i int64) {
+	v.NumberKind = NumberInt
+	v.W = i
 }
 
 func FloatValue(v float64) Value {
-	return Value{Kind: Number, Num: v, Int: int64(v), NumberKind: NumberFloat}
+	return Value{Kind: Number, W: int64(math.Float64bits(v)), NumberKind: NumberFloat}
 }
 
 func BoolValue(v bool) Value {
@@ -989,9 +1019,9 @@ func Equal(left, right Value) bool {
 		return true
 	case Number:
 		if left.NumberKind == NumberInt && right.NumberKind == NumberInt {
-			return left.Int == right.Int
+			return left.I() == right.I()
 		}
-		return left.Num == right.Num
+		return left.F() == right.F()
 	case Bool:
 		return left.Bool == right.Bool
 	case Char:
@@ -1033,16 +1063,16 @@ func (v Value) String() string {
 		return "nil"
 	case Number:
 		if v.NumberKind == NumberInt {
-			return strconv.FormatInt(v.Int, 10)
+			return strconv.FormatInt(v.I(), 10)
 		}
 		// For floats, if it's effectively an integer and fits in reasonable range, show as int
-		if v.Num == float64(int64(v.Num)) {
+		if v.F() == float64(int64(v.F())) {
 			// Ensure it differentiates correctly between integer addition and direct python matching.
-			if v.Num > -1e15 && v.Num < 1e15 {
-				return strconv.FormatInt(int64(v.Num), 10)
+			if v.F() > -1e15 && v.F() < 1e15 {
+				return strconv.FormatInt(int64(v.F()), 10)
 			}
 		}
-		return strconv.FormatFloat(v.Num, 'g', -1, 64)
+		return strconv.FormatFloat(v.F(), 'g', -1, 64)
 	case Bool:
 		if v.Bool {
 			return "true"

@@ -22,56 +22,56 @@ func BuildMathModule() *RuntimeModule {
 	builder.AddTypedValue("E", value.FloatValue(math.E), TypeFloat)
 
 	builder.AddTypedFunction("abs", []string{TypeNumber}, TypeFloat, false, func(args []value.Value) (value.Value, error) {
-		return value.FloatValue(math.Abs(args[0].Num)), nil
+		return value.FloatValue(math.Abs(args[0].F())), nil
 	})
 
 	builder.AddTypedFunction("floor", []string{TypeNumber}, TypeFloat, false, func(args []value.Value) (value.Value, error) {
-		return value.FloatValue(math.Floor(args[0].Num)), nil
+		return value.FloatValue(math.Floor(args[0].F())), nil
 	})
 
 	builder.AddTypedFunction("ceil", []string{TypeNumber}, TypeFloat, false, func(args []value.Value) (value.Value, error) {
-		return value.FloatValue(math.Ceil(args[0].Num)), nil
+		return value.FloatValue(math.Ceil(args[0].F())), nil
 	})
 
 	builder.AddTypedFunction("round", []string{TypeNumber}, TypeFloat, false, func(args []value.Value) (value.Value, error) {
-		return value.FloatValue(math.Round(args[0].Num)), nil
+		return value.FloatValue(math.Round(args[0].F())), nil
 	})
 
 	builder.AddTypedFunction("sqrt", []string{TypeNumber}, TypeFloat, false, func(args []value.Value) (value.Value, error) {
-		if args[0].Num < 0 {
+		if args[0].F() < 0 {
 			return value.NilValue(), fmt.Errorf("sqrt expects a non-negative number")
 		}
-		return value.FloatValue(math.Sqrt(args[0].Num)), nil
+		return value.FloatValue(math.Sqrt(args[0].F())), nil
 	})
 
 	builder.AddTypedFunction("pow", []string{TypeNumber, TypeNumber}, TypeFloat, false, func(args []value.Value) (value.Value, error) {
-		return value.FloatValue(math.Pow(args[0].Num, args[1].Num)), nil
+		return value.FloatValue(math.Pow(args[0].F(), args[1].F())), nil
 	})
 
 	builder.AddTypedFunction("sin", []string{TypeNumber}, TypeFloat, false, func(args []value.Value) (value.Value, error) {
-		return value.FloatValue(math.Sin(args[0].Num)), nil
+		return value.FloatValue(math.Sin(args[0].F())), nil
 	})
 
 	builder.AddTypedFunction("cos", []string{TypeNumber}, TypeFloat, false, func(args []value.Value) (value.Value, error) {
-		return value.FloatValue(math.Cos(args[0].Num)), nil
+		return value.FloatValue(math.Cos(args[0].F())), nil
 	})
 
 	builder.AddTypedFunction("tan", []string{TypeNumber}, TypeFloat, false, func(args []value.Value) (value.Value, error) {
-		return value.FloatValue(math.Tan(args[0].Num)), nil
+		return value.FloatValue(math.Tan(args[0].F())), nil
 	})
 
 	builder.AddTypedFunction("min", []string{TypeNumber, TypeNumber}, TypeFloat, false, func(args []value.Value) (value.Value, error) {
-		return value.FloatValue(math.Min(args[0].Num, args[1].Num)), nil
+		return value.FloatValue(math.Min(args[0].F(), args[1].F())), nil
 	})
 
 	builder.AddTypedFunction("max", []string{TypeNumber, TypeNumber}, TypeFloat, false, func(args []value.Value) (value.Value, error) {
-		return value.FloatValue(math.Max(args[0].Num, args[1].Num)), nil
+		return value.FloatValue(math.Max(args[0].F(), args[1].F())), nil
 	})
 
 	builder.AddTypedFunction("clamp", []string{TypeNumber, TypeNumber, TypeNumber}, TypeFloat, false, func(args []value.Value) (value.Value, error) {
-		valueNum := args[0].Num
-		minNum := args[1].Num
-		maxNum := args[2].Num
+		valueNum := args[0].F()
+		minNum := args[1].F()
+		maxNum := args[2].F()
 		if minNum > maxNum {
 			minNum, maxNum = maxNum, minNum
 		}

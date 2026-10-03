@@ -178,7 +178,7 @@ func BuildIoModule() *RuntimeModule {
 		if err != nil {
 			return value.NilValue(), err
 		}
-		size := int(args[1].Num)
+		size := int(args[1].F())
 		if size <= 0 {
 			return value.StringValue(""), nil
 		}
@@ -253,7 +253,7 @@ func BuildIoModule() *RuntimeModule {
 		if err != nil {
 			return value.NilValue(), err
 		}
-		size := int(args[1].Num)
+		size := int(args[1].F())
 		if size <= 0 || buffer.pos >= len(buffer.data) {
 			return value.StringValue(""), nil
 		}

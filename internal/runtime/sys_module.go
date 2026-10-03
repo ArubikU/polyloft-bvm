@@ -32,7 +32,7 @@ func BuildSysModule() *RuntimeModule {
 			if args[0].Kind != value.Number {
 				return value.NilValue(), fmt.Errorf("Sys.sleep expects number of milliseconds")
 			}
-			time.Sleep(time.Duration(args[0].Num) * time.Millisecond)
+			time.Sleep(time.Duration(args[0].F()) * time.Millisecond)
 			return value.NilValue(), nil
 		}).
 		Build()

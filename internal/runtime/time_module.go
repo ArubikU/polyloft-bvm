@@ -88,9 +88,9 @@ func timeArgsMillis(v value.Value) (int64, error) {
 		return 0, fmt.Errorf("millis must be numeric")
 	}
 	if v.NumberKind == value.NumberInt {
-		return v.Int, nil
+		return v.I(), nil
 	}
-	return int64(v.Num), nil
+	return int64(v.F()), nil
 }
 
 func timePartsMap(t time.Time) value.Value {

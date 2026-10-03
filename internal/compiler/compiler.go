@@ -1137,9 +1137,9 @@ func (c *Compiler) compileExpr(expr ast.Expr) error {
 				// can handle it correctly. Do NOT store value.Value directly.
 				var raw any
 				if folded.NumberKind == value.NumberInt {
-					raw = folded.Int
+					raw = folded.I()
 				} else {
-					raw = folded.Num
+					raw = folded.F()
 				}
 				idx := c.state.chunk.AddConstant(raw)
 				c.emit(bytecode.OpConstant, node.Operator.Line)
@@ -1776,7 +1776,7 @@ func (c *Compiler) emitFastAddConstLocalAssign(targetSlot byte, node *ast.Assign
 	if !ok || constantValue.Kind != value.Number || constantValue.NumberKind != value.NumberInt {
 		return false
 	}
-	intVal := constantValue.Int
+	intVal := constantValue.I()
 	if negate {
 		intVal = -intVal
 	}
@@ -1939,7 +1939,7 @@ func (c *Compiler) matchLocalLessEqualIntConstCondition(expr ast.Expr) (byte, in
 	if !ok || constantValue.Kind != value.Number || constantValue.NumberKind != value.NumberInt {
 		return 0, 0, false
 	}
-	return slot, int64(constantValue.Num), true
+	return slot, int64(constantValue.F()), true
 }
 
 func (c *Compiler) matchLocalDivisibleByIntConstCondition(expr ast.Expr) (byte, int64, bool) {
@@ -1949,11 +1949,11 @@ func (c *Compiler) matchLocalDivisibleByIntConstCondition(expr ast.Expr) (byte, 
 	}
 	modExpr := unwrapGrouping(binaryExpr.Left)
 	zeroExpr := unwrapGrouping(binaryExpr.Right)
-	if zeroValue, ok := c.evalConstExpr(zeroExpr); !ok || zeroValue.Kind != value.Number || zeroValue.Num != 0 {
+	if zeroValue, ok := c.evalConstExpr(zeroExpr); !ok || zeroValue.Kind != value.Number || zeroValue.F() != 0 {
 		modExpr = unwrapGrouping(binaryExpr.Right)
 		zeroExpr = unwrapGrouping(binaryExpr.Left)
 		zeroValue, ok := c.evalConstExpr(zeroExpr)
-		if !ok || zeroValue.Kind != value.Number || zeroValue.Num != 0 {
+		if !ok || zeroValue.Kind != value.Number || zeroValue.F() != 0 {
 			return 0, 0, false
 		}
 	}
@@ -1973,7 +1973,7 @@ func (c *Compiler) matchLocalDivisibleByIntConstCondition(expr ast.Expr) (byte, 
 	if !ok || constantValue.Kind != value.Number || constantValue.NumberKind != value.NumberInt {
 		return 0, 0, false
 	}
-	return slot, int64(constantValue.Num), true
+	return slot, int64(constantValue.F()), true
 }
 
 // matchContainsStringConstCondition detects `needle_const in haystack_local`.
@@ -2032,7 +2032,7 @@ func (c *Compiler) matchConstCallableLocalSubInt(constantValue value.Value, args
 	if !ok || constantArg.Kind != value.Number || constantArg.NumberKind != value.NumberInt {
 		return nil, 0, 0, false
 	}
-	return callableConst, slot, int64(constantArg.Num), true
+	return callableConst, slot, int64(constantArg.F()), true
 }
 
 func (c *Compiler) matchSelfCallableLocalSubInt(name string, args []ast.Expr) (byte, int64, bool) {
@@ -2058,7 +2058,7 @@ func (c *Compiler) matchSelfCallableLocalSubInt(name string, args []ast.Expr) (b
 	if !ok || constantArg.Kind != value.Number || constantArg.NumberKind != value.NumberInt {
 		return 0, 0, false
 	}
-	return slot, int64(constantArg.Num), true
+	return slot, int64(constantArg.F()), true
 }
 
 func (c *Compiler) matchLocalMulThisField(expr ast.Expr) (byte, byte, bool) {
@@ -2845,9 +2845,9 @@ func (c *Compiler) evalEnumInitExpr(expr ast.Expr, bindings map[string]value.Val
 				return value.NilValue(), false
 			}
 			if right.NumberKind == value.NumberInt {
-				return value.IntValue(-int64(right.Num)), true
+				return value.IntValue(-int64(right.F())), true
 			}
-			return value.FloatValue(-right.Num), true
+			return value.FloatValue(-right.F()), true
 		case token.Bang:
 			return value.BoolValue(!right.IsTruthy()), true
 		default:
@@ -2884,7 +2884,7 @@ func (c *Compiler) evalEnumInitExpr(expr ast.Expr, bindings map[string]value.Val
 			}
 		case token.Slash:
 			if left.Kind == value.Number && right.Kind == value.Number {
-				return value.FloatValue(left.Num / right.Num), true
+				return value.FloatValue(left.F() / right.F()), true
 			}
 		}
 	}
@@ -2952,9 +2952,9 @@ func (c *Compiler) evalConstExpr(expr ast.Expr) (value.Value, bool) {
 				return value.NilValue(), false
 			}
 			if right.NumberKind == value.NumberInt {
-				return value.IntValue(-int64(right.Num)), true
+				return value.IntValue(-int64(right.F())), true
 			}
-			return value.FloatValue(-right.Num), true
+			return value.FloatValue(-right.F()), true
 		case token.Bang:
 			return value.BoolValue(!right.IsTruthy()), true
 		default:
@@ -2991,7 +2991,7 @@ func (c *Compiler) evalConstExpr(expr ast.Expr) (value.Value, bool) {
 			}
 		case token.Slash:
 			if left.Kind == value.Number && right.Kind == value.Number {
-				return value.FloatValue(left.Num / right.Num), true
+				return value.FloatValue(left.F() / right.F()), true
 			}
 		case token.Percent:
 			if left.Kind == value.Number && right.Kind == value.Number {
@@ -3016,28 +3016,28 @@ func (c *Compiler) evalConstExpr(expr ast.Expr) (value.Value, bool) {
 				return value.BoolValue(compare > 0), true
 			}
 			if left.Kind == value.Number && right.Kind == value.Number {
-				return value.BoolValue(left.Num > right.Num), true
+				return value.BoolValue(left.F() > right.F()), true
 			}
 		case token.GreaterEqual:
 			if compare, ok := compareTextConstants(left, right); ok {
 				return value.BoolValue(compare >= 0), true
 			}
 			if left.Kind == value.Number && right.Kind == value.Number {
-				return value.BoolValue(left.Num >= right.Num), true
+				return value.BoolValue(left.F() >= right.F()), true
 			}
 		case token.Less:
 			if compare, ok := compareTextConstants(left, right); ok {
 				return value.BoolValue(compare < 0), true
 			}
 			if left.Kind == value.Number && right.Kind == value.Number {
-				return value.BoolValue(left.Num < right.Num), true
+				return value.BoolValue(left.F() < right.F()), true
 			}
 		case token.LessEqual:
 			if compare, ok := compareTextConstants(left, right); ok {
 				return value.BoolValue(compare <= 0), true
 			}
 			if left.Kind == value.Number && right.Kind == value.Number {
-				return value.BoolValue(left.Num <= right.Num), true
+				return value.BoolValue(left.F() <= right.F()), true
 			}
 		}
 	case *ast.ArrayExpr:
@@ -3246,9 +3246,9 @@ func (c *Compiler) emitInlineConst(v value.Value, line int) {
 			c.emit(bytecode.OpFalse, line)
 		}
 	case value.Number:
-		constant := c.constant(v.Num)
+		constant := c.constant(v.F())
 		if v.NumberKind == value.NumberInt {
-			constant = c.constant(int64(v.Num))
+			constant = c.constant(int64(v.F()))
 		}
 		c.emit(bytecode.OpConstant, line)
 		c.emitUint16(constant, line)
@@ -3522,32 +3522,32 @@ func foldNumericBinary(operator token.Type, left value.Value, right value.Value)
 	switch operator {
 	case token.Plus:
 		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-			return value.IntValue(int64(left.Num + right.Num))
+			return value.IntValue(int64(left.F() + right.F()))
 		}
-		return value.FloatValue(left.Num + right.Num)
+		return value.FloatValue(left.F() + right.F())
 	case token.Minus:
 		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-			return value.IntValue(int64(left.Num - right.Num))
+			return value.IntValue(int64(left.F() - right.F()))
 		}
-		return value.FloatValue(left.Num - right.Num)
+		return value.FloatValue(left.F() - right.F())
 	case token.Star:
 		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-			return value.IntValue(int64(left.Num * right.Num))
+			return value.IntValue(int64(left.F() * right.F()))
 		}
-		return value.FloatValue(left.Num * right.Num)
+		return value.FloatValue(left.F() * right.F())
 	case token.StarStar, token.Caret:
-		result := math.Pow(left.Num, right.Num)
-		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt && right.Num >= 0 {
+		result := math.Pow(left.F(), right.F())
+		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt && right.F() >= 0 {
 			return value.IntValue(int64(result))
 		}
 		return value.FloatValue(result)
 	case token.Percent:
 		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-			return value.IntValue(int64(math.Mod(left.Num, right.Num)))
+			return value.IntValue(int64(math.Mod(left.F(), right.F())))
 		}
-		return value.FloatValue(math.Mod(left.Num, right.Num))
+		return value.FloatValue(math.Mod(left.F(), right.F()))
 	default:
-		return value.FloatValue(left.Num)
+		return value.FloatValue(left.F())
 	}
 }
 

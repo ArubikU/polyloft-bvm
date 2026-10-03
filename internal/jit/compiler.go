@@ -629,9 +629,9 @@ func constantCacheKey(v value.Value) string {
 		return "nil"
 	case value.Number:
 		if v.NumberKind == value.NumberInt {
-			return fmt.Sprintf("num:%d:%d", v.NumberKind, v.Int)
+			return fmt.Sprintf("num:%d:%d", v.NumberKind, v.I())
 		}
-		return fmt.Sprintf("num:%d:%g", v.NumberKind, v.Num)
+		return fmt.Sprintf("num:%d:%g", v.NumberKind, v.F())
 	case value.Bool:
 		return fmt.Sprintf("bool:%t", v.Bool)
 	case value.String, value.Char:
@@ -837,9 +837,9 @@ func executeProgram(program *Program, receiver *value.Instance, args []value.Val
 				return value.NilValue(), fmt.Errorf("jit cast int expects number in %s", program.Name)
 			}
 			if operand.NumberKind == value.NumberInt {
-				stack[len(stack)-1] = value.IntValue(operand.Int)
+				stack[len(stack)-1] = value.IntValue(operand.I())
 			} else {
-				stack[len(stack)-1] = value.IntValue(int64(operand.Num))
+				stack[len(stack)-1] = value.IntValue(int64(operand.F()))
 			}
 			ip++
 		case ops.castFloat:
@@ -850,7 +850,7 @@ func executeProgram(program *Program, receiver *value.Instance, args []value.Val
 			if operand.Kind != value.Number {
 				return value.NilValue(), fmt.Errorf("jit cast float expects number in %s", program.Name)
 			}
-			stack[len(stack)-1] = value.FloatValue(operand.Num)
+			stack[len(stack)-1] = value.FloatValue(operand.F())
 			ip++
 		case ops.addValue:
 			if len(stack) < 2 {
@@ -986,9 +986,9 @@ func executeProgram(program *Program, receiver *value.Instance, args []value.Val
 				return value.NilValue(), fmt.Errorf("jit negate expects number in %s", program.Name)
 			}
 			if operand.NumberKind == value.NumberInt {
-				stack = append(stack, value.IntValue(-operand.Int))
+				stack = append(stack, value.IntValue(-operand.I()))
 			} else {
-				stack = append(stack, value.FloatValue(-operand.Num))
+				stack = append(stack, value.FloatValue(-operand.F()))
 			}
 			ip++
 		case ops.addNumber, ops.subNumber, ops.mulNumber, ops.divNumber, ops.modNumber:
@@ -1043,14 +1043,14 @@ func executeNumericCompare(opcode byte, ops opcodeSet, left value.Value, right v
 	switch opcode {
 	case ops.lessNum:
 		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-			return value.BoolValue(left.Int < right.Int), nil
+			return value.BoolValue(left.I() < right.I()), nil
 		}
-		return value.BoolValue(left.Num < right.Num), nil
+		return value.BoolValue(left.F() < right.F()), nil
 	case ops.greaterNum:
 		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-			return value.BoolValue(left.Int > right.Int), nil
+			return value.BoolValue(left.I() > right.I()), nil
 		}
-		return value.BoolValue(left.Num > right.Num), nil
+		return value.BoolValue(left.F() > right.F()), nil
 	default:
 		return value.NilValue(), fmt.Errorf("unsupported numeric compare jit opcode %d in %s", opcode, name)
 	}
@@ -1070,9 +1070,9 @@ func jitValuesEqual(left value.Value, right value.Value) bool {
 			return false
 		}
 		if left.NumberKind == value.NumberInt {
-			return left.Int == right.Int
+			return left.I() == right.I()
 		}
-		return left.Num == right.Num
+		return left.F() == right.F()
 	case value.Char, value.String:
 		return left.Str == right.Str
 	default:
@@ -1144,8 +1144,8 @@ func jitSlice(object value.Value, start value.Value, end value.Value) (value.Val
 	if start.Kind != value.Number || end.Kind != value.Number {
 		return value.NilValue(), fmt.Errorf("slice bounds must be numbers")
 	}
-	startIdx := int(start.Num)
-	endIdx := int(end.Num)
+	startIdx := int(start.F())
+	endIdx := int(end.F())
 	if object.Kind == value.String {
 		runes := []rune(object.Str)
 		sliced, err := jitSliceRunes(runes, startIdx, endIdx)
@@ -1176,7 +1176,7 @@ func jitStringIndex(object value.Value, index value.Value) (value.Value, error) 
 		return value.NilValue(), fmt.Errorf("String index must be number")
 	}
 	runes := []rune(object.Str)
-	idx := int(index.Num)
+	idx := int(index.F())
 	if idx < 0 || idx >= len(runes) {
 		return value.NilValue(), fmt.Errorf("String index out of range")
 	}
@@ -1187,7 +1187,7 @@ func jitArrayIndex(array *value.Array, index value.Value) (value.Value, error) {
 	if index.Kind != value.Number {
 		return value.NilValue(), fmt.Errorf("array index must be number")
 	}
-	idx := int(index.Num)
+	idx := int(index.F())
 	if idx < 0 || idx >= len(array.Values()) {
 		return value.NilValue(), fmt.Errorf("array index out of range")
 	}
@@ -1198,7 +1198,7 @@ func jitTupleIndex(tuple *value.Tuple, index value.Value) (value.Value, error) {
 	if index.Kind != value.Number {
 		return value.NilValue(), fmt.Errorf("tuple index must be number")
 	}
-	idx := int(index.Num)
+	idx := int(index.F())
 	if idx < 0 || idx >= len(tuple.Elements) {
 		return value.NilValue(), fmt.Errorf("tuple index out of range")
 	}
@@ -1219,7 +1219,7 @@ func jitArrayAssign(array *value.Array, index value.Value, assigned value.Value)
 	if index.Kind != value.Number {
 		return fmt.Errorf("array index must be number")
 	}
-	idx := int(index.Num)
+	idx := int(index.F())
 	if idx < 0 || idx >= len(array.Values()) {
 		return fmt.Errorf("array index out of range")
 	}
@@ -1336,19 +1336,19 @@ func jitInitFastRange(locals []value.Value, stack *[]value.Value, meta rangeInit
 		}
 		if start.NumberKind == value.NumberInt && end.NumberKind == value.NumberInt {
 			step := int64(1)
-			if start.Int > end.Int {
+			if start.I() > end.I() {
 				step = -1
 			}
-			locals[int(meta.CurrentSlot)] = value.IntValue(start.Int - step)
+			locals[int(meta.CurrentSlot)] = value.IntValue(start.I() - step)
 			locals[int(meta.EndSlot)] = end
 			locals[int(meta.StepSlot)] = value.IntValue(step)
 			return nil
 		}
 		step := 1.0
-		if start.Num > end.Num {
+		if start.F() > end.F() {
 			step = -1
 		}
-		locals[int(meta.CurrentSlot)] = value.NumberValue(start.Num - step)
+		locals[int(meta.CurrentSlot)] = value.NumberValue(start.F() - step)
 		locals[int(meta.EndSlot)] = end
 		locals[int(meta.StepSlot)] = value.NumberValue(step)
 		return nil
@@ -1365,21 +1365,21 @@ func jitRangeNextFast(locals []value.Value, meta rangeNextMeta) (bool, error) {
 		return false, fmt.Errorf("fast range expects numeric locals")
 	}
 	if current.NumberKind == value.NumberInt && end.NumberKind == value.NumberInt && step.NumberKind == value.NumberInt {
-		next := current.Int + step.Int
-		if step.Int > 0 && next >= end.Int {
+		next := current.I() + step.I()
+		if step.I() > 0 && next >= end.I() {
 			return false, nil
 		}
-		if step.Int < 0 && next <= end.Int {
+		if step.I() < 0 && next <= end.I() {
 			return false, nil
 		}
 		locals[int(meta.CurrentSlot)] = value.IntValue(next)
 		return true, nil
 	}
-	next := current.Num + step.Num
-	if step.Num > 0 && next >= end.Num {
+	next := current.F() + step.F()
+	if step.F() > 0 && next >= end.F() {
 		return false, nil
 	}
-	if step.Num < 0 && next <= end.Num {
+	if step.F() < 0 && next <= end.F() {
 		return false, nil
 	}
 	locals[int(meta.CurrentSlot)] = value.NumberValue(next)
@@ -1401,45 +1401,45 @@ func jitAddLocalMulLocal(target value.Value, left value.Value, right value.Value
 		return value.NilValue(), fmt.Errorf("ADD_LOCAL_MUL_LOCAL expects numbers in %s", name)
 	}
 	if target.NumberKind == value.NumberInt && left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-		return value.IntValue(target.Int + left.Int*right.Int), nil
+		return value.IntValue(target.I() + left.I()*right.I()), nil
 	}
-	return value.FloatValue(target.Num + left.Num*right.Num), nil
+	return value.FloatValue(target.F() + left.F()*right.F()), nil
 }
 
 func executeNumeric(opcode byte, ops opcodeSet, left value.Value, right value.Value, name string) (value.Value, error) {
 	if left.Kind != value.Number || right.Kind != value.Number {
 		return value.NilValue(), fmt.Errorf("jit numeric operation expects numbers in %s", name)
 	}
-	if (opcode == ops.divNumber || opcode == ops.modNumber) && ((right.NumberKind == value.NumberInt && right.Int == 0) || (right.NumberKind != value.NumberInt && right.Num == 0)) {
+	if (opcode == ops.divNumber || opcode == ops.modNumber) && ((right.NumberKind == value.NumberInt && right.I() == 0) || (right.NumberKind != value.NumberInt && right.F() == 0)) {
 		return value.NilValue(), fmt.Errorf("division by zero")
 	}
 	switch opcode {
 	case ops.addNumber:
 		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-			return value.IntValue(left.Int + right.Int), nil
+			return value.IntValue(left.I() + right.I()), nil
 		}
-		return value.FloatValue(left.Num + right.Num), nil
+		return value.FloatValue(left.F() + right.F()), nil
 	case ops.subNumber:
 		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-			return value.IntValue(left.Int - right.Int), nil
+			return value.IntValue(left.I() - right.I()), nil
 		}
-		return value.FloatValue(left.Num - right.Num), nil
+		return value.FloatValue(left.F() - right.F()), nil
 	case ops.mulNumber:
 		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-			return value.IntValue(left.Int * right.Int), nil
+			return value.IntValue(left.I() * right.I()), nil
 		}
-		return value.FloatValue(left.Num * right.Num), nil
+		return value.FloatValue(left.F() * right.F()), nil
 	case ops.divNumber:
-		result := left.Num / right.Num
+		result := left.F() / right.F()
 		if !math.IsInf(result, 0) && !math.IsNaN(result) {
 			return value.FloatValue(result), nil
 		}
 		return value.NilValue(), fmt.Errorf("invalid division result in %s", name)
 	case ops.modNumber:
 		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-			return value.IntValue(left.Int % right.Int), nil
+			return value.IntValue(left.I() % right.I()), nil
 		}
-		return value.FloatValue(math.Mod(left.Num, right.Num)), nil
+		return value.FloatValue(math.Mod(left.F(), right.F())), nil
 	default:
 		return value.NilValue(), fmt.Errorf("unsupported numeric jit opcode %d in %s", opcode, name)
 	}

@@ -315,7 +315,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			slotB := readB(code, frame)
 			offset := readU16At(code, frame.ip)
 			frame.ip += 2
-			if frame.locals[slotA].Num > frame.locals[slotB].Num {
+			if frame.locals[slotA].F() > frame.locals[slotB].F() {
 				frame.ip += int(offset)
 			}
 		case bytecode.OpJumpIfLocalLtLocalFalse:
@@ -323,7 +323,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			slotB := readB(code, frame)
 			offset := readU16At(code, frame.ip)
 			frame.ip += 2
-			if frame.locals[slotA].Num >= frame.locals[slotB].Num {
+			if frame.locals[slotA].F() >= frame.locals[slotB].F() {
 				frame.ip += int(offset)
 			}
 		case bytecode.OpJumpIfLocalGtLocalFalse:
@@ -331,7 +331,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			slotB := readB(code, frame)
 			offset := readU16At(code, frame.ip)
 			frame.ip += 2
-			if frame.locals[slotA].Num <= frame.locals[slotB].Num {
+			if frame.locals[slotA].F() <= frame.locals[slotB].F() {
 				frame.ip += int(offset)
 			}
 		case bytecode.OpJumpIfLocalLtLocalTrue:
@@ -339,7 +339,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			slotB := readB(code, frame)
 			offset := readU16At(code, frame.ip)
 			frame.ip += 2
-			if frame.locals[slotA].Num < frame.locals[slotB].Num {
+			if frame.locals[slotA].F() < frame.locals[slotB].F() {
 				frame.ip += int(offset)
 			}
 		case bytecode.OpJumpIfArrayFieldGteLocalTrue:
@@ -347,7 +347,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if err != nil {
 				return value.NilValue(), err
 			}
-			if fieldNum >= frame.locals[cmpSlot].Num {
+			if fieldNum >= frame.locals[cmpSlot].F() {
 				frame.ip += int(offset)
 			}
 		case bytecode.OpJumpIfArrayFieldLteLocalTrue:
@@ -355,7 +355,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if err != nil {
 				return value.NilValue(), err
 			}
-			if fieldNum <= frame.locals[cmpSlot].Num {
+			if fieldNum <= frame.locals[cmpSlot].F() {
 				frame.ip += int(offset)
 			}
 		case bytecode.OpAddConstLocalInt:
@@ -377,9 +377,9 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				return value.NilValue(), fmt.Errorf("ADD_CONST_LOCAL_INT expects int local")
 			}
 			if !frame.hasCells {
-				frame.locals[slot] = value.IntValue(current.Int + increment)
+				frame.locals[slot] = value.IntValue(current.I() + increment)
 			} else {
-				vm.localSetSlow(frame, slot, value.IntValue(current.Int+increment))
+				vm.localSetSlow(frame, slot, value.IntValue(current.I()+increment))
 			}
 		case bytecode.OpJumpIfLocalLessEqualIntConstFalse:
 			slot := readB(code, frame)
@@ -398,7 +398,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			} else {
 				current = vm.localGetSlow(frame, slot)
 			}
-			if current.Kind != value.Number || current.Num > float64(limit) {
+			if current.Kind != value.Number || current.F() > float64(limit) {
 				frame.ip += int(offset)
 			}
 		case bytecode.OpJumpIfLocalDivisibleByIntConstFalse:
@@ -412,7 +412,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				return value.NilValue(), fmt.Errorf("JUMP_IF_LOCAL_DIVISIBLE_INT_CONST_FALSE expects non-zero int constant")
 			}
 			current := vm.localGet(frame, slot)
-			if current.Kind != value.Number || current.Num != math.Trunc(current.Num) || int64(current.Num)%divisor != 0 {
+			if current.Kind != value.Number || current.F() != math.Trunc(current.F()) || int64(current.F())%divisor != 0 {
 				frame.ip += int(offset)
 			}
 		case bytecode.OpJumpIfNotContainsStringConst:
@@ -441,9 +441,9 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				lhs := frame.locals[slot]
 				if lhs.Kind == value.Number && rhs.Kind == value.Number {
 					if lhs.NumberKind == value.NumberInt && rhs.NumberKind == value.NumberInt {
-						frame.locals[slot] = value.IntValue(lhs.Int + rhs.Int)
+						frame.locals[slot] = value.IntValue(lhs.I() + rhs.I())
 					} else {
-						frame.locals[slot] = value.FloatValue(lhs.Num + rhs.Num)
+						frame.locals[slot] = value.FloatValue(lhs.F() + rhs.F())
 					}
 				} else {
 					vm.push(lhs)
@@ -465,9 +465,9 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				lhs := frame.locals[slot]
 				if lhs.Kind == value.Number && rhs.Kind == value.Number {
 					if lhs.NumberKind == value.NumberInt && rhs.NumberKind == value.NumberInt {
-						frame.locals[slot] = value.IntValue(lhs.Int - rhs.Int)
+						frame.locals[slot] = value.IntValue(lhs.I() - rhs.I())
 					} else {
-						frame.locals[slot] = value.FloatValue(lhs.Num - rhs.Num)
+						frame.locals[slot] = value.FloatValue(lhs.F() - rhs.F())
 					}
 				} else {
 					vm.push(lhs)
@@ -489,9 +489,9 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				lhs := frame.locals[slot]
 				if lhs.Kind == value.Number && rhs.Kind == value.Number {
 					if lhs.NumberKind == value.NumberInt && rhs.NumberKind == value.NumberInt {
-						frame.locals[slot] = value.IntValue(lhs.Int * rhs.Int)
+						frame.locals[slot] = value.IntValue(lhs.I() * rhs.I())
 					} else {
-						frame.locals[slot] = value.FloatValue(lhs.Num * rhs.Num)
+						frame.locals[slot] = value.FloatValue(lhs.F() * rhs.F())
 					}
 				} else {
 					vm.push(lhs)
@@ -551,9 +551,9 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			// by far the most common case.
 			if left.Kind == value.Number && right.Kind == value.Number {
 				if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-					vm.push(value.BoolValue(left.Int == right.Int))
+					vm.push(value.BoolValue(left.I() == right.I()))
 				} else {
-					vm.push(value.BoolValue(left.Num == right.Num))
+					vm.push(value.BoolValue(left.F() == right.F()))
 				}
 				continue
 			}
@@ -608,10 +608,10 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			left := vm.pop()
 			if left.Kind == value.Number && right.Kind == value.Number {
 				if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-					vm.push(value.IntValue(left.Int + right.Int))
+					vm.push(value.IntValue(left.I() + right.I()))
 					continue
 				}
-				vm.push(value.FloatValue(left.Num + right.Num))
+				vm.push(value.FloatValue(left.F() + right.F()))
 				continue
 			}
 			// Hot path for string building: String + String and String + Number
@@ -677,10 +677,10 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			left := vm.pop()
 			if left.Kind == value.Number && right.Kind == value.Number {
 				if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-					vm.push(value.IntValue(left.Int - right.Int))
+					vm.push(value.IntValue(left.I() - right.I()))
 					continue
 				}
-				vm.push(value.FloatValue(left.Num - right.Num))
+				vm.push(value.FloatValue(left.F() - right.F()))
 				continue
 			}
 			vm.push(left)
@@ -693,10 +693,10 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			left := vm.pop()
 			if left.Kind == value.Number && right.Kind == value.Number {
 				if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-					vm.push(value.IntValue(left.Int * right.Int))
+					vm.push(value.IntValue(left.I() * right.I()))
 					continue
 				}
-				vm.push(value.FloatValue(left.Num * right.Num))
+				vm.push(value.FloatValue(left.F() * right.F()))
 				continue
 			}
 			vm.push(left)
@@ -712,10 +712,10 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			right := vm.pop()
 			left := vm.pop()
 			if left.Kind == value.Number && right.Kind == value.Number {
-				if right.Num == 0 {
+				if right.F() == 0 {
 					return value.NilValue(), fmt.Errorf("division by zero")
 				}
-				vm.push(value.FloatValue(left.Num / right.Num))
+				vm.push(value.FloatValue(left.F() / right.F()))
 				continue
 			}
 			vm.push(left)
@@ -896,12 +896,9 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			s1, s2 := vm.sp-1, vm.sp-2
 			if vm.stack[s2].Kind == value.Number && vm.stack[s1].Kind == value.Number {
 				if vm.stack[s2].NumberKind == value.NumberInt && vm.stack[s1].NumberKind == value.NumberInt {
-					vm.stack[s2].Int += vm.stack[s1].Int
-					vm.stack[s2].Num = float64(vm.stack[s2].Int)
+					vm.stack[s2].W += vm.stack[s1].W
 				} else {
-					vm.stack[s2].Num += vm.stack[s1].Num
-					vm.stack[s2].Int = int64(vm.stack[s2].Num)
-					vm.stack[s2].NumberKind = value.NumberFloat
+					vm.stack[s2].SetF(vm.stack[s2].F() + vm.stack[s1].F())
 				}
 				vm.sp--
 				continue
@@ -913,12 +910,9 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			s1, s2 := vm.sp-1, vm.sp-2
 			if vm.stack[s2].Kind == value.Number && vm.stack[s1].Kind == value.Number {
 				if vm.stack[s2].NumberKind == value.NumberInt && vm.stack[s1].NumberKind == value.NumberInt {
-					vm.stack[s2].Int -= vm.stack[s1].Int
-					vm.stack[s2].Num = float64(vm.stack[s2].Int)
+					vm.stack[s2].W -= vm.stack[s1].W
 				} else {
-					vm.stack[s2].Num -= vm.stack[s1].Num
-					vm.stack[s2].Int = int64(vm.stack[s2].Num)
-					vm.stack[s2].NumberKind = value.NumberFloat
+					vm.stack[s2].SetF(vm.stack[s2].F() - vm.stack[s1].F())
 				}
 				vm.sp--
 				continue
@@ -930,12 +924,9 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			s1, s2 := vm.sp-1, vm.sp-2
 			if vm.stack[s2].Kind == value.Number && vm.stack[s1].Kind == value.Number {
 				if vm.stack[s2].NumberKind == value.NumberInt && vm.stack[s1].NumberKind == value.NumberInt {
-					vm.stack[s2].Int *= vm.stack[s1].Int
-					vm.stack[s2].Num = float64(vm.stack[s2].Int)
+					vm.stack[s2].W *= vm.stack[s1].W
 				} else {
-					vm.stack[s2].Num *= vm.stack[s1].Num
-					vm.stack[s2].Int = int64(vm.stack[s2].Num)
-					vm.stack[s2].NumberKind = value.NumberFloat
+					vm.stack[s2].SetF(vm.stack[s2].F() * vm.stack[s1].F())
 				}
 				vm.sp--
 				continue
@@ -971,24 +962,23 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if t.NumberKind == value.NumberInt && k.NumberKind == value.NumberInt {
 				switch op {
 				case bytecode.OpAddNumConst:
-					t.Int += k.Int
+					t.W += k.W
 				case bytecode.OpSubNumConst:
-					t.Int -= k.Int
+					t.W -= k.W
 				default:
-					t.Int *= k.Int
+					t.W *= k.W
 				}
-				t.Num = float64(t.Int)
 			} else {
+				var nf float64
 				switch op {
 				case bytecode.OpAddNumConst:
-					t.Num += k.Num
+					nf = t.F() + k.F()
 				case bytecode.OpSubNumConst:
-					t.Num -= k.Num
+					nf = t.F() - k.F()
 				default:
-					t.Num *= k.Num
+					nf = t.F() * k.F()
 				}
-				t.Int = int64(t.Num)
-				t.NumberKind = value.NumberFloat
+				t.SetF(nf)
 			}
 		case bytecode.OpDivNumConst:
 			idx := readU16At(code, frame.ip)
@@ -1011,7 +1001,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				}
 				continue
 			}
-			if k.Num == 0 {
+			if k.F() == 0 {
 				err := fmt.Errorf("division by zero")
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
@@ -1021,9 +1011,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				}
 				return value.NilValue(), raised
 			}
-			t.Num /= k.Num
-			t.Int = int64(t.Num)
-			t.NumberKind = value.NumberFloat
+			t.SetF(t.F() / k.F())
 		case bytecode.OpPowNum:
 			if err := vm.binaryPowOp(bytecode.OpPowNum); err != nil {
 				return value.NilValue(), err
@@ -1031,7 +1019,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 		case bytecode.OpDivNum:
 			s1, s2 := vm.sp-1, vm.sp-2
 			if vm.stack[s2].Kind == value.Number && vm.stack[s1].Kind == value.Number {
-				if vm.stack[s1].Num == 0 {
+				if vm.stack[s1].F() == 0 {
 					err := fmt.Errorf("division by zero")
 					handled, raised := vm.handleRaised(baseDepth, frame, err)
 					if handled {
@@ -1041,9 +1029,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 					}
 					return value.NilValue(), raised
 				}
-				vm.stack[s2].Num /= vm.stack[s1].Num
-				vm.stack[s2].Int = int64(vm.stack[s2].Num)
-				vm.stack[s2].NumberKind = value.NumberFloat
+				vm.stack[s2].SetF(vm.stack[s2].F() / vm.stack[s1].F())
 				vm.sp--
 				continue
 			}
@@ -1061,9 +1047,9 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if vm.stack[s2].Kind == value.Number && vm.stack[s1].Kind == value.Number {
 				var result bool
 				if vm.stack[s2].NumberKind == value.NumberInt && vm.stack[s1].NumberKind == value.NumberInt {
-					result = vm.stack[s2].Int < vm.stack[s1].Int
+					result = vm.stack[s2].I() < vm.stack[s1].I()
 				} else {
-					result = vm.stack[s2].Num < vm.stack[s1].Num
+					result = vm.stack[s2].F() < vm.stack[s1].F()
 				}
 				vm.stack[s2].Kind = value.Bool
 				vm.stack[s2].Bool = result
@@ -1078,9 +1064,9 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if vm.stack[s2].Kind == value.Number && vm.stack[s1].Kind == value.Number {
 				var result bool
 				if vm.stack[s2].NumberKind == value.NumberInt && vm.stack[s1].NumberKind == value.NumberInt {
-					result = vm.stack[s2].Int > vm.stack[s1].Int
+					result = vm.stack[s2].I() > vm.stack[s1].I()
 				} else {
-					result = vm.stack[s2].Num > vm.stack[s1].Num
+					result = vm.stack[s2].F() > vm.stack[s1].F()
 				}
 				vm.stack[s2].Kind = value.Bool
 				vm.stack[s2].Bool = result
@@ -1104,10 +1090,10 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				return value.NilValue(), fmt.Errorf("ADD_LOCAL_MUL_THIS_FIELD expects numbers")
 			}
 			if target.NumberKind == value.NumberInt && multiplier.NumberKind == value.NumberInt && factor.NumberKind == value.NumberInt {
-				frame.locals[targetSlot] = value.IntValue(target.Int + multiplier.Int*factor.Int)
+				frame.locals[targetSlot] = value.IntValue(target.I() + multiplier.I()*factor.I())
 				continue
 			}
-			frame.locals[targetSlot] = value.NumberValue(target.Num + multiplier.Num*factor.Num)
+			frame.locals[targetSlot] = value.NumberValue(target.F() + multiplier.F()*factor.F())
 		case bytecode.OpAddLocalMulThisFieldAddThisField:
 			targetSlot := readB(code, frame)
 			localSlot := readB(code, frame)
@@ -1124,10 +1110,10 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				return value.NilValue(), fmt.Errorf("ADD_LOCAL_MUL_THIS_FIELD_ADD_THIS_FIELD expects numbers")
 			}
 			if target.NumberKind == value.NumberInt && multiplier.NumberKind == value.NumberInt && mulField.NumberKind == value.NumberInt && addField.NumberKind == value.NumberInt {
-				frame.locals[targetSlot] = value.IntValue(target.Int + multiplier.Int*mulField.Int + addField.Int)
+				frame.locals[targetSlot] = value.IntValue(target.I() + multiplier.I()*mulField.I() + addField.I())
 				continue
 			}
-			frame.locals[targetSlot] = value.NumberValue(target.Num + multiplier.Num*mulField.Num + addField.Num)
+			frame.locals[targetSlot] = value.NumberValue(target.F() + multiplier.F()*mulField.F() + addField.F())
 		case bytecode.OpClosure:
 			idx := readU16At(code, frame.ip)
 			frame.ip += 2
@@ -1186,10 +1172,10 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				return value.NilValue(), fmt.Errorf("CALL_CONST_LOCAL_SUB_INT expects int constant")
 			}
 			current := vm.localGet(frame, slot)
-			if current.Kind != value.Number || current.Num != math.Trunc(current.Num) {
+			if current.Kind != value.Number || current.F() != math.Trunc(current.F()) {
 				return value.NilValue(), fmt.Errorf("CALL_CONST_LOCAL_SUB_INT expects int local")
 			}
-			if err := vm.callKnownValueWithArgs(callable, value.IntValue(int64(current.Num)-subValue)); err != nil {
+			if err := vm.callKnownValueWithArgs(callable, value.IntValue(int64(current.F())-subValue)); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
@@ -1215,10 +1201,10 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			} else {
 				current = vm.localGetSlow(frame, slot)
 			}
-			if current.Kind != value.Number || current.Num != math.Trunc(current.Num) {
+			if current.Kind != value.Number || current.F() != math.Trunc(current.F()) {
 				return value.NilValue(), fmt.Errorf("CALL_SELF_LOCAL_SUB_INT expects int local")
 			}
-			if err := vm.callSelfLocalSubInt(frame, int64(current.Num)-subValue); err != nil {
+			if err := vm.callSelfLocalSubInt(frame, int64(current.F())-subValue); err != nil {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
@@ -1325,18 +1311,18 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				}
 				if start.NumberKind == value.NumberInt && end.NumberKind == value.NumberInt {
 					step := int64(1)
-					if start.Int > end.Int {
+					if start.I() > end.I() {
 						step = -1
 					}
-					frame.locals[currentSlot] = value.IntValue(start.Int - step)
+					frame.locals[currentSlot] = value.IntValue(start.I() - step)
 					frame.locals[endSlot] = end
 					frame.locals[stepSlot] = value.IntValue(step)
 				} else {
 					step := 1.0
-					if start.Num > end.Num {
+					if start.F() > end.F() {
 						step = -1
 					}
-					frame.locals[currentSlot] = value.NumberValue(start.Num - step)
+					frame.locals[currentSlot] = value.NumberValue(start.F() - step)
 					frame.locals[endSlot] = end
 					frame.locals[stepSlot] = value.NumberValue(step)
 				}
@@ -1348,11 +1334,11 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 					return value.NilValue(), fmt.Errorf("range expects numeric arguments")
 				}
 				if start.NumberKind == value.NumberInt && end.NumberKind == value.NumberInt && step.NumberKind == value.NumberInt {
-					frame.locals[currentSlot] = value.IntValue(start.Int - step.Int)
+					frame.locals[currentSlot] = value.IntValue(start.I() - step.I())
 					frame.locals[endSlot] = end
 					frame.locals[stepSlot] = step
 				} else {
-					frame.locals[currentSlot] = value.NumberValue(start.Num - step.Num)
+					frame.locals[currentSlot] = value.NumberValue(start.F() - step.F())
 					frame.locals[endSlot] = end
 					frame.locals[stepSlot] = step
 				}
@@ -1374,8 +1360,8 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 			// Fast integer path: keeps loop variable as IntValue so arithmetic stays integer
 			if current.NumberKind == value.NumberInt && step.NumberKind == value.NumberInt {
-				next := current.Int + step.Int
-				if (step.Int > 0 && next >= end.Int) || (step.Int < 0 && next <= end.Int) {
+				next := current.I() + step.I()
+				if (step.I() > 0 && next >= end.I()) || (step.I() < 0 && next <= end.I()) {
 					frame.ip += int(offset)
 					continue
 				}
@@ -1383,8 +1369,8 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				value.SetInt(&frame.locals[valueSlot], next)
 				continue
 			}
-			next := current.Num + step.Num
-			if (step.Num > 0 && next >= end.Num) || (step.Num < 0 && next <= end.Num) {
+			next := current.F() + step.F()
+			if (step.F() > 0 && next >= end.F()) || (step.F() < 0 && next <= end.F()) {
 				frame.ip += int(offset)
 				continue
 			}
@@ -1406,7 +1392,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 					if lengthValue.Kind != value.Number {
 						return value.NilValue(), fmt.Errorf("%s.__length() must return Number", instance.Class.Name)
 					}
-					vm.localSet(frame, slot, value.ObjectValue(&value.Iterator{Receiver: instance, Index: 0, Length: int(lengthValue.Num), GetFn: getMethod}))
+					vm.localSet(frame, slot, value.ObjectValue(&value.Iterator{Receiver: instance, Index: 0, Length: int(lengthValue.F()), GetFn: getMethod}))
 					continue
 				}
 			}
@@ -1633,7 +1619,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			vm.push(value.ObjectValue(value.NewArray(elements)))
 		case bytecode.OpArrayAlloc:
 			sizeVal := vm.pop()
-			n := int(sizeVal.Int)
+			n := int(sizeVal.I())
 			if n < 0 {
 				return value.NilValue(), fmt.Errorf("array size must be non-negative, got %d", n)
 			}
@@ -1641,7 +1627,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 		case bytecode.OpArrayFill:
 			fill := vm.pop()
 			sizeVal := vm.pop()
-			n := int(sizeVal.Int)
+			n := int(sizeVal.I())
 			if n < 0 {
 				return value.NilValue(), fmt.Errorf("array size must be non-negative, got %d", n)
 			}
@@ -1650,9 +1636,9 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			var arr *value.Array
 			switch {
 			case fill.Kind == value.Number && fill.NumberKind == value.NumberInt:
-				arr = value.NewIntArrayFill(n, fill.Int)
+				arr = value.NewIntArrayFill(n, fill.I())
 			case fill.Kind == value.Number:
-				arr = value.NewFloatArrayFill(n, fill.Num)
+				arr = value.NewFloatArrayFill(n, fill.F())
 			case fill.Kind == value.Bool:
 				arr = value.NewBoolArray(n, fill.Bool)
 			default:
@@ -1684,9 +1670,9 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if !ok {
 				return value.NilValue(), fmt.Errorf("SET_ARRAY_LOCALS expects array")
 			}
-			idx := int(idxVal.Int)
+			idx := int(idxVal.I())
 			if idxVal.NumberKind != value.NumberInt {
-				idx = int(idxVal.Num)
+				idx = int(idxVal.F())
 			}
 			if idx < 0 || idx >= arr.Len() {
 				return value.NilValue(), fmt.Errorf("array index out of range")
@@ -1700,7 +1686,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if !ok {
 				return value.NilValue(), fmt.Errorf("SET_LOCAL_ARRAY_BOOL expects array")
 			}
-			idx := int(frame.locals[idxSlot].Int)
+			idx := int(frame.locals[idxSlot].I())
 			if idx < 0 || idx >= arr.Len() {
 				return value.NilValue(), fmt.Errorf("array index out of range")
 			}
@@ -1708,7 +1694,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 		case bytecode.OpAddLocalLocal:
 			dstSlot := readB(code, frame)
 			srcSlot := readB(code, frame)
-			value.SetInt(&frame.locals[dstSlot], frame.locals[dstSlot].Int+frame.locals[srcSlot].Int)
+			value.SetInt(&frame.locals[dstSlot], frame.locals[dstSlot].I()+frame.locals[srcSlot].I())
 		case bytecode.OpGetLocalArrayField:
 			arrSlot := readB(code, frame)
 			idxSlot := readB(code, frame)
@@ -1717,7 +1703,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if !ok {
 				return value.NilValue(), fmt.Errorf("GET_LOCAL_ARRAY_FIELD expects array")
 			}
-			idx := int(frame.locals[idxSlot].Int)
+			idx := int(frame.locals[idxSlot].I())
 			if idx < 0 || idx >= arr.Len() {
 				return value.NilValue(), fmt.Errorf("array index out of range")
 			}
@@ -1759,7 +1745,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 					if pieces.Kind != value.Number {
 						return value.NilValue(), fmt.Errorf("%s.__pieces() must return Number", instance.Class.Name)
 					}
-					if int(pieces.Num) != count {
+					if int(pieces.F()) != count {
 						return value.NilValue(), fmt.Errorf("cannot unpack %d values from %s", count, instance.Class.Name)
 					}
 					for i := 0; i < count; i++ {
@@ -1798,7 +1784,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				if index.Kind != value.Number {
 					return value.NilValue(), fmt.Errorf("String index must be number")
 				}
-				r, ok := value.RuneAt(object.Str, int(index.Num))
+				r, ok := value.RuneAt(object.Str, int(index.F()))
 				if !ok {
 					return value.NilValue(), fmt.Errorf("String index out of range")
 				}
@@ -1811,9 +1797,9 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				}
 				var idx int
 				if index.NumberKind == value.NumberInt {
-					idx = int(index.Int)
+					idx = int(index.I())
 				} else {
-					idx = int(index.Num)
+					idx = int(index.F())
 				}
 				if idx < 0 || idx >= array.Len() {
 					return value.NilValue(), fmt.Errorf("array index out of range")
@@ -1825,7 +1811,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				if index.Kind != value.Number {
 					return value.NilValue(), fmt.Errorf("tuple index must be number")
 				}
-				idx := int(index.Num)
+				idx := int(index.F())
 				if idx < 0 || idx >= len(tuple.Elements) {
 					return value.NilValue(), fmt.Errorf("tuple index out of range")
 				}
@@ -1867,9 +1853,9 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 			var idx int
 			if index.NumberKind == value.NumberInt {
-				idx = int(index.Int)
+				idx = int(index.I())
 			} else {
-				idx = int(index.Num)
+				idx = int(index.F())
 			}
 			if array.AKind == value.ArrAny {
 				raw := array.Raw()
@@ -1978,8 +1964,8 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if start.Kind != value.Number || end.Kind != value.Number {
 				return value.NilValue(), fmt.Errorf("slice bounds must be numbers")
 			}
-			startIdx := int(start.Num)
-			endIdx := int(end.Num)
+			startIdx := int(start.F())
+			endIdx := int(end.F())
 			if object.Kind == value.String {
 				sliced, ok := value.RuneSlice(object.Str, startIdx, endIdx)
 				if !ok {
@@ -2027,9 +2013,9 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				}
 				var idx int
 				if index.NumberKind == value.NumberInt {
-					idx = int(index.Int)
+					idx = int(index.I())
 				} else {
-					idx = int(index.Num)
+					idx = int(index.F())
 				}
 				if idx < 0 || idx >= array.Len() {
 					return value.NilValue(), fmt.Errorf("array index out of range")
@@ -2066,9 +2052,9 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 			var idx int
 			if index.NumberKind == value.NumberInt {
-				idx = int(index.Int)
+				idx = int(index.I())
 			} else {
-				idx = int(index.Num)
+				idx = int(index.F())
 			}
 			if array.AKind == value.ArrAny {
 				raw := array.Raw()
@@ -2513,7 +2499,7 @@ func (vm *VM) writeHashValue(hasher io.Writer, v value.Value, seen map[string]bo
 		_, _ = io.WriteString(hasher, "nil;")
 		return nil
 	case value.Number:
-		_, _ = io.WriteString(hasher, fmt.Sprintf("number:%g;", v.Num))
+		_, _ = io.WriteString(hasher, fmt.Sprintf("number:%g;", v.F()))
 		return nil
 	case value.Bool:
 		_, _ = io.WriteString(hasher, fmt.Sprintf("bool:%t;", v.Bool))
@@ -3176,7 +3162,7 @@ func (vm *VM) evalFastMethodExpr(receiver *value.Instance, expr *value.FastMetho
 		if left.Kind != value.Number {
 			return value.NilValue(), fmt.Errorf("fast method negate expects number")
 		}
-		return value.NumberValue(-left.Num), nil
+		return value.NumberValue(-left.F()), nil
 	case value.FastMethodExprAdd, value.FastMethodExprSub, value.FastMethodExprMul, value.FastMethodExprDiv:
 		left, err := vm.evalFastMethodExpr(receiver, expr.Left)
 		if err != nil {
@@ -3193,27 +3179,27 @@ func (vm *VM) evalFastMethodExpr(receiver *value.Instance, expr *value.FastMetho
 		if left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
 			switch expr.Kind {
 			case value.FastMethodExprAdd:
-				return value.IntValue(left.Int + right.Int), nil
+				return value.IntValue(left.I() + right.I()), nil
 			case value.FastMethodExprSub:
-				return value.IntValue(left.Int - right.Int), nil
+				return value.IntValue(left.I() - right.I()), nil
 			case value.FastMethodExprMul:
-				return value.IntValue(left.Int * right.Int), nil
+				return value.IntValue(left.I() * right.I()), nil
 			default:
-				if right.Int == 0 {
+				if right.I() == 0 {
 					return value.NilValue(), fmt.Errorf("fast method division by zero")
 				}
-				return value.IntValue(left.Int / right.Int), nil
+				return value.IntValue(left.I() / right.I()), nil
 			}
 		}
 		switch expr.Kind {
 		case value.FastMethodExprAdd:
-			return value.NumberValue(left.Num + right.Num), nil
+			return value.NumberValue(left.F() + right.F()), nil
 		case value.FastMethodExprSub:
-			return value.NumberValue(left.Num - right.Num), nil
+			return value.NumberValue(left.F() - right.F()), nil
 		case value.FastMethodExprMul:
-			return value.NumberValue(left.Num * right.Num), nil
+			return value.NumberValue(left.F() * right.F()), nil
 		default:
-			return value.NumberValue(left.Num / right.Num), nil
+			return value.NumberValue(left.F() / right.F()), nil
 		}
 	default:
 		return value.NilValue(), fmt.Errorf("unknown fast method expression kind %d", expr.Kind)
@@ -3477,7 +3463,7 @@ func (vm *VM) buildRange(argc int) (*value.Range, error) {
 		if end.Kind != value.Number {
 			return nil, fmt.Errorf("range expects numeric arguments")
 		}
-		return &value.Range{Start: 0, End: int(end.Num), Step: 1}, nil
+		return &value.Range{Start: 0, End: int(end.F()), Step: 1}, nil
 	}
 	if argc == 2 {
 		end := vm.pop()
@@ -3486,10 +3472,10 @@ func (vm *VM) buildRange(argc int) (*value.Range, error) {
 			return nil, fmt.Errorf("range expects numeric arguments")
 		}
 		step := 1
-		if start.Num > end.Num {
+		if start.F() > end.F() {
 			step = -1
 		}
-		return &value.Range{Start: int(start.Num), End: int(end.Num), Step: step}, nil
+		return &value.Range{Start: int(start.F()), End: int(end.F()), Step: step}, nil
 	}
 	return nil, fmt.Errorf("range expects 1 or 2 arguments")
 }
@@ -3610,7 +3596,7 @@ func (vm *VM) releaseFrame(child *frame) {
 		} else {
 			// Scalar-only slot: zero the plain fields directly (no pointer
 			// stores, so no write barrier and no memclrHasPointers call).
-			l.Kind, l.NumberKind, l.Bool, l.Num, l.Int = 0, 0, false, 0, 0
+			l.Kind, l.NumberKind, l.Bool, l.W = 0, 0, false, 0
 		}
 	}
 	child.ip = 0
@@ -3783,10 +3769,9 @@ func (vm *VM) readUint16(frame *frame) uint16 {
 func (vm *VM) adjustIntLocal(frame *frame, slot byte, delta int64) {
 	if frame.hasCells {
 		v := vm.localGetSlow(frame, slot)
-		vm.localSetSlow(frame, slot, value.IntValue(v.Int+delta))
+		vm.localSetSlow(frame, slot, value.IntValue(v.I()+delta))
 	} else {
-		frame.locals[slot].Int += delta
-		frame.locals[slot].Num += float64(delta)
+		frame.locals[slot].W += delta
 	}
 }
 
@@ -3801,20 +3786,20 @@ func (vm *VM) applyToLocalSlow(frame *frame, slot byte, rhs value.Value, op byte
 		if lhs.NumberKind == value.NumberInt && rhs.NumberKind == value.NumberInt {
 			switch op {
 			case bytecode.OpAddNum:
-				result = value.IntValue(lhs.Int + rhs.Int)
+				result = value.IntValue(lhs.I() + rhs.I())
 			case bytecode.OpSubNum:
-				result = value.IntValue(lhs.Int - rhs.Int)
+				result = value.IntValue(lhs.I() - rhs.I())
 			default:
-				result = value.IntValue(lhs.Int * rhs.Int)
+				result = value.IntValue(lhs.I() * rhs.I())
 			}
 		} else {
 			switch op {
 			case bytecode.OpAddNum:
-				result = value.FloatValue(lhs.Num + rhs.Num)
+				result = value.FloatValue(lhs.F() + rhs.F())
 			case bytecode.OpSubNum:
-				result = value.FloatValue(lhs.Num - rhs.Num)
+				result = value.FloatValue(lhs.F() - rhs.F())
 			default:
-				result = value.FloatValue(lhs.Num * rhs.Num)
+				result = value.FloatValue(lhs.F() * rhs.F())
 			}
 		}
 		vm.localSetSlow(frame, slot, result)
@@ -3858,7 +3843,7 @@ func (vm *VM) readArrayFieldCmpArgs(frame *frame) (fieldNum float64, cmpSlot byt
 	if !ok {
 		return 0, 0, 0, fmt.Errorf("JUMP_IF_ARRAY_FIELD: slot %d is not an array", arrSlot)
 	}
-	idx := int(frame.locals[idxSlot].Int)
+	idx := int(frame.locals[idxSlot].I())
 	if idx < 0 || idx >= arr.Len() {
 		return 0, 0, 0, fmt.Errorf("array index %d out of range [0, %d)", idx, arr.Len())
 	}
@@ -3873,7 +3858,7 @@ func (vm *VM) readArrayFieldCmpArgs(frame *frame) (fieldNum float64, cmpSlot byt
 	if fieldSlot < 0 || fieldSlot >= len(instance.Fields) {
 		return 0, 0, 0, fmt.Errorf("JUMP_IF_ARRAY_FIELD: field slot %d out of range", fieldSlot)
 	}
-	return instance.Fields[fieldSlot].Num, cmpSlot, offset, nil
+	return instance.Fields[fieldSlot].F(), cmpSlot, offset, nil
 }
 
 // resolvedConsts returns the chunk's constant pool converted to value.Value,
@@ -4118,8 +4103,8 @@ func (vm *VM) binaryNumberOp(operator bytecode.Op, op func(float64, float64) flo
 	right := vm.pop()
 	left := vm.pop()
 	if left.Kind == value.Number && right.Kind == value.Number && left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-		leftInt := left.Int
-		rightInt := right.Int
+		leftInt := left.I()
+		rightInt := right.I()
 		switch operator {
 		case bytecode.OpAdd, bytecode.OpAddNum:
 			vm.push(value.IntValue(leftInt + rightInt))
@@ -4169,8 +4154,8 @@ func (vm *VM) binaryPowOp(operator bytecode.Op) error {
 	right := vm.pop()
 	left := vm.pop()
 	if left.Kind == value.Number && right.Kind == value.Number && left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-		base := int64(left.Num)
-		exponent := int64(right.Num)
+		base := int64(left.F())
+		exponent := int64(right.F())
 		if exponent >= 0 {
 			if result, ok := powInt64SquareMultiply(base, exponent); ok {
 				vm.push(value.IntValue(result))
@@ -4360,7 +4345,7 @@ func (vm *VM) numericResult(left value.Value, right value.Value, operator byteco
 		return value.FloatValue(result)
 	}
 	if operator == bytecode.OpPow || operator == bytecode.OpPowNum {
-		if left.Kind == value.Number && right.Kind == value.Number && left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt && right.Num >= 0 {
+		if left.Kind == value.Number && right.Kind == value.Number && left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt && right.F() >= 0 {
 			return value.IntValue(int64(result))
 		}
 		return value.FloatValue(result)
@@ -4381,7 +4366,7 @@ func (vm *VM) binaryCompare(operator bytecode.Op, numberOp func(float64, float64
 		}
 	}
 	if left.Kind == value.Number && right.Kind == value.Number && left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-		vm.push(value.BoolValue(numberOp(float64(int64(left.Num)), float64(int64(right.Num)))))
+		vm.push(value.BoolValue(numberOp(float64(int64(left.F())), float64(int64(right.F())))))
 		return nil
 	}
 	leftNum, ok := vm.numericOperand(left)
@@ -4420,8 +4405,8 @@ func (vm *VM) binaryNumericCompareOp(operator bytecode.Op) error {
 	right := vm.pop()
 	left := vm.pop()
 	if left.Kind == value.Number && right.Kind == value.Number && left.NumberKind == value.NumberInt && right.NumberKind == value.NumberInt {
-		leftInt := left.Int
-		rightInt := right.Int
+		leftInt := left.I()
+		rightInt := right.I()
 		switch operator {
 		case bytecode.OpLessNum:
 			vm.push(value.BoolValue(leftInt < rightInt))
@@ -4488,7 +4473,7 @@ func multiplyInt64Checked(left int64, right int64) (int64, bool) {
 
 func (vm *VM) numericOperand(candidate value.Value) (float64, bool) {
 	if candidate.Kind == value.Number {
-		return candidate.Num, true
+		return candidate.F(), true
 	}
 	instance, ok := candidate.AsInstance()
 	if !ok || instance.Class == nil {
@@ -4499,7 +4484,7 @@ func (vm *VM) numericOperand(candidate value.Value) (float64, bool) {
 		if slot, _, ok := instance.Class.LookupFieldSlot("value"); ok && slot >= 0 && slot < len(instance.Fields) {
 			inner := instance.Fields[slot]
 			if inner.Kind == value.Number {
-				return inner.Num, true
+				return inner.F(), true
 			}
 		}
 	}

@@ -30,7 +30,7 @@ func BuildHttpModule() *RuntimeModule {
 		urlStr := args[1].Str
 		reqBody := args[2].Str
 		headersObj, _ := args[3].AsMap()
-		timeout := int(args[4].Num)
+		timeout := int(args[4].F())
 
 		client := &http.Client{
 			Timeout: time.Duration(timeout) * time.Millisecond,
@@ -83,7 +83,7 @@ func BuildHttpModule() *RuntimeModule {
 	// Since Polyloft VM is single threaded, we don't spin a hidden Go routine that freely calls `vm.Call`.
 	// Instead, the builtin locks the VM context, serving requests.
 	builder.AddTypedFunction("server_listen", []string{TypeInt, TypeFunction}, TypeVoid, false, func(args []value.Value) (value.Value, error) {
-		port := int(args[0].Num)
+		port := int(args[0].F())
 		callback := args[1]
 
 		if GlobalVMProxy == nil {
@@ -124,7 +124,7 @@ func BuildHttpModule() *RuntimeModule {
 				body := ""
 
 				if st, ok := resMap.Entries["status"]; ok && st.Kind == value.Number {
-					status = int(st.Num)
+					status = int(st.F())
 				}
 				if bd, ok := resMap.Entries["body"]; ok && bd.Kind == value.String {
 					body = bd.Str

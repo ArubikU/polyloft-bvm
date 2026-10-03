@@ -100,10 +100,10 @@ func InstallCoreGlobals(registry *Registry, stdout io.Writer) {
 		if size.Kind != value.Number || size.NumberKind != value.NumberInt {
 			return value.NilValue(), fmt.Errorf("__array_new expects an int size")
 		}
-		if size.Num < 0 {
+		if size.F() < 0 {
 			return value.NilValue(), fmt.Errorf("__array_new expects a non-negative size")
 		}
-		items := make([]value.Value, int(size.Num))
+		items := make([]value.Value, int(size.F()))
 		for i := range items {
 			items[i] = value.NilValue()
 		}
@@ -115,10 +115,10 @@ func InstallCoreGlobals(registry *Registry, stdout io.Writer) {
 		if item.Kind != value.Number {
 			return value.NilValue(), fmt.Errorf("sqrt expects a numeric argument")
 		}
-		if item.Num < 0 {
+		if item.F() < 0 {
 			return value.NilValue(), fmt.Errorf("sqrt expects a non-negative number")
 		}
-		return value.FloatValue(math.Sqrt(item.Num)), nil
+		return value.FloatValue(math.Sqrt(item.F())), nil
 	})
 
 	registry.DefineGenericBuiltin("delete", []string{"V"}, []string{"map<String, V>", TypeString}, TypeBool, false, func(args []value.Value) (value.Value, error) {

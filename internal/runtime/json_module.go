@@ -42,9 +42,9 @@ func valueToNative(v value.Value) any {
 	switch v.Kind {
 	case value.Number:
 		if v.NumberKind == value.NumberInt {
-			return v.Int
+			return v.I()
 		}
-		return v.Num
+		return v.F()
 	case value.Bool:
 		return v.Bool
 	case value.String:

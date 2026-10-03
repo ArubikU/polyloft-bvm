@@ -1,9 +1,11 @@
 package value
 
+import "math"
+
 // SetInt, SetFloat and SetBool overwrite *dst with a scalar Value. When dst holds no
 // reference (Str empty, Object nil -- the common case for numeric locals and loop
 // variables) only the plain scalar fields are written: no pointer stores, hence no
-// GC write barrier and no 56-byte struct copy. If dst does hold a reference the whole
+// GC write barrier and no struct copy. If dst does hold a reference the whole
 // Value is replaced so the stale pointer is dropped and never visible under a
 // scalar Kind.
 func SetInt(dst *Value, v int64) {
@@ -12,7 +14,7 @@ func SetInt(dst *Value, v int64) {
 		return
 	}
 	dst.Kind, dst.NumberKind, dst.Bool = Number, NumberInt, false
-	dst.Num, dst.Int = float64(v), v
+	dst.W = v
 }
 
 func SetFloat(dst *Value, v float64) {
@@ -21,7 +23,7 @@ func SetFloat(dst *Value, v float64) {
 		return
 	}
 	dst.Kind, dst.NumberKind, dst.Bool = Number, NumberFloat, false
-	dst.Num, dst.Int = v, int64(v)
+	dst.W = int64(math.Float64bits(v))
 }
 
 func SetBool(dst *Value, v bool) {
@@ -30,7 +32,7 @@ func SetBool(dst *Value, v bool) {
 		return
 	}
 	dst.Kind, dst.NumberKind, dst.Bool = Bool, 0, v
-	dst.Num, dst.Int = 0, 0
+	dst.W = 0
 }
 
 // StoreAt writes element i of the array into *dst (scalar-only writes for dense storage).
@@ -49,11 +51,11 @@ func (a *Array) StoreAt(i int, dst *Value) {
 
 // CopyInto copies *src into *dst. When neither side holds a reference (numbers, booleans,
 // nil: the bulk of the traffic in numeric code) only the plain scalar fields are written,
-// avoiding pointer stores (GC write barriers) and the full 56-byte struct copy.
+// avoiding pointer stores (GC write barriers) and the full struct copy.
 func CopyInto(dst, src *Value) {
 	if src.Object == nil && src.Str == "" && dst.Object == nil && dst.Str == "" {
 		dst.Kind, dst.NumberKind, dst.Bool = src.Kind, src.NumberKind, src.Bool
-		dst.Num, dst.Int = src.Num, src.Int
+		dst.W = src.W
 		return
 	}
 	*dst = *src

@@ -473,9 +473,9 @@ func uiValueToNative(candidate value.Value) any {
 		return candidate.Bool
 	case value.Number:
 		if candidate.NumberKind == value.NumberInt {
-			return candidate.Int
+			return candidate.I()
 		}
-		return candidate.Num
+		return candidate.F()
 	case value.Char, value.String:
 		return candidate.Str
 	case value.Object:
@@ -897,7 +897,7 @@ func BuildUiModule() *RuntimeModule {
 		if !ok {
 			return value.NilValue(), fmt.Errorf("app_event_channel expects app handle")
 		}
-		return value.ObjectValue(app.ensureEventSink(int(args[1].Num))), nil
+		return value.ObjectValue(app.ensureEventSink(int(args[1].F()))), nil
 	})
 
 	builder.AddTypedFunction("app_emit_event", []string{TypeAny, TypeString, TypeAny}, TypeBool, false, func(args []value.Value) (value.Value, error) {
@@ -913,7 +913,7 @@ func BuildUiModule() *RuntimeModule {
 		if !ok {
 			return value.NilValue(), fmt.Errorf("app_channel_new expects app handle")
 		}
-		channel := app.getOrCreateChannel(args[1].String(), int(args[2].Num))
+		channel := app.getOrCreateChannel(args[1].String(), int(args[2].F()))
 		return value.ObjectValue(channel), nil
 	})
 
@@ -1008,7 +1008,7 @@ func BuildUiModule() *RuntimeModule {
 		if !ok {
 			return value.NilValue(), fmt.Errorf("app_post expects app handle")
 		}
-		id, err := app.post(args[1], args[2], int(args[3].Num))
+		id, err := app.post(args[1], args[2], int(args[3].F()))
 		if err != nil {
 			return value.NilValue(), err
 		}
@@ -1020,7 +1020,7 @@ func BuildUiModule() *RuntimeModule {
 		if !ok {
 			return value.NilValue(), fmt.Errorf("app_cancel_task expects app handle")
 		}
-		return value.BoolValue(app.cancelTask(args[1].Int)), nil
+		return value.BoolValue(app.cancelTask(args[1].I())), nil
 	})
 
 	builder.AddTypedFunction("app_run_on_ui_thread", []string{TypeAny, TypeInt}, TypeInt, false, func(args []value.Value) (value.Value, error) {
@@ -1028,7 +1028,7 @@ func BuildUiModule() *RuntimeModule {
 		if !ok {
 			return value.NilValue(), fmt.Errorf("app_run_on_ui_thread expects app handle")
 		}
-		return value.IntValue(int64(app.runOnUIThread(int(args[1].Num)))), nil
+		return value.IntValue(int64(app.runOnUIThread(int(args[1].F())))), nil
 	})
 
 	builder.AddTypedFunction("app_start_ui_loop", []string{TypeAny, TypeInt, TypeInt}, TypeBool, false, func(args []value.Value) (value.Value, error) {
@@ -1036,7 +1036,7 @@ func BuildUiModule() *RuntimeModule {
 		if !ok {
 			return value.NilValue(), fmt.Errorf("app_start_ui_loop expects app handle")
 		}
-		started := app.startUILoop(int(args[1].Num), int(args[2].Num))
+		started := app.startUILoop(int(args[1].F()), int(args[2].F()))
 		return value.BoolValue(started), nil
 	})
 
@@ -1102,8 +1102,8 @@ func BuildUiModule() *RuntimeModule {
 		}
 		window := &uiWindow{
 			Title:        title,
-			Width:        int(args[2].Num),
-			Height:       int(args[3].Num),
+			Width:        int(args[2].F()),
+			Height:       int(args[3].F()),
 			Callbacks:    make(map[string]value.Value),
 			debugProfile: make(map[string]bool),
 			app:          app,

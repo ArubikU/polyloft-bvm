@@ -646,8 +646,15 @@ en lugar de cabecera (96 B con almacenamiento inline) + slice aparte: macro_larg
 poly 62->55 MB, macro 40->36 MB, sort 28->26 MB (sin pérdida de velocidad; también corrige un desborde en
 `DeepCopy` de instancias con más de un campo). `GOGC` no reduce el pico (la memoria es dato vivo, no basura).
 
-Pendiente (no hecho por su coste en velocidad): `Value` 56 -> 48 B fusionando `Num`/`Int` (medido antes: -9..11 %
-en kernels numéricos) y almacenamiento compacto de arrays de objetos.
+**`value.Value` 56 -> 48 B.** `Num` (float64) e `Int` (int64) se fusionan en una sola palabra `W`: el entero exacto
+si `NumberKind == NumberInt`, los bits IEEE-754 si es `NumberFloat`; se leen con `F()`/`I()` y se escriben con
+`SetF()`/`SetI()`. A diferencia del intento anterior (accesores que no se inlineaban, -9..11 % en kernels
+numéricos), esta vez la velocidad queda neutra (sort/poly/closure/macro +7..13 %, array/fib -4 %) porque las
+operaciones enteras escriben una palabra en vez de tres. Memoria (pico, local): array 58->52 MB, macro_large 96->88,
+sort 25.5->23.9, hash 46->43, poly 55->51. Compatibilidad: `.pfbc` antiguos siguen ejecutando (constantes son tipos
+Go planos); se recomienda recompilar.
+
+Pendiente: almacenamiento compacto de arrays de objetos y de instancias con campos numéricos (siguiente palanca grande).
 
 Pruebas de regresión: `testdata/regress/*.pf` + `.expected` (generados con el binario previo a las optimizaciones),
 ejecutados por `go test` (`regress_test.go`): frames/excepciones/closures, aritmética con constantes, strings
