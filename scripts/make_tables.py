@@ -15,6 +15,8 @@ ORDER = ["fib", "float", "string", "sort", "array", "poly", "closure", "hash",
          "alloc", "macro", "macro_large", "io", "concurrent"]
 CORE = ["fib", "float", "string", "sort", "array", "poly"]
 median = statistics.median
+SHORT = {"linux-x86_64": "x86", "linux-arm64": "ARM", "macos-arm64": "mac", "windows-x86_64": "Win",
+         "linux-x86_64-py311": "x86/3.11", "linux-x86_64-py313": "x86/3.13"}
 
 
 def tex(s):
@@ -113,10 +115,11 @@ def main():
 
     # ---- cross-platform summary
     mark = len(out)
-    labels = list(pooled)
+    PREF = ['linux-x86_64', 'linux-arm64', 'macos-arm64', 'windows-x86_64', 'linux-x86_64-py311', 'linux-x86_64-py313']
+    labels = sorted(pooled, key=lambda l: PREF.index(l) if l in PREF else 99)
     out.append("% ===== cross-platform summary (median over replicates of ratio to CPython) =====")
     out.append(f"\\begin{{tabular}}{{@{{}}l{'r' * len(labels)}@{{}}}}\\toprule")
-    out.append("Benchmark & " + " & ".join(tex(l) for l in labels) + " \\\\\\midrule")
+    out.append("Benchmark & " + " & ".join(tex(SHORT.get(l, l)) for l in labels) + " \\\\\\midrule")
     for b in ORDER:
         cells = []
         for l in labels:
