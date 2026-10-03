@@ -59,6 +59,7 @@ jobs:
         run: |
           mkdir -p out; EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
           go build -o out/polyloft-bvm$EXT ./cmd/polyloft-bvm
+          go build -pgo=off -o out/nopgo$EXT ./cmd/polyloft-bvm   # same source without the PGO profile
           (cd bench/luabench && go build -o ../../out/luabench$EXT .)
           # Campaign start point (dbd86d8): same Go, machine and programs, so the 'Start'
           # column is measured under identical conditions rather than recalled.
@@ -71,7 +72,7 @@ jobs:
         run: |
           EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
           python scripts/bench_runner.py --bvm out/polyloft-bvm$EXT --lua out/luabench$EXT \
-            --base out/base$EXT --n "$N" --warmup 2 \
+            --base out/base$EXT --alt out/nopgo$EXT --n "$N" --warmup 2 \
             --out "results_${{ matrix.label }}_${{ matrix.rep }}.json" | tee "log_${{ matrix.label }}_${{ matrix.rep }}.txt"
       - uses: actions/upload-artifact@v4
         with:

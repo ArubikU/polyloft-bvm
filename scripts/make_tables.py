@@ -321,6 +321,35 @@ def main():
         out.append("\\bottomrule\\end{tabular}\n")
         blocks["mem"] = out[mark:]
 
+    # ---- PGO effect: time(no-PGO build) / time(PGO build), same source, interleaved in the main jobs
+    mark = len(out)
+    rowsp = []
+    for b in ORDER:
+        cells, any_ = [], False
+        for l in lab4m:
+            vals = [d["results"][b]["ratio_alt"]["ratio"] for d in groups[l]
+                    if b in d["results"] and "ratio_alt" in d["results"][b]]
+            cells.append(f"${median(vals):.2f}$" if vals else "--")
+            any_ = any_ or bool(vals)
+        if any_:
+            rowsp.append(tex(b) + " & " + " & ".join(cells) + " \\\\")
+    if rowsp:
+        out.append("% ===== PGO effect: no-PGO time / PGO time (median over replicates) =====")
+        out.append(f"\\begin{{tabular}}{{@{{}}l{'r' * len(lab4m)}@{{}}}}\\toprule")
+        out.append("Workload & " + " & ".join(tex(SHORT.get(l, l)) for l in lab4m) + " \\\\\\midrule")
+        out.extend(rowsp)
+        gp = []
+        for l in lab4m:
+            vs = [median([d["results"][b]["ratio_alt"]["ratio"] for d in groups[l]
+                          if b in d["results"] and "ratio_alt" in d["results"][b]] or [float("nan")]) for b in ORDER]
+            vs = [v for v in vs if v == v]
+            gp.append(f"${statistics.geometric_mean(vs):.2f}$" if vs else "--")
+        out.append("\\midrule")
+        out.append("geomean & " + " & ".join(gp) + " \\\\")
+        out.append("\\bottomrule\\end{tabular}\n")
+        out.append("% pgo: " + " ".join(f"{l}={g}" for l, g in zip(lab4m, gp)))
+        blocks["pgo"] = out[mark:]
+
     # ---- plain statistics for the prose
     mark = len(out)
     out.append("% ===== summary statistics (for prose) =====")
