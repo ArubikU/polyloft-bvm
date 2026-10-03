@@ -130,6 +130,22 @@ def main():
     out.append("\\bottomrule\\end{tabular}\n")
     blocks["summary"] = out[mark:]
 
+    # ---- ratio to gopher-lua (the in-Go interpreter control), 3.12.10 platforms only
+    mark = len(out)
+    lab4 = [l for l in labels if "py3" not in l]
+    out.append("% ===== ratio to gopher-lua (median over replicates) =====")
+    out.append(f"\\begin{{tabular}}{{@{{}}l{'r' * len(lab4)}@{{}}}}\\toprule")
+    out.append("Workload & " + " & ".join(tex(SHORT.get(l, l)) for l in lab4) + " \\\\\\midrule")
+    for b in ORDER:
+        cells = []
+        for l in lab4:
+            r = pooled[l].get(b, {}).get("ratio_lua")
+            cells.append((f"$\\mathbf{{{r['ratio']:.2f}}}$" if r["hi"] < 1.0 else f"${r['ratio']:.2f}$") if r else "--")
+        if any(c != "--" for c in cells):
+            out.append(tex(b) + " & " + " & ".join(cells) + " \\\\")
+    out.append("\\bottomrule\\end{tabular}\n")
+    blocks["lua"] = out[mark:]
+
     # ---- plain statistics for the prose
     mark = len(out)
     out.append("% ===== summary statistics (for prose) =====")
