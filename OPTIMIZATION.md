@@ -608,3 +608,27 @@ benchmarks. Nota metodologica: en este equipo los benchmarks pequenos
 (sort ~5 ms, string ~6 ms, poly ~17 ms) oscilan en ambas direcciones entre
 corridas (ruido >5 %); solo `array` da senal estable, consistente con la
 varianza por GC ya reportada en S7.
+
+## 10. Recuperar terreno frente a CPython 3.12 (octubre 2026)
+
+Tras la evaluación controlada en CI (4 plataformas, CPython 3.12.10 fijo) quedó claro que
+`fib` (1.13–1.41×), `hash` (1.08–1.29×), `io` (1.2–1.9×) y `closure` (≈1.1×) estaban por detrás
+de CPython. Cambios, medidos A/B intercalados contra el binario anterior:
+
+| Cambio | Efecto local |
+|---|---|
+| `frame.code` (copia del slice de bytecode en el frame): una carga en lugar de la cadena `frame→fn→Chunk→Code` tras cada llamada/retorno | fib −10 % |
+| `OpReturn` rápido: el resultado se mueve de la cima de la pila al hueco del llamador (una copia en vez de pop+push) | fib −15 % |
+| Pool de frames sin escrituras con write-barrier innecesarias (`fn` se conserva, escritura solo si cambia) y puesta a cero de locales sin `memclrHasPointers` | fib −7 %, poly −6 % |
+| `call`: despacho directo para `*Function`/`*Closure` y copia en bloque de argumentos | closure −6 % |
+| Caché de una entrada delante del mapa de pools de instancias | alloc −21 % |
+| `len`/indexado/slicing de strings con ruta rápida ASCII (sin `[]rune(s)` por cada índice) | io (`len` sobre 3 MB) |
+| Opcodes fusionados `ADD/SUB/MUL/DIV_NUM_CONST` (`CONSTANT`+aritmética, mismo tamaño, parche in situ) | float −14 % |
+| PGO (`cmd/polyloft-bvm/default.pgo`, perfil combinado de la suite) | +2–14 % |
+
+Experimento negativo: variantes `*_NUM_LOCAL` (`GET_LOCAL`+aritmética) no mejoraron e incluso
+empeoraron sort/array (el bucle de despacho crece); se descartaron.
+
+Verificación: `go test ./...` y `scripts/corpus_diff.sh NEW REF` (salida funcional idéntica en los
+65 programas de `tests/` y `testdata/programs/`; solo difieren líneas de tiempo).
+Resultados en CI: `bench/results/run-37093419774` (frente a `run-37086550680`).

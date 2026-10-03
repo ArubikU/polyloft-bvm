@@ -155,6 +155,16 @@ func (a *Array) Len() int {
 	}
 }
 
+// InstanceAt returns element i as an *Instance without copying the Value, for
+// object arrays (ArrAny storage). The caller must have bounds-checked i.
+func (a *Array) InstanceAt(i int) (*Instance, bool) {
+	if a.AKind != ArrAny {
+		return nil, false
+	}
+	inst, ok := a.elems[i].Object.(*Instance)
+	return inst, ok
+}
+
 // At returns element i as a Value.
 func (a *Array) At(i int) Value {
 	switch a.AKind {

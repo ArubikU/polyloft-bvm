@@ -3809,11 +3809,14 @@ func (vm *VM) applyToLocalSlow(frame *frame, slot byte, rhs value.Value, op byte
 // It returns the numeric value of arr[idx].field, the cmpSlot byte, the
 // jump offset, and a non-nil error if any runtime type check fails.
 func (vm *VM) readArrayFieldCmpArgs(frame *frame) (fieldNum float64, cmpSlot byte, offset uint16, err error) {
-	arrSlot := vm.readByte(frame)
-	idxSlot := vm.readByte(frame)
-	fieldSlot := int(vm.readByte(frame))
-	cmpSlot = vm.readByte(frame)
-	offset = vm.readUint16(frame)
+	code := frame.code
+	ip := frame.ip
+	arrSlot := code[ip]
+	idxSlot := code[ip+1]
+	fieldSlot := int(code[ip+2])
+	cmpSlot = code[ip+3]
+	offset = uint16(code[ip+4])<<8 | uint16(code[ip+5])
+	frame.ip = ip + 6
 	arr, ok := frame.locals[arrSlot].AsArray()
 	if !ok {
 		return 0, 0, 0, fmt.Errorf("JUMP_IF_ARRAY_FIELD: slot %d is not an array", arrSlot)
@@ -3822,9 +3825,13 @@ func (vm *VM) readArrayFieldCmpArgs(frame *frame) (fieldNum float64, cmpSlot byt
 	if idx < 0 || idx >= arr.Len() {
 		return 0, 0, 0, fmt.Errorf("array index %d out of range [0, %d)", idx, arr.Len())
 	}
-	instance, ok := arr.At(idx).AsInstance()
+	instance, ok := arr.InstanceAt(idx)
 	if !ok {
-		return 0, 0, 0, fmt.Errorf("JUMP_IF_ARRAY_FIELD: element is not an instance")
+		var inst *value.Instance
+		if inst, ok = arr.At(idx).AsInstance(); !ok {
+			return 0, 0, 0, fmt.Errorf("JUMP_IF_ARRAY_FIELD: element is not an instance")
+		}
+		instance = inst
 	}
 	if fieldSlot < 0 || fieldSlot >= len(instance.Fields) {
 		return 0, 0, 0, fmt.Errorf("JUMP_IF_ARRAY_FIELD: field slot %d out of range", fieldSlot)
