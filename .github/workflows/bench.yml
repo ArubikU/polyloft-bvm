@@ -56,8 +56,10 @@ jobs:
         shell: bash
         run: |
           mkdir -p out
-          go build -o out/polyloft-bvm ./cmd/polyloft-bvm
-          (cd bench/luabench && go build -o ../../out/luabench .)
+          EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
+          go build -o out/polyloft-bvm$EXT ./cmd/polyloft-bvm
+          (cd bench/luabench && go build -o ../../out/luabench$EXT .)
+          ls -la out
           go version; python --version
 
       - name: Run benchmarks
