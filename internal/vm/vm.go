@@ -36,6 +36,9 @@ type frame struct {
 	// consts is the chunk's constant pool pre-converted to value.Value,
 	// fetched lazily from VM.constCache on first use (see resolvedConsts).
 	consts []value.Value
+	// code mirrors fn.Chunk.Code so the dispatch loop reloads it with one load
+	// after every call/return instead of a frame->fn->Chunk->Code pointer chain.
+	code []byte
 }
 
 type stringAccumulator struct {
@@ -230,7 +233,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 		if frame.ip >= len(code) {
 			if handled, raised := vm.handleRaised(baseDepth, frame, diagnostic.Runtime("RuntimeError", "unexpected end of bytecode", value.NilValue())); handled {
 				frame = vm.frames[len(vm.frames)-1]
-				code = frame.fn.Chunk.Code
+				code = frame.code
 				continue
 			} else {
 				return value.NilValue(), raised
@@ -683,7 +686,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
-					code = frame.fn.Chunk.Code
+					code = frame.code
 					continue
 				}
 				return value.NilValue(), raised
@@ -692,7 +695,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if err := vm.binaryNumberOp(bytecode.OpModNum, func(a, b float64) float64 { return math.Mod(a, b) }); err != nil {
 				if handled, raised := vm.handleRaised(baseDepth, frame, err); handled {
 					frame = vm.frames[len(vm.frames)-1]
-					code = frame.fn.Chunk.Code
+					code = frame.code
 					continue
 				} else {
 					return value.NilValue(), raised
@@ -703,7 +706,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
-					code = frame.fn.Chunk.Code
+					code = frame.code
 					continue
 				}
 				return value.NilValue(), raised
@@ -743,7 +746,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 		case bytecode.OpThrow:
 			if handled, err := vm.handleRaised(baseDepth, frame, vm.explicitThrow(vm.pop())); handled {
 				frame = vm.frames[len(vm.frames)-1]
-				code = frame.fn.Chunk.Code
+				code = frame.code
 				continue
 			} else {
 				return value.NilValue(), err
@@ -914,7 +917,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 					handled, raised := vm.handleRaised(baseDepth, frame, err)
 					if handled {
 						frame = vm.frames[len(vm.frames)-1]
-						code = frame.fn.Chunk.Code
+						code = frame.code
 						continue
 					}
 					return value.NilValue(), raised
@@ -929,7 +932,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
-					code = frame.fn.Chunk.Code
+					code = frame.code
 					continue
 				}
 				return value.NilValue(), raised
@@ -1025,13 +1028,13 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
-					code = frame.fn.Chunk.Code
+					code = frame.code
 					continue
 				}
 				return value.NilValue(), raised
 			}
 			frame = vm.frames[len(vm.frames)-1]
-			code = frame.fn.Chunk.Code
+			code = frame.code
 		case bytecode.OpCallConst:
 			if frame.consts == nil {
 				frame.consts = vm.resolvedConsts(frame.fn.Chunk)
@@ -1043,13 +1046,13 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
-					code = frame.fn.Chunk.Code
+					code = frame.code
 					continue
 				}
 				return value.NilValue(), raised
 			}
 			frame = vm.frames[len(vm.frames)-1]
-			code = frame.fn.Chunk.Code
+			code = frame.code
 		case bytecode.OpCallConstLocalSubInt:
 			if frame.consts == nil {
 				frame.consts = vm.resolvedConsts(frame.fn.Chunk)
@@ -1071,13 +1074,13 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
-					code = frame.fn.Chunk.Code
+					code = frame.code
 					continue
 				}
 				return value.NilValue(), raised
 			}
 			frame = vm.frames[len(vm.frames)-1]
-			code = frame.fn.Chunk.Code
+			code = frame.code
 		case bytecode.OpCallSelfLocalSubInt:
 			slot := readB(code, frame)
 			constant := frame.fn.Chunk.Constants[readU16At(code, frame.ip)]
@@ -1100,13 +1103,13 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
-					code = frame.fn.Chunk.Code
+					code = frame.code
 					continue
 				}
 				return value.NilValue(), raised
 			}
 			frame = vm.frames[len(vm.frames)-1]
-			code = frame.fn.Chunk.Code
+			code = frame.code
 		case bytecode.OpCallGlobalSlot:
 			slot := int(readB(code, frame))
 			argc := int(readB(code, frame))
@@ -1117,13 +1120,13 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
-					code = frame.fn.Chunk.Code
+					code = frame.code
 					continue
 				}
 				return value.NilValue(), raised
 			}
 			frame = vm.frames[len(vm.frames)-1]
-			code = frame.fn.Chunk.Code
+			code = frame.code
 		case bytecode.OpInvoke:
 			name := frame.fn.Chunk.Constants[readU16At(code, frame.ip)].(string)
 			frame.ip += 2
@@ -1132,13 +1135,13 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
-					code = frame.fn.Chunk.Code
+					code = frame.code
 					continue
 				}
 				return value.NilValue(), raised
 			}
 			frame = vm.frames[len(vm.frames)-1]
-			code = frame.fn.Chunk.Code
+			code = frame.code
 		case bytecode.OpInvokeMethod:
 			slot := int(readB(code, frame))
 			argc := int(readB(code, frame))
@@ -1146,13 +1149,13 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
-					code = frame.fn.Chunk.Code
+					code = frame.code
 					continue
 				}
 				return value.NilValue(), raised
 			}
 			frame = vm.frames[len(vm.frames)-1]
-			code = frame.fn.Chunk.Code
+			code = frame.code
 		case bytecode.OpInvokeSuper:
 			name := frame.fn.Chunk.Constants[readU16At(code, frame.ip)].(string)
 			frame.ip += 2
@@ -1161,13 +1164,13 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
-					code = frame.fn.Chunk.Code
+					code = frame.code
 					continue
 				}
 				return value.NilValue(), raised
 			}
 			frame = vm.frames[len(vm.frames)-1]
-			code = frame.fn.Chunk.Code
+			code = frame.code
 		case bytecode.OpRange:
 			argc := int(readB(code, frame))
 			rng, err := vm.buildRange(argc)
@@ -1984,14 +1987,33 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				handled, raised := vm.handleRaised(baseDepth, frame, err)
 				if handled {
 					frame = vm.frames[len(vm.frames)-1]
-					code = frame.fn.Chunk.Code
+					code = frame.code
 					continue
 				}
 				return value.NilValue(), raised
 			}
 			frame = vm.frames[len(vm.frames)-1]
-			code = frame.fn.Chunk.Code
+			code = frame.code
 		case bytecode.OpReturn:
+			if !(frame.init && frame.receiver != nil) && len(vm.frames) > baseDepth+1 {
+				// Hot path: move the result straight from the top of the callee's
+				// stack to the slot the caller expects (one Value copy instead of
+				// pop + push), then pop and recycle the frame.
+				top := vm.sp - 1
+				base := frame.stackBase
+				if base > top {
+					base = top
+				}
+				if base != top {
+					vm.stack[base] = vm.stack[top]
+				}
+				vm.sp = base + 1
+				vm.frames = vm.frames[:len(vm.frames)-1]
+				vm.releaseFrame(frame)
+				frame = vm.frames[len(vm.frames)-1]
+				code = frame.code
+				continue
+			}
 			result := vm.pop()
 			if frame.init && frame.receiver != nil {
 				result = value.ObjectValue(frame.receiver)
@@ -2006,7 +2028,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 			vm.push(result)
 			frame = vm.frames[len(vm.frames)-1]
-			code = frame.fn.Chunk.Code
+			code = frame.code
 		default:
 			return value.NilValue(), fmt.Errorf("unknown opcode %d", op)
 		}
@@ -2325,7 +2347,7 @@ func (vm *VM) callSelfLocalSubInt(current *frame, arg int64) error {
 		return fmt.Errorf("%s expects %d args, got %d", fn.Name, fn.Arity, 1)
 	}
 	child := vm.acquireFrame(fn, current.closure, current.receiver, false)
-	vm.localSet(child, 0, value.IntValue(arg))
+	child.locals[0] = value.IntValue(arg) // fresh frame: no cells yet, MaxLocals >= arity
 	vm.frames = append(vm.frames, child)
 	return nil
 }
@@ -3388,30 +3410,41 @@ func (vm *VM) ResolveGlobal(fn *bytecode.Function, name string) (value.Value, bo
 func (vm *VM) acquireFrame(fn *bytecode.Function, closure *value.Closure, receiver *value.Instance, init bool) *frame {
 	vm.ensureStackHeadroom()
 	var child *frame
-	if len(vm.framePool) > 0 {
-		last := len(vm.framePool) - 1
-		child = vm.framePool[last]
-		vm.framePool = vm.framePool[:last]
+	if n := len(vm.framePool); n > 0 {
+		child = vm.framePool[n-1]
+		vm.framePool = vm.framePool[:n-1]
 	} else {
 		child = &frame{}
 	}
-	child.fn = fn
-	child.closure = closure
+	// Pointer-field writes carry GC write barriers, so they are skipped when the
+	// pooled frame already holds the right value (the common case in recursion:
+	// releaseFrame leaves fn in place, and closure/receiver are usually nil).
+	if child.fn != fn {
+		child.fn = fn
+		child.consts = nil
+		child.code = fn.Chunk.Code
+	}
+	if child.closure != closure {
+		child.closure = closure
+	}
+	if child.receiver != receiver {
+		child.receiver = receiver
+	}
 	child.ip = 0
 	child.stackBase = vm.sp
-	child.receiver = receiver
 	child.init = init
 	child.hasCells = false // maps are lazily initialized; skip clear unless used
-	child.consts = nil
-	child.handlers = child.handlers[:0]
+	if len(child.handlers) != 0 {
+		child.handlers = child.handlers[:0]
+	}
 	// Invariant: a pooled frame's locals backing array is all-zero up to its
 	// capacity (fresh arrays start zeroed; releaseFrame re-zeroes the used
 	// prefix before pooling). Re-slicing therefore exposes only zeroed slots
-	// and no clear is needed here — locals are cleared exactly once per call,
+	// and no clear is needed here -- locals are cleared exactly once per call,
 	// in releaseFrame.
 	if cap(child.locals) < fn.MaxLocals {
 		child.locals = make([]value.Value, fn.MaxLocals)
-	} else {
+	} else if len(child.locals) != fn.MaxLocals {
 		child.locals = child.locals[:fn.MaxLocals]
 	}
 	return child
@@ -3420,20 +3453,31 @@ func (vm *VM) acquireFrame(fn *bytecode.Function, closure *value.Closure, receiv
 func (vm *VM) releaseFrame(child *frame) {
 	// Re-zero the used prefix to release object references for GC and to
 	// uphold the acquireFrame invariant that pooled locals are all-zero.
-	clear(child.locals)
-	child.fn = nil
-	child.closure = nil
+	// A plain loop beats clear() for the tiny slices of typical frames
+	// (no memclrHasPointers call).
+	locals := child.locals
+	for i := range locals {
+		locals[i] = value.Value{}
+	}
 	child.ip = 0
-	child.receiver = nil
 	child.init = false
 	child.hasCells = false
+	// fn is kept (static program data; acquireFrame compares before writing).
+	if child.closure != nil {
+		child.closure = nil
+	}
+	if child.receiver != nil {
+		child.receiver = nil
+	}
 	if child.localRefs != nil {
 		clear(child.localRefs)
 	}
 	if child.stringBuffers != nil {
 		clear(child.stringBuffers)
 	}
-	child.handlers = child.handlers[:0]
+	if len(child.handlers) != 0 {
+		child.handlers = child.handlers[:0]
+	}
 	vm.framePool = append(vm.framePool, child)
 }
 
