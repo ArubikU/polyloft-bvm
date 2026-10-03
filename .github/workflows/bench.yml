@@ -1,87 +1,78 @@
 name: Benchmarks
 
-# Reproducible evaluation for the paper: one immutable commit, one pinned CPython,
-# one pinned Go, several platforms (x86-64 / ARM64, Linux / Windows / macOS).
-# Raw per-run samples are uploaded as artifacts; the paper's tables are generated
-# from them by scripts/make_tables.py (nothing is typed by hand).
+# Reproducible evaluation for the paper. One immutable commit, pinned CPython and Go, four
+# platforms with replicates, plus three controlled studies run on the SAME VM per job:
+#   pyver  - CPython 3.11 / 3.12 / 3.13 against one interpreter binary
+#   gotc   - the same source built with two Go toolchains
+#   ladder - per-commit binaries of the optimization campaign (attribution)
+# Raw per-run samples are uploaded as artifacts; the paper's tables are generated from them by
+# scripts/make_tables.py (nothing is typed by hand).
 on:
   workflow_dispatch:
-    inputs:
-      n:
-        description: "runs per engine per benchmark"
-        default: "30"
   push:
     branches: [ bench-ci ]
 
 env:
   GO_VERSION: "1.25.3"
+  GO_ALT: "1.26.3"
   PY_VERSION: "3.12.10"
+  N: "30"
 
 jobs:
+  # ------------------------------------------------------------------ main matrix
   bench:
     name: ${{ matrix.label }} #${{ matrix.rep }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 180
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-24.04,     label: linux-x86_64,  rep: 1 }
-          - { os: ubuntu-24.04,     label: linux-x86_64,  rep: 2 }
-          - { os: ubuntu-24.04,     label: linux-x86_64,  rep: 3 }
-          - { os: ubuntu-24.04-arm, label: linux-arm64,   rep: 1 }
-          - { os: ubuntu-24.04-arm, label: linux-arm64,   rep: 2 }
-          - { os: ubuntu-24.04-arm, label: linux-arm64,   rep: 3 }
+          - { os: ubuntu-24.04,     label: linux-x86_64,   rep: 1 }
+          - { os: ubuntu-24.04,     label: linux-x86_64,   rep: 2 }
+          - { os: ubuntu-24.04,     label: linux-x86_64,   rep: 3 }
+          - { os: ubuntu-24.04-arm, label: linux-arm64,    rep: 1 }
+          - { os: ubuntu-24.04-arm, label: linux-arm64,    rep: 2 }
+          - { os: ubuntu-24.04-arm, label: linux-arm64,    rep: 3 }
           - { os: windows-2025,     label: windows-x86_64, rep: 1 }
-          # CPython-version sensitivity (same x86-64 runner class, same interpreter binary)
-          - { os: ubuntu-24.04,     label: linux-x86_64-py311, rep: 1, py: "3.11" }
-          - { os: ubuntu-24.04,     label: linux-x86_64-py313, rep: 1, py: "3.13" }
-          - { os: macos-15,         label: macos-arm64,   rep: 1 }
+          - { os: windows-2025,     label: windows-x86_64, rep: 2 }
+          - { os: windows-2025,     label: windows-x86_64, rep: 3 }
+          - { os: macos-15,         label: macos-arm64,    rep: 1 }
+          - { os: macos-15,         label: macos-arm64,    rep: 2 }
+          - { os: macos-15,         label: macos-arm64,    rep: 3 }
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
+        with: { fetch-depth: 0 }
       - uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-
+        with: { go-version: "${{ env.GO_VERSION }}", cache: true }
       - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.py || env.PY_VERSION }}
-
+        with: { python-version: "${{ env.PY_VERSION }}" }
       - name: Linux build dependencies (gio UI toolkit headers)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libxkbcommon-x11-dev             libwayland-dev libx11-dev libx11-xcb-dev libxcursor-dev libxfixes-dev libegl1-mesa-dev             libvulkan-dev libgl1-mesa-dev pkg-config
-
-      - name: Build interpreter and gopher-lua baseline
+          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libx11-dev libx11-xcb-dev libxcursor-dev libxfixes-dev libegl1-mesa-dev \
+            libvulkan-dev libgl1-mesa-dev pkg-config
+      - name: Build interpreter, gopher-lua control and campaign-start binary
         shell: bash
         run: |
-          mkdir -p out
-          EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
+          mkdir -p out; EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
           go build -o out/polyloft-bvm$EXT ./cmd/polyloft-bvm
           (cd bench/luabench && go build -o ../../out/luabench$EXT .)
-          # Campaign start point (dbd86d8): same Go, same machine, same programs, so the
-          # 'Start' column is measured under identical conditions rather than recalled.
+          # Campaign start point (dbd86d8): same Go, machine and programs, so the 'Start'
+          # column is measured under identical conditions rather than recalled.
           git worktree add ../base-src dbd86d8
-          cp go.mod go.sum ../base-src/     # base used a local giocss replace; use the fetched module
+          cp go.mod go.sum ../base-src/
           (cd ../base-src && go build -o ../polyloft-bvm/out/base$EXT ./cmd/polyloft-bvm)
-          ls -la out
-          go version; python --version
-
+          go version; python --version; ls -la out
       - name: Run benchmarks
         shell: bash
         run: |
-          N="${{ github.event.inputs.n }}"; N="${N:-30}"
           EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
-          python scripts/bench_runner.py \
-            --bvm out/polyloft-bvm$EXT --lua out/luabench$EXT --base out/base$EXT \
-            --n "$N" --warmup 2 \
+          python scripts/bench_runner.py --bvm out/polyloft-bvm$EXT --lua out/luabench$EXT \
+            --base out/base$EXT --n "$N" --warmup 2 \
             --out "results_${{ matrix.label }}_${{ matrix.rep }}.json" | tee "log_${{ matrix.label }}_${{ matrix.rep }}.txt"
-
       - uses: actions/upload-artifact@v4
         with:
           name: results-${{ matrix.label }}-${{ matrix.rep }}
@@ -89,8 +80,151 @@ jobs:
             results_*.json
             log_*.txt
 
+  # ------------------------------------------------------------------ CPython versions, same VM
+  pyver:
+    name: pyver #${{ matrix.rep }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        rep: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "${{ env.GO_VERSION }}", cache: true }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: |
+            3.11
+            3.13
+            3.12.10
+      - name: Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libx11-dev libx11-xcb-dev libxcursor-dev libxfixes-dev libegl1-mesa-dev \
+            libvulkan-dev libgl1-mesa-dev pkg-config
+      - name: Build
+        run: |
+          mkdir -p out
+          go build -o out/polyloft-bvm ./cmd/polyloft-bvm
+          (cd bench/luabench && go build -o ../../out/luabench .)
+      - name: Run suite once per CPython minor version (same VM, same binary)
+        run: |
+          for v in 3.11 3.12 3.13; do
+            PY="$(command -v python$v)"; "$PY" --version
+            python scripts/bench_runner.py --bvm out/polyloft-bvm --python "$PY" \
+              --n 20 --warmup 2 --out "results_pyver-${v}_${{ matrix.rep }}.json" \
+              | tee "log_pyver-${v}_${{ matrix.rep }}.txt"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: results-pyver-${{ matrix.rep }}
+          path: |
+            results_pyver-*.json
+            log_pyver-*.txt
+
+  # ------------------------------------------------------------------ Go toolchains, same VM
+  gotc:
+    name: gotc ${{ matrix.label }} #${{ matrix.rep }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04,     label: linux-x86_64,   rep: 1 }
+          - { os: ubuntu-24.04,     label: linux-x86_64,   rep: 2 }
+          - { os: ubuntu-24.04,     label: linux-x86_64,   rep: 3 }
+          - { os: ubuntu-24.04-arm, label: linux-arm64,    rep: 1 }
+          - { os: ubuntu-24.04-arm, label: linux-arm64,    rep: 2 }
+          - { os: windows-2025,     label: windows-x86_64, rep: 1 }
+          - { os: windows-2025,     label: windows-x86_64, rep: 2 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "${{ env.PY_VERSION }}" }
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libx11-dev libx11-xcb-dev libxcursor-dev libxfixes-dev libegl1-mesa-dev \
+            libvulkan-dev libgl1-mesa-dev pkg-config
+      - uses: actions/setup-go@v5
+        with: { go-version: "${{ env.GO_VERSION }}", cache: false }
+      - name: Build with the reference toolchain
+        shell: bash
+        run: |
+          mkdir -p out; EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
+          go version; go build -o out/bvm-base$EXT ./cmd/polyloft-bvm
+      - uses: actions/setup-go@v5
+        with: { go-version: "${{ env.GO_ALT }}", cache: false }
+      - name: Build with the alternative toolchain
+        shell: bash
+        run: |
+          EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
+          go version; go build -o out/bvm-alt$EXT ./cmd/polyloft-bvm
+      - name: Run (both binaries interleaved)
+        shell: bash
+        run: |
+          EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
+          python scripts/bench_runner.py --bvm out/bvm-base$EXT --alt out/bvm-alt$EXT \
+            --n 20 --warmup 2 --only fib,float,string,sort,array,poly,closure,hash,alloc,macro \
+            --out "results_go-${{ matrix.label }}_${{ matrix.rep }}.json" | tee "log_go-${{ matrix.label }}_${{ matrix.rep }}.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: results-go-${{ matrix.label }}-${{ matrix.rep }}
+          path: |
+            results_go-*.json
+            log_go-*.txt
+
+  # ------------------------------------------------------------------ attribution ladder, same VM
+  ladder:
+    name: ladder ${{ matrix.label }} #${{ matrix.rep }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04,     label: linux-x86_64, rep: 1 }
+          - { os: ubuntu-24.04,     label: linux-x86_64, rep: 2 }
+          - { os: ubuntu-24.04,     label: linux-x86_64, rep: 3 }
+          - { os: ubuntu-24.04-arm, label: linux-arm64,  rep: 1 }
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v5
+        with: { go-version: "${{ env.GO_VERSION }}", cache: true }
+      - uses: actions/setup-python@v5
+        with: { python-version: "${{ env.PY_VERSION }}" }
+      - name: Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libx11-dev libx11-xcb-dev libxcursor-dev libxfixes-dev libegl1-mesa-dev \
+            libvulkan-dev libgl1-mesa-dev pkg-config
+      - name: Build one binary per ladder commit
+        run: |
+          mkdir -p out; go build -o out/polyloft-bvm ./cmd/polyloft-bvm
+          bash scripts/build_ladder.sh out/ladder
+      - name: Run ladder
+        run: |
+          python scripts/bench_runner.py --bvm out/polyloft-bvm --ladder out/ladder \
+            --n 15 --warmup 1 --only fib,float,string,sort,array,poly,closure,hash,alloc \
+            --out "results_lad-${{ matrix.label }}_${{ matrix.rep }}.json" | tee "log_lad-${{ matrix.label }}_${{ matrix.rep }}.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: results-lad-${{ matrix.label }}-${{ matrix.rep }}
+          path: |
+            results_lad-*.json
+            log_lad-*.txt
+
   tables:
-    needs: bench
+    needs: [bench, pyver, gotc, ladder]
+    if: always()
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -99,12 +233,12 @@ jobs:
           pattern: results-*
           merge-multiple: true
       - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PY_VERSION }}
-      - run: python scripts/make_tables.py "results_*.json" --out tables.tex
+        with: { python-version: "${{ env.PY_VERSION }}" }
+      - run: python scripts/make_tables.py "results_*.json" --out tables.tex --outdir tables
       - uses: actions/upload-artifact@v4
         with:
           name: tables
           path: |
             tables.tex
+            tables
             results_*.json

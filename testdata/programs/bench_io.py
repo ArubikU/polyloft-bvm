@@ -1,6 +1,6 @@
 import time
 started = time.perf_counter()
-N = 40000
+N = 160000
 parts = []
 for i in range(N):
     parts.append("user" + str(i % 1000) + ",action" + str(i % 50) + ",ok\n")

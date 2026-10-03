@@ -5,7 +5,7 @@ local nums = ""
 for i = 0, 19999 do nums = nums .. i .. "," end
 local haystack = "the quick brown fox jumps over the lazy dog"
 local hits = 0
-for i = 0, 399999 do if string.find(haystack, "fox", 1, true) then hits = hits + 1 end end
+for i = 0, 3199999 do if string.find(haystack, "fox", 1, true) then hits = hits + 1 end end
 local ended = os.clock()
 print("gopher-lua string benchmark")
 print("build_len=" .. string.len(s))

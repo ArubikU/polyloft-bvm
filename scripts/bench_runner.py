@@ -86,6 +86,8 @@ def main():
     ap.add_argument("--bvm", required=True)
     ap.add_argument("--lua")
     ap.add_argument("--alt", help="same source built with a different Go toolchain (toolchain-sensitivity control)")
+    ap.add_argument("--ladder", help="directory of per-commit binaries (L0_..., L1_...) for the attribution study")
+    ap.add_argument("--ladder-only", default="fib,float,string,sort,array,poly,closure,hash,alloc,macro")
     ap.add_argument("--base", help="interpreter built from the campaign's base commit")
     ap.add_argument("--base-only", default="fib,float,string,sort,array,poly",
                     help="benchmarks to run against --base (features of the base may be older)")
@@ -118,6 +120,11 @@ def main():
         engines = {"bvm": [a.bvm, "run", pf]}
         if os.path.exists(py): engines["py"] = [a.python, py]
         if a.lua and os.path.exists(lu): engines["lua"] = [a.lua, lu]
+        lad = []
+        if a.ladder and name in set(a.ladder_only.split(",")):
+            lad = sorted(f for f in os.listdir(a.ladder) if f.startswith("L"))
+            for f in lad:
+                engines["lad_" + os.path.splitext(f)[0]] = [os.path.join(a.ladder, f), "run", pf]
         if a.alt: engines["alt"] = [a.alt, "run", pf]
         if a.base and name in set(a.base_only.split(",")): engines["base"] = [a.base, "run", pf]
         for _ in range(a.warmup):
@@ -152,6 +159,20 @@ def main():
             lo, hi = boot_ratio_ci(samples["base"], samples["py"])
             entry["ratio_start"] = {"ratio": median(samples["base"]) / median(samples["py"]),
                                     "ci_lo": lo, "ci_hi": hi}
+        if lad:
+            chain, prev = [], None
+            for f in lad:
+                k = "lad_" + os.path.splitext(f)[0]
+                if not samples.get(k): continue
+                row = {"name": k[4:], "median": median(samples[k])}
+                if samples.get("py"):
+                    lo, hi = boot_ratio_ci(samples[k], samples["py"])
+                    row["vs_py"] = {"ratio": median(samples[k]) / median(samples["py"]), "ci_lo": lo, "ci_hi": hi}
+                if prev:
+                    lo, hi = boot_ratio_ci(samples[k], samples[prev])
+                    row["vs_prev"] = {"ratio": median(samples[k]) / median(samples[prev]), "ci_lo": lo, "ci_hi": hi}
+                chain.append(row); prev = k
+            entry["ladder"] = chain
         if samples.get("alt") and samples.get("bvm"):
             lo, hi = boot_ratio_ci(samples["alt"], samples["bvm"])
             entry["ratio_alt"] = {"ratio": median(samples["alt"]) / median(samples["bvm"]),

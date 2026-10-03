@@ -7,7 +7,7 @@
 import polyloft.io { IO }
 
 let started = Sys.time()
-let N = 40000
+let N = 160000
 let content = ""
 for i in range(0, N):
     content = content + "user" + (i % 1000) + ",action" + (i % 50) + ",ok\n"

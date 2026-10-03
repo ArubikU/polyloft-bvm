@@ -16,16 +16,16 @@ def sieve(limit):
 started = time.perf_counter()
 
 t1 = time.perf_counter()
-prime_count = sieve(500000)
+prime_count = sieve(2000000)
 sieve_ms = (time.perf_counter() - t1) * 1000
 
 t2 = time.perf_counter()
-squares = [i * i for i in range(10000)]
+squares = [i * i for i in range(40000)]
 sq_sum = sum(squares)
 comp_ms = (time.perf_counter() - t2) * 1000
 
 t3 = time.perf_counter()
-N = 100000
+N = 400000
 data = [i % 997 for i in range(N)]
 prefix = [0] * N
 prefix[0] = data[0]

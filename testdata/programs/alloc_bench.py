@@ -7,7 +7,7 @@ class ObjectBox:
 def main() -> None:
     started = time.perf_counter()
     total = 0
-    for i in range(500000):
+    for i in range(1500000):
         temp = ObjectBox(i)
         total += temp.value
     ended = time.perf_counter()

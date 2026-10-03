@@ -26,20 +26,20 @@ let started = Sys.time()
 
 // Part 1: Sieve of Eratosthenes up to 500k
 let t1 = Sys.time()
-let prime_count = sieve(500000)
+let prime_count = sieve(2000000)
 let sieve_ms = Sys.time() - t1
 
 // Part 2: squares sum
 let t2 = Sys.time()
 let sq_sum = 0
-for i in range(0, 10000):
+for i in range(0, 40000):
     sq_sum += i * i
 end
 let comp_ms = Sys.time() - t2
 
 // Part 3: prefix sums
 let t3 = Sys.time()
-let N = 100000
+let N = 400000
 let data = new int[N]
 for i in range(0, N):
     data[i] = i % 997

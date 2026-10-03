@@ -34,7 +34,7 @@ def qsort(arr, lo, hi):
 
 started = time.perf_counter()
 
-N = 20000
+N = 60000
 C = 200
 P = 50
 

@@ -76,11 +76,23 @@ def main():
     files = sorted({f for p in a.files for f in glob.glob(p)})
     loaded = []
     groups = {}
+    gosens = {}
+    ladder = {}
+    pyver = {}
     for f in files:
         d = json.load(open(f))
         base = os.path.basename(f)
         label = re.sub(r"^results_|_\d+\.json$|\.json$", "", base)
         rep = re.search(r"_(\d+)\.json$", base)
+        if label.startswith("pyver-"):            # CPython-version study (same VM per replicate)
+            pyver.setdefault(label[6:], []).append(d)
+            continue
+        if label.startswith("lad-"):              # attribution ladder runs
+            ladder.setdefault(label[4:], []).append(d)
+            continue
+        if label.startswith("go-"):               # toolchain-sensitivity runs: separate table
+            gosens.setdefault(label[3:], []).append(d)
+            continue
         loaded.append((label, rep.group(1) if rep else "1", d))
         groups.setdefault(label, []).append(d)
     pooled = {l: pool(rs) for l, rs in groups.items()}
@@ -150,6 +162,106 @@ def main():
     out.append("\\bottomrule\\end{tabular}\n")
     blocks["lua"] = out[mark:]
 
+    # ---- Go toolchain sensitivity: alt (newer Go) / base (Go 1.25.3), same VM, same source
+    if gosens:
+        mark = len(out)
+        gl = sorted(gosens)
+        out.append("% ===== Go toolchain sensitivity: time(alt toolchain) / time(reference toolchain) =====")
+        out.append(f"\\begin{{tabular}}{{@{{}}l{'r' * len(gl)}@{{}}}}\\toprule")
+        out.append("Benchmark & " + " & ".join(tex(SHORT.get(l, l)) for l in gl) + " \\\\\\midrule")
+        gm_cells, summ = [], []
+        for b in ORDER:
+            cells = []
+            for l in gl:
+                rs = [d["results"][b]["ratio_alt"]["ratio"] for d in gosens[l]
+                      if b in d["results"] and "ratio_alt" in d["results"][b]]
+                cells.append(f"${median(rs):.2f}$" if rs else "--")
+            if any(c != "--" for c in cells):
+                out.append(tex(b) + " & " + " & ".join(cells) + " \\\\")
+        for l in gl:
+            vals = [median([d["results"][b]["ratio_alt"]["ratio"] for d in gosens[l]
+                            if b in d["results"] and "ratio_alt" in d["results"][b]])
+                    for b in ORDER if any(b in d["results"] and "ratio_alt" in d["results"][b] for d in gosens[l])]
+            gm_cells.append(f"${statistics.geometric_mean(vals):.2f}$" if vals else "--")
+            summ.append(f"% go-sens {l}: geomean alt/base={statistics.geometric_mean(vals):.2f} min={min(vals):.2f} max={max(vals):.2f}")
+        out.append("\\midrule")
+        out.append("geomean & " + " & ".join(gm_cells) + " \\\\")
+        out.append("\\bottomrule\\end{tabular}\n")
+        out.extend(summ)
+        blocks["gosens"] = out[mark:]
+
+    # ---- attribution ladder: per-commit binaries built and run in CI
+    if ladder:
+        STEPS = {"L1_stackptr": "Fused branch-pop, explicit stack ptr., in-place arithmetic",
+                 "L2_fusion": "Local/array-field fused compares and jumps",
+                 "L3_preinline": "Review fixes and refactors (no perf. intent)",
+                 "L4_inline": "Inline-budget reshaping + dispatch caches",
+                 "L5_memo_fast": "Fast constructors, array fusions, constant memo., EQ path",
+                 "L6_dense": "Value repack + dense primitive arrays"}
+        COLS = ["fib", "float", "string", "sort", "array", "poly", "closure", "hash", "alloc"]
+        for plat, rs in ladder.items():
+            mark = len(out)
+            out.append(f"% ===== attribution ladder ({plat}): % change in run time vs. previous step =====")
+            out.append("\begin{tabular}{@{}l" + "r" * len(COLS) + "@{}}\toprule")
+            out.append("Step & " + " & ".join(tex(c) for c in COLS) + " \\\midrule")
+            tot = {c: 1.0 for c in COLS}
+            for step, label in STEPS.items():
+                cells = []
+                for c in COLS:
+                    vals = []
+                    sig = True
+                    for d in rs:
+                        row = next((r for r in d["results"].get(c, {}).get("ladder", []) if r["name"] == step), None)
+                        if row and "vs_prev" in row:
+                            vals.append(row["vs_prev"]["ratio"])
+                            sig = sig and (row["vs_prev"]["ci_hi"] < 1.0 or row["vs_prev"]["ci_lo"] > 1.0)
+                    if vals:
+                        m = median(vals); tot[c] *= m
+                        pct = (m - 1) * 100
+                        cells.append((f"$\mathbf{{{pct:+.0f}}}$" if sig else f"${pct:+.0f}$").replace("+", "{+}"))
+                    else:
+                        cells.append("--")
+                out.append(f"{tex(label)} & " + " & ".join(cells) + " \\\\")
+            out.append("\midrule")
+            out.append("Total (start $\to$ L6) & " + " & ".join(f"${(tot[c]-1)*100:+.0f}$".replace("+", "{+}") for c in COLS) + " \\\\")
+            out.append("\bottomrule\end{tabular}\n")
+            blocks["attrib_" + plat] = out[mark:]
+
+    # ---- CPython-version study: three versions measured in the same VM, per replicate
+    if pyver:
+        mark = len(out)
+        vers = sorted(pyver)
+        out.append("% ===== CPython version study (ratio to CPython; each replicate ran all versions on one VM) =====")
+        out.append("\\begin{tabular}{@{}l" + "r" * len(vers) + "r@{}}\\toprule")
+        out.append("Benchmark & " + " & ".join(f"CPython {v}" for v in vers) + " & max change \\\\\\midrule")
+        per = {v: pool(pyver[v]) for v in vers}
+        swing = {}
+        for b in ORDER:
+            rs = [per[v].get(b, {}).get("ratio_py") for v in vers]
+            if not all(rs):
+                continue
+            vals = [r["ratio"] for r in rs]
+            swing[b] = max(vals) / min(vals) - 1
+            out.append(tex(b) + " & " + " & ".join(f"${r['ratio']:.2f}$" for r in rs)
+                       + f" & ${swing[b] * 100:.0f}\\%$ \\\\")
+        gms = []
+        for v in vers:
+            allr = [per[v][b]["ratio_py"]["ratio"] for b in ORDER if b in per[v] and "ratio_py" in per[v][b]]
+            gms.append(statistics.geometric_mean(allr))
+        out.append("\\midrule")
+        out.append("geomean (all) & " + " & ".join(f"${g:.2f}$" for g in gms) + " & \\\\")
+        gms2 = []
+        for v in vers:
+            ex = [per[v][b]["ratio_py"]["ratio"] for b in ORDER
+                  if b in per[v] and "ratio_py" in per[v][b] and b not in ("string", "concurrent")]
+            gms2.append(statistics.geometric_mean(ex))
+        out.append("geomean (excl.\\ string, concurrent) & " + " & ".join(f"${g:.2f}$" for g in gms2) + " & \\\\")
+        out.append("\\bottomrule\\end{tabular}\n")
+        out.append("% pyver: " + " ".join(f"{v}: all={g:.2f} excl={g2:.2f}" for v, g, g2 in zip(vers, gms, gms2))
+                   + f" max-swing={max(swing.values()) * 100:.0f}% ({max(swing, key=swing.get)})")
+        out.append("% pyver replicates: " + ", ".join(f"{v}:{len(pyver[v])}" for v in vers))
+        blocks["pyver"] = out[mark:]
+
     # ---- plain statistics for the prose
     mark = len(out)
     out.append("% ===== summary statistics (for prose) =====")
@@ -162,7 +274,8 @@ def main():
                    for b in ORDER if b in res and "rep_spread" in res[b]]
         faster = sorted(b for b, r in allr.items() if res[b]["ratio_py"]["hi"] < 1.0)
         slower = sorted(b for b, r in allr.items() if res[b]["ratio_py"]["lo"] > 1.0)
-        out.append(f"% {l}: geomean core={gm(core):.2f} all={gm(list(allr.values())):.2f} "
+        ex = [r for b, r in allr.items() if b not in ("string", "concurrent")]
+        out.append(f"% {l}: geomean core={gm(core):.2f} all={gm(list(allr.values())):.2f} excl-str-conc={gm(ex):.2f} "
                    f"min={min(allr.values()):.2f} max={max(allr.values()):.2f} "
                    f"faster(CI<1)={','.join(faster)} slower(CI>1)={','.join(slower)} "
                    + (f"start={min(starts):.2f}-{max(starts):.2f} " if starts else "")

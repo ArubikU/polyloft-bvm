@@ -50,7 +50,7 @@ end
 
 let started = Sys.time()
 
-let N = 20000
+let N = 60000
 let C = 200
 let P = 50
 

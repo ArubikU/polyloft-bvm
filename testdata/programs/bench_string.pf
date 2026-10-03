@@ -19,7 +19,7 @@ let conv_ms = Sys.time() - t1
 let t2 = Sys.time()
 let haystack = "the quick brown fox jumps over the lazy dog"
 let hits = 0
-for i in range(0, 400000):
+for i in range(0, 3200000):
     if "fox" in haystack:
         hits += 1
     end

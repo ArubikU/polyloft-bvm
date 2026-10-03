@@ -1,5 +1,5 @@
 local started = os.clock()
-local N = 40000
+local N = 160000
 local content = ""
 local buf = {}
 for i = 0, N - 1 do

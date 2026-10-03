@@ -5,7 +5,7 @@ started = time.perf_counter()
 # Part 1: insert 50k string keys
 t1 = time.perf_counter()
 m = {}
-for i in range(50000):
+for i in range(200000):
     key = "key" + str(i)
     m[key] = i * 2
 insert_ms = (time.perf_counter() - t1) * 1000
@@ -13,14 +13,14 @@ insert_ms = (time.perf_counter() - t1) * 1000
 # Part 2: lookup all keys
 t2 = time.perf_counter()
 total = 0
-for i in range(50000):
+for i in range(200000):
     key = "key" + str(i)
     total += m[key]
 lookup_ms = (time.perf_counter() - t2) * 1000
 
 # Part 3: update (read-modify-write) 20k entries
 t3 = time.perf_counter()
-for i in range(20000):
+for i in range(80000):
     key = "key" + str(i * 2)
     m[key] = m[key] + 1
 update_ms = (time.perf_counter() - t3) * 1000
@@ -28,7 +28,7 @@ update_ms = (time.perf_counter() - t3) * 1000
 # Part 4: frequency count with string keys
 t4 = time.perf_counter()
 freq = {}
-for i in range(100000):
+for i in range(400000):
     k = "w" + str(i % 1000)
     if k not in freq:
         freq[k] = 0

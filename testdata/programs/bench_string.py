@@ -19,7 +19,7 @@ conv_ms = (time.perf_counter() - t1) * 1000
 t2 = time.perf_counter()
 haystack = "the quick brown fox jumps over the lazy dog"
 hits = 0
-for i in range(400000):
+for i in range(3200000):
     if "fox" in haystack:
         hits += 1
 search_ms = (time.perf_counter() - t2) * 1000

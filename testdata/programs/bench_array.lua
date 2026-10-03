@@ -15,10 +15,10 @@ local function sieve(limit)
   return count
 end
 local started = os.clock()
-local prime_count = sieve(500000)
+local prime_count = sieve(2000000)
 local sq_sum = 0
-for i = 0, 9999 do sq_sum = sq_sum + i * i end
-local N = 100000
+for i = 0, 39999 do sq_sum = sq_sum + i * i end
+local N = 400000
 local data = {}
 for i = 0, N - 1 do data[i] = i % 997 end
 local prefix = {}
