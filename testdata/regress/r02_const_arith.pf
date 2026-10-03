@@ -1,0 +1,67 @@
+// CONSTANT + arithmetic fusion: ints, floats, mixed, negatives, zero division, joins.
+let a = 7
+let b = 2.5
+println(a + 3)
+println(a - 10)
+println(a * 4)
+println(a / 2)
+println(b + 1)
+println(b - 4)
+println(b * 2)
+println(b / 2)
+println(a + 0.5)
+println(a * 1.5)
+println(a - 0.25)
+println(a / 4.0)
+let big = 9223372036854775800
+println(big + 5)
+let neg = -3
+println(neg * 5)
+println(neg - 2)
+println(neg / 2)
+let t = true
+let sel = 0
+if t:
+    sel = 1
+end
+let pick = 2
+if t:
+    pick = 1
+end
+let r1 = 10 + pick
+let r2 = 10 * pick
+let r3 = 10 - pick
+println(r1)
+println(r2)
+println(r3)
+let x = 5
+let flag = x > 3 && x < 10
+let y = x + 1
+if flag:
+    y = x + 100
+end
+println(y)
+try:
+    let z = a / 0
+    println(z)
+catch err:
+    println("div0 caught")
+end
+try:
+    let w = b / 0.0
+    println(w)
+catch err:
+    println("div0f caught")
+end
+let acc = 0.0
+for i in range(0, 1000):
+    acc = acc + 0.5
+    acc = acc * 1.0001
+    acc = acc - 0.1
+end
+println(acc > 0)
+let s = 0
+for i in range(0, 100):
+    s = s + i * 2 - 1
+end
+println(s)

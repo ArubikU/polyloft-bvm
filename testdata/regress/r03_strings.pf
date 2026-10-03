@@ -1,0 +1,54 @@
+// ASCII fast paths vs non-ASCII: len, index, slice, concat, equality.
+let ascii = "hello world"
+let uni = "héllo wörld ñ 日本語"
+let mixed = "abc日本def"
+println(len(ascii))
+println(len(uni))
+println(len(mixed))
+println(len(""))
+println(ascii[0])
+println(ascii[10])
+println(uni[1])
+println(uni[14])
+println(mixed[3])
+println(mixed[6])
+println(ascii[2...5])
+println(uni[1...4])
+println(mixed[2...7])
+println(ascii[0...10])
+println("n=" + 5)
+println(5 + "x")
+println("f=" + 2.5)
+println(2.5 + "f")
+println("neg=" + (0 - 7))
+println("b=" + true)
+println("s" + "t")
+println("" + "")
+println("é" + 1)
+println("a" == "a")
+println("a" == "b")
+println("é" == "é")
+let m = {}
+println(m["k"] == nil)
+m["k"] = 1
+println(m["k"] == nil)
+println(m["k"] != nil)
+let n = nil
+println(n == nil)
+println(5 == nil)
+println("x" == nil)
+println(nil == "x")
+println(nil == nil)
+println(true == nil)
+let keys = 0
+for i in range(0, 50):
+    let k = "w" + (i % 7)
+    if m[k] == nil:
+        m[k] = 0
+    end
+    m[k] += 1
+    keys += 1
+end
+println(m["w0"])
+println(m["w6"])
+println(len(m))

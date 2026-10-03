@@ -267,6 +267,36 @@ def main():
         out.append("% pyver replicates: " + ", ".join(f"{v}:{len(pyver[v])}" for v in vers))
         blocks["pyver"] = out[mark:]
 
+    # ---- peak memory (RSS / peak working set), interpreter relative to CPython and to gopher-lua
+    mark = len(out)
+    lab4m = [l for l in labels if "py3" not in l]
+    rows = []
+    for b in ORDER:
+        cells, any_ = [], False
+        for l in lab4m:
+            vals = [d["results"][b]["mem_ratio_py"] for d in groups[l]
+                    if b in d["results"] and "mem_ratio_py" in d["results"][b]]
+            cells.append(f"${median(vals):.2f}$" if vals else "--")
+            any_ = any_ or bool(vals)
+        if any_:
+            rows.append(tex(b) + " & " + " & ".join(cells) + " \\\\")
+    if rows:
+        out.append("% ===== peak memory: interpreter / CPython (median over replicates) =====")
+        out.append(f"\\begin{{tabular}}{{@{{}}l{'r' * len(lab4m)}@{{}}}}\\toprule")
+        out.append("Workload & " + " & ".join(tex(SHORT.get(l, l)) for l in lab4m) + " \\\\\\midrule")
+        out.extend(rows)
+        gms = []
+        for l in lab4m:
+            vs = [median([d["results"][b]["mem_ratio_py"] for d in groups[l]
+                          if b in d["results"] and "mem_ratio_py" in d["results"][b]] or [float("nan")])
+                  for b in ORDER]
+            vs = [v for v in vs if v == v]
+            gms.append(f"${statistics.geometric_mean(vs):.2f}$" if vs else "--")
+        out.append("\\midrule")
+        out.append("geomean & " + " & ".join(gms) + " \\\\")
+        out.append("\\bottomrule\\end{tabular}\n")
+        blocks["mem"] = out[mark:]
+
     # ---- plain statistics for the prose
     mark = len(out)
     out.append("% ===== summary statistics (for prose) =====")

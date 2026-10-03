@@ -62,13 +62,8 @@ func deepCopyValue(v Value, visited map[any]Value) Value {
 		}
 		return copied
 	case *Instance:
-		clone := &Instance{Class: obj.Class, Frozen: obj.Frozen}
-		n := len(obj.Fields)
-		if n <= 4 {
-			clone.Fields = clone.Inline[:n]
-		} else {
-			clone.Fields = make([]Value, n)
-		}
+		clone := AllocInstance(obj.Class, len(obj.Fields))
+		clone.Frozen = obj.Frozen
 		copied := ObjectValue(clone)
 		visited[obj] = copied
 		for i, field := range obj.Fields {

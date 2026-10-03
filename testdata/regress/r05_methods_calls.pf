@@ -1,0 +1,82 @@
+// Method calls, inheritance, virtual dispatch, constructors, higher-order functions.
+class Shape:
+    def area() -> number:
+        return 0.0
+    end
+    def name() -> string:
+        return "shape"
+    end
+end
+class Circle extends Shape:
+    r: number
+    Circle(r: number):
+        this.r = r
+    end
+    def area() -> number:
+        return 3.14159265 * this.r * this.r
+    end
+    def name() -> string:
+        return "circle"
+    end
+end
+class Rect extends Shape:
+    w: number
+    h: number
+    Rect(w: number, h: number):
+        this.w = w
+        this.h = h
+    end
+    def area() -> number:
+        return this.w * this.h
+    end
+end
+let shapes = new Shape[4]
+shapes[0] = new Circle(1.0)
+shapes[1] = new Rect(2.0, 3.0)
+shapes[2] = new Circle(2.0)
+shapes[3] = new Rect(1.5, 1.5)
+let total = 0.0
+for s in shapes:
+    total += s.area()
+end
+println(total)
+for s in shapes:
+    println(s.name())
+end
+def apply(f, n: int, x: int) -> int:
+    let r = x
+    for i in range(0, n):
+        r = f(r)
+    end
+    return r
+end
+println(apply((x: int) => x + 3, 10, 0))
+println(apply((x: int) => x * 2, 10, 1))
+def compose(f, g):
+    return (x: int) => f(g(x))
+end
+let inc = (x: int) => x + 1
+let dbl = (x: int) => x * 2
+println(compose(inc, dbl)(5))
+println(compose(dbl, inc)(5))
+def fact(n: int) -> int:
+    if n <= 1:
+        return 1
+    end
+    return n * fact(n - 1)
+end
+println(fact(15))
+def mutual_even(n: int) -> bool:
+    if n == 0:
+        return true
+    end
+    return mutual_odd(n - 1)
+end
+def mutual_odd(n: int) -> bool:
+    if n == 0:
+        return false
+    end
+    return mutual_even(n - 1)
+end
+println(mutual_even(100))
+println(mutual_odd(7))

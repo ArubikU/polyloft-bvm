@@ -1,0 +1,73 @@
+// Frame pooling / OpReturn fast path under recursion, exceptions and closures.
+def fib(n: int) -> int:
+    if n <= 1:
+        return n
+    end
+    return fib(n - 1) + fib(n - 2)
+end
+
+def deep(n: int) -> int:
+    if n == 0:
+        throw "bottom"
+    end
+    return deep(n - 1) + 1
+end
+
+def safe(n: int) -> any:
+    try:
+        return deep(n)
+    catch err:
+        return "caught:" + err
+    end
+end
+
+def sum_to(n: int) -> int:
+    if n == 0:
+        return 0
+    end
+    return n + sum_to(n - 1)
+end
+
+def counter():
+    let c = 0
+    let f = () => :
+        c += 1
+        return c
+    end
+    return f
+end
+
+def adder(a: int):
+    return (b: int) => a + b
+end
+
+println(fib(20))
+println(safe(50))
+println(safe(1))
+println(sum_to(1000))
+println(fib(15))
+let c1 = counter()
+let c2 = counter()
+c1()
+c1()
+println(c1())
+println(c2())
+let add5 = adder(5)
+let total = 0
+for i in range(0, 100):
+    total += add5(i)
+end
+println(total)
+let caught = 0
+for i in range(0, 200):
+    try:
+        if i % 3 == 0:
+            throw "x"
+        end
+        caught += 0
+    catch e:
+        caught += 1
+    end
+end
+println(caught)
+println(safe(5) == "caught:bottom")

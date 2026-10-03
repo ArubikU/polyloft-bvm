@@ -53,15 +53,44 @@ def go_version():
         return ""
 
 
+def _win_peak_kb(handle):
+    """Peak working set (KB) of a finished child on Windows (psapi, no third-party deps)."""
+    import ctypes
+    from ctypes import wintypes
+
+    class PMC(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
+                    ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
+    c = PMC(); c.cb = ctypes.sizeof(PMC)
+    ok = ctypes.windll.psapi.GetProcessMemoryInfo(wintypes.HANDLE(int(handle)), ctypes.byref(c), c.cb)
+    return c.PeakWorkingSetSize // 1024 if ok else None
+
+
 def run(cmd, timeout=600):
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    out = p.stdout
+    """Run one benchmark process; return (elapsed_ms, functional_lines, peak_rss_kb)."""
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    rss = None
+    if sys.platform == "win32":
+        out, _ = p.communicate(timeout=timeout)
+        try:
+            rss = _win_peak_kb(p._handle)
+        except Exception:
+            rss = None
+    else:
+        # wait4 reports the child's own peak RSS (KB on Linux, bytes on macOS)
+        out = p.stdout.read()
+        _, status, ru = os.wait4(p.pid, 0)
+        p.returncode = os.waitstatus_to_exitcode(status)
+        rss = ru.ru_maxrss // (1024 if sys.platform == "darwin" else 1)
     m = ELAPSED.findall(out)
     if p.returncode != 0 or not m:
-        return None, None
+        return None, None, None
     functional = [l for l in out.splitlines()
                   if not TIMING.search(l.split("=")[0]) and "benchmark" not in l]
-    return float(m[-1]), functional
+    return float(m[-1]), functional, rss
 
 
 def median(a): return statistics.median(a)
@@ -130,14 +159,17 @@ def main():
         for _ in range(a.warmup):
             for cmd in engines.values(): run(cmd)
         samples = {k: [] for k in engines}
+        mems = {}
         func = {}
         for i in range(a.n):
             order = list(engines)
             random.Random(i).shuffle(order)          # randomize order within each iteration
             for k in order:
-                t, f = run(engines[k])
+                t, f, rss = run(engines[k])
                 if t is not None:
                     samples[k].append(t); func.setdefault(k, f)
+                    if rss:
+                        mems.setdefault(k, []).append(rss)
         # equal-work check: every functional key=value present in both engines must agree
         # (case-insensitive: True/true); keys an engine does not print are reported, not hidden
         def kv(lines):
@@ -152,6 +184,12 @@ def main():
             missing = [key for key in ref if key not in other]
             if missing: notes.append(name + ":" + k + " omits " + ",".join(missing))
         entry = {"samples": samples}
+        # peak resident set size (KB), median per engine; ratio of the interpreter to each baseline
+        entry["mem_kb"] = {k: median(v) for k, v in mems.items() if v}
+        if mems.get("bvm"):
+            for base in ("py", "lua", "alt"):
+                if mems.get(base):
+                    entry["mem_ratio_" + base] = median(mems["bvm"]) / median(mems[base])
         for k, s in samples.items():
             if s:
                 entry[k] = {"median": median(s), "cv": cv(s), "min": min(s), "n": len(s)}

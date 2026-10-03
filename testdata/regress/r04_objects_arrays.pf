@@ -1,0 +1,158 @@
+// Objects (1..9 fields), instance pools, arrays of objects, sorting, dense arrays.
+class Item:
+    key: int
+    val: int
+    Item(k: int, v: int):
+        this.key = k
+        this.val = v
+    end
+end
+
+class Box:
+    value: number
+    Box(v: number):
+        this.value = v
+    end
+end
+
+class Wide:
+    a: int
+    b: int
+    c: int
+    d: int
+    e: int
+    f: int
+    g: int
+    h: int
+    i: int
+    Wide(x: int):
+        this.a = x
+        this.b = x + 1
+        this.c = x + 2
+        this.d = x + 3
+        this.e = x + 4
+        this.f = x + 5
+        this.g = x + 6
+        this.h = x + 7
+        this.i = x + 8
+    end
+end
+
+class Empty:
+end
+
+def qsort(arr: Item[], lo: int, hi: int) -> void:
+    if lo >= hi:
+        return
+    end
+    let mid = lo + (int)((hi - lo) / 2)
+    let pivot = arr[mid].key
+    let i = lo
+    let j = hi
+    loop i <= j:
+        loop arr[i].key < pivot:
+            i += 1
+        end
+        loop arr[j].key > pivot:
+            j -= 1
+        end
+        if i <= j:
+            let tmp = arr[i]
+            arr[i] = arr[j]
+            arr[j] = tmp
+            i += 1
+            j -= 1
+        end
+    end
+    qsort(arr, lo, j)
+    qsort(arr, i, hi)
+end
+
+let N = 500
+let items = new Item[N]
+for i in range(0, N):
+    items[i] = new Item((i * 7919) % 1009, i)
+end
+qsort(items, 0, N - 1)
+let ok = true
+for i in range(1, N):
+    if items[i - 1].key > items[i].key:
+        ok = false
+    end
+end
+println(ok)
+println(items[0].key)
+println(items[N - 1].key)
+let checksum = 0
+for it in items:
+    checksum += it.key * 3 + it.val
+end
+println(checksum)
+
+let keep = new Box[10]
+for i in range(0, 100):
+    let b = new Box(i * 1.5)
+    if i % 10 == 0:
+        keep[(int)(i / 10)] = b
+    end
+end
+let t = 0.0
+for b in keep:
+    t += b.value
+end
+println(t)
+println(len(keep))
+let last = new Box(0)
+for i in range(0, 50):
+    let b = new Box(i)
+    last = b
+end
+println(last.value)
+
+let w = new Wide(10)
+println(w.a + w.b + w.c + w.d + w.e + w.f + w.g + w.h + w.i)
+let ws = new Wide[20]
+for i in range(0, 20):
+    ws[i] = new Wide(i)
+end
+let wsum = 0
+for x in ws:
+    wsum += x.i - x.a
+end
+println(wsum)
+let e1 = new Empty()
+let e2 = new Empty()
+println(e1 == e2)
+println(e1 == e1)
+
+let ints = [1, 2, 3, 4, 5]
+ints[2] = 30
+println(ints)
+let fl = [1.5, 2.5]
+fl[0] = 9.25
+println(fl)
+let mix: any[] = [1, 2, 3]
+mix[1] = "two"
+println(mix)
+let sq = [i * i for i in range(0, 10)]
+println(sq)
+let sieve = new bool[50]
+for i in range(2, 50):
+    sieve[i] = true
+end
+for i in range(2, 8):
+    if sieve[i]:
+        let j = i * i
+        loop j < 50:
+            sieve[j] = false
+            j += i
+        end
+    end
+end
+let primes = 0
+for i in range(2, 50):
+    if sieve[i]:
+        primes += 1
+    end
+end
+println(primes)

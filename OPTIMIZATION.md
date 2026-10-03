@@ -633,3 +633,22 @@ empeoraron sort/array (el bucle de despacho crece); se descartaron.
 Verificación: `go test ./...` y `scripts/corpus_diff.sh NEW REF` (salida funcional idéntica en los
 65 programas de `tests/` y `testdata/programs/`; solo difieren líneas de tiempo).
 Resultados en CI: `bench/results/run-37098526795` (frente a `run-37086550680`): media geométrica 0.74–0.79 (antes 0.88–0.92); ninguna carga queda >1.01 salvo sort en macOS (1.08).
+
+### 10.1 Memoria
+
+`scripts/bench_runner.py` registra ahora el pico de memoria residente (RSS / peak working set) de cada
+proceso y `scripts/make_tables.py` genera la tabla `mem` (intérprete / CPython). Medición local (Windows):
+las optimizaciones de 10 no cambian la memoria (ratio 1.00 frente al binario anterior); frente a CPython el
+intérprete usa 1.0-2.1x (media geométrica ~1.3x) por el tamaño de `value.Value` (56 B) y de las instancias.
+
+Palanca aplicada: instancia y campos en **una sola asignación** del tamaño justo (`value.AllocInstance`),
+en lugar de cabecera (96 B con almacenamiento inline) + slice aparte: macro_large 107->97 MB,
+poly 62->55 MB, macro 40->36 MB, sort 28->26 MB (sin pérdida de velocidad; también corrige un desborde en
+`DeepCopy` de instancias con más de un campo). `GOGC` no reduce el pico (la memoria es dato vivo, no basura).
+
+Pendiente (no hecho por su coste en velocidad): `Value` 56 -> 48 B fusionando `Num`/`Int` (medido antes: -9..11 %
+en kernels numéricos) y almacenamiento compacto de arrays de objetos.
+
+Pruebas de regresión: `testdata/regress/*.pf` + `.expected` (generados con el binario previo a las optimizaciones),
+ejecutados por `go test` (`regress_test.go`): frames/excepciones/closures, aritmética con constantes, strings
+ASCII y Unicode, instancias de 0-9 campos, arrays densos y de objetos, métodos y despacho virtual.
