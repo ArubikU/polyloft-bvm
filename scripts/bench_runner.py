@@ -46,6 +46,13 @@ def cpu_name():
     return platform.processor() or "unknown"
 
 
+def go_version():
+    try:
+        return subprocess.run(["go", "version"], capture_output=True, text=True).stdout.split()[2].lstrip("go")
+    except Exception:
+        return ""
+
+
 def run(cmd, timeout=600):
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     out = p.stdout
@@ -95,6 +102,7 @@ def main():
         "cpu": cpu_name(), "cores": os.cpu_count(),
         "python": (pyv.stdout or pyv.stderr).strip().split()[-1],
         "date": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "go": go_version(),
         "n": a.n, "runner": os.environ.get("RUNNER_NAME", ""),
         "github_run": os.environ.get("GITHUB_RUN_ID", ""),
         "commit": os.environ.get("GITHUB_SHA", ""),

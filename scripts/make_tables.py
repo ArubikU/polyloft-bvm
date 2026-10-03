@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """Turn bench_runner.py JSON files into the paper's LaTeX tables.
 
-  python scripts/make_tables.py "results_*.json" --out tables.tex
+  python scripts/make_tables.py "results_*.json" --out tables.tex --outdir tables/
 
-Files are named results_<platform>_<rep>.json. Replicates of one platform (separate
-CI jobs, possibly different VMs) are pooled: samples are concatenated, medians/CV/CI
-recomputed, and the spread of the per-replicate ratio is reported. Every number comes
-from raw samples; nothing is typed by hand.
+Files are named results_<platform>_<rep>.json. Replicates of one platform are separate
+CI jobs and may land on different CPUs (GitHub assigns hosts freely), so samples are NOT
+pooled. Each replicate keeps its own statistics; the platform value is the median over
+replicates and the bracket is the envelope of every replicate's 95% bootstrap CI (so it
+covers within-job noise AND between-VM variation). Every number comes from raw samples.
 """
 import argparse, glob, json, os, re, statistics, sys
-sys.path.insert(0, os.path.dirname(__file__))
-from bench_runner import median, cv, boot_ratio_ci   # noqa: E402
 
 ORDER = ["fib", "float", "string", "sort", "array", "poly", "closure", "hash",
          "alloc", "macro", "macro_large", "io", "concurrent"]
 CORE = ["fib", "float", "string", "sort", "array", "poly"]
+median = statistics.median
 
 
 def tex(s):
@@ -26,35 +26,38 @@ def fmt_ms(x):
 
 
 def pool(runs):
-    """runs: list of result dicts for the same platform -> pooled per-benchmark stats."""
     res = {}
     for b in ORDER:
-        S, per = {}, {}
-        for d in runs:
-            e = d["results"].get(b)
-            if not e: continue
-            for k, v in e["samples"].items():
-                S.setdefault(k, []).extend(v)
-            if e.get("ratio_py"): per.setdefault("py", []).append(e["ratio_py"]["ratio"])
-        if "bvm" not in S: continue
-        ent = {"stat": {k: {"median": median(v), "cv": cv(v), "n": len(v)} for k, v in S.items() if v}}
-        for base, key in (("py", "ratio_py"), ("lua", "ratio_lua")):
-            if S.get("bvm") and S.get(base):
-                lo, hi = boot_ratio_ci(S["bvm"], S[base])
-                ent[key] = {"ratio": median(S["bvm"]) / median(S[base]), "lo": lo, "hi": hi}
-        if S.get("base") and S.get("py"):
-            lo, hi = boot_ratio_ci(S["base"], S["py"])
-            ent["start"] = {"ratio": median(S["base"]) / median(S["py"]), "lo": lo, "hi": hi}
-        if len(per.get("py", [])) > 1:
-            ent["rep_spread"] = (min(per["py"]), max(per["py"]))
+        es = [d["results"][b] for d in runs if b in d["results"] and "bvm" in d["results"][b]]
+        if not es:
+            continue
+        ent = {"stat": {}}
+        for k in ("bvm", "py", "lua", "base"):
+            xs = [e[k] for e in es if k in e]
+            if xs:
+                ent["stat"][k] = {"median": median([x["median"] for x in xs]),
+                                  "cv": median([x["cv"] for x in xs])}
+        for src, key in (("ratio_py", "ratio_py"), ("ratio_lua", "ratio_lua"),
+                         ("ratio_start", "start")):
+            rs = [e[src] for e in es if src in e]
+            if rs:
+                ent[key] = {"ratio": median([r["ratio"] for r in rs]),
+                            "lo": min(r["ci_lo"] for r in rs),
+                            "hi": max(r["ci_hi"] for r in rs),
+                            "all": [r["ratio"] for r in rs]}
+        if len(es) > 1 and "ratio_py" in ent:
+            res_all = ent["ratio_py"]["all"]
+            ent["rep_spread"] = (min(res_all), max(res_all))
         res[b] = ent
     return res
 
 
-def cell(r, bold_if_faster=True):
-    if not r: return "--"
+def cell(r):
+    if not r:
+        return "--"
     s = f"{r['ratio']:.2f}"
-    if bold_if_faster and r["hi"] < 1.0: s = r"\mathbf{" + s + "}"
+    if r["hi"] < 1.0:
+        s = r"\mathbf{" + s + "}"          # significantly faster than the baseline
     return f"${s}\\,[{r['lo']:.2f},{r['hi']:.2f}]$"
 
 
@@ -62,36 +65,44 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("files", nargs="+")
     ap.add_argument("--out", default="tables.tex")
-    ap.add_argument("--outdir", help="also write one .tex per table here (env, <platform>, summary, stats)")
+    ap.add_argument("--outdir", help="also write one .tex per table (env, res_<platform>, summary, stats)")
     a = ap.parse_args()
     files = sorted({f for p in a.files for f in glob.glob(p)})
+    loaded = []
     groups = {}
     for f in files:
-        label = re.sub(r"^results_|_\d+\.json$|\.json$", "", os.path.basename(f))
-        groups.setdefault(label, []).append(json.load(open(f)))
+        d = json.load(open(f))
+        base = os.path.basename(f)
+        label = re.sub(r"^results_|_\d+\.json$|\.json$", "", base)
+        rep = re.search(r"_(\d+)\.json$", base)
+        loaded.append((label, rep.group(1) if rep else "1", d))
+        groups.setdefault(label, []).append(d)
     pooled = {l: pool(rs) for l, rs in groups.items()}
     out = ["% --- generated by scripts/make_tables.py; do not edit ---", ""]
-
     blocks = {}
-    mark = len(out)
-    out.append("% ===== environment =====")
-    out.append("\\begin{tabular}{@{}lllllr@{}}\\toprule")
-    out.append("Platform & CPU & CPython & Cores & Replicates & $n$/engine \\\\\\midrule")
-    for l, rs in groups.items():
-        e = rs[0]["env"]
-        out.append(f"{tex(l)} & {tex(e['cpu'])} & {e['python']} & {e['cores']} & {len(rs)} & {e['n'] * len(rs)} \\\\")
-    out.append("\\bottomrule\\end{tabular}\n")
 
+    # ---- environment: one row per replicate, CPU exactly as the runner reports it
+    mark = len(out)
+    out.append("% ===== environment (one row per CI job) =====")
+    out.append("\\begin{tabular}{@{}llllr@{}}\\toprule")
+    out.append("Platform & CPU (as reported) & CPython & Go & Cores \\\\\\midrule")
+    for label, rep, d in loaded:
+        e = d["env"]
+        out.append(f"{tex(label)} \\#{rep} & {tex(e['cpu'])} & {e['python']} & "
+                   f"{e.get('go', '1.25.3')} & {e['cores']} \\\\")
+    out.append("\\bottomrule\\end{tabular}\n")
     blocks["env"] = out[mark:]
 
+    # ---- per-platform detail
     for l, res in pooled.items():
         mark = len(out)
         out.append(f"% ===== {l}: ratio to CPython / gopher-lua / campaign start =====")
         out.append("\\begin{tabular}{@{}lrrrrrr@{}}\\toprule")
-        out.append("Benchmark & CPython (ms) & Interp.\\ (ms) & CV & vs.\\ CPython [95\\% CI] & vs.\\ Lua [95\\% CI] & Start/CPython \\\\\\midrule")
+        out.append("Benchmark & CPython (ms) & Interp.\\ (ms) & CV & vs.\\ CPython & vs.\\ Lua & Start/CPython \\\\\\midrule")
         for b in ORDER:
             e = res.get(b)
-            if not e: continue
+            if not e:
+                continue
             st = e["stat"]
             py = fmt_ms(st["py"]["median"]) if "py" in st else "--"
             start = f"${e['start']['ratio']:.2f}$" if "start" in e else "--"
@@ -100,9 +111,10 @@ def main():
         out.append("\\bottomrule\\end{tabular}\n")
         blocks["res_" + l] = out[mark:]
 
+    # ---- cross-platform summary
     mark = len(out)
-    out.append("% ===== cross-platform summary (ratio to CPython, pooled medians) =====")
     labels = list(pooled)
+    out.append("% ===== cross-platform summary (median over replicates of ratio to CPython) =====")
     out.append(f"\\begin{{tabular}}{{@{{}}l{'r' * len(labels)}@{{}}}}\\toprule")
     out.append("Benchmark & " + " & ".join(tex(l) for l in labels) + " \\\\\\midrule")
     for b in ORDER:
@@ -113,22 +125,27 @@ def main():
         if any(c != "--" for c in cells):
             out.append(tex(b) + " & " + " & ".join(cells) + " \\\\")
     out.append("\\bottomrule\\end{tabular}\n")
-
     blocks["summary"] = out[mark:]
+
+    # ---- plain statistics for the prose
     mark = len(out)
-    out.append("% ===== summary statistics =====")
+    out.append("% ===== summary statistics (for prose) =====")
+    gm = lambda v: statistics.geometric_mean(v) if v else float("nan")
     for l, res in pooled.items():
         core = [res[b]["ratio_py"]["ratio"] for b in CORE if b in res and "ratio_py" in res[b]]
-        allr = [res[b]["ratio_py"]["ratio"] for b in ORDER if b in res and "ratio_py" in res[b]]
+        allr = {b: res[b]["ratio_py"]["ratio"] for b in ORDER if b in res and "ratio_py" in res[b]}
         starts = [res[b]["start"]["ratio"] for b in CORE if b in res and "start" in res[b]]
         spreads = [(res[b]["rep_spread"][1] / res[b]["rep_spread"][0] - 1) * 100
                    for b in ORDER if b in res and "rep_spread" in res[b]]
-        gm = lambda v: statistics.geometric_mean(v) if v else float("nan")
-        out.append(f"% {l}: geomean ratio core={gm(core):.2f} all={gm(allr):.2f} "
-                   f"min={min(allr):.2f} max={max(allr):.2f} "
-                   + (f"start range={min(starts):.2f}-{max(starts):.2f} " if starts else "")
-                   + (f"max replicate spread={max(spreads):.1f}%" if spreads else ""))
+        faster = sorted(b for b, r in allr.items() if res[b]["ratio_py"]["hi"] < 1.0)
+        slower = sorted(b for b, r in allr.items() if res[b]["ratio_py"]["lo"] > 1.0)
+        out.append(f"% {l}: geomean core={gm(core):.2f} all={gm(list(allr.values())):.2f} "
+                   f"min={min(allr.values()):.2f} max={max(allr.values()):.2f} "
+                   f"faster(CI<1)={','.join(faster)} slower(CI>1)={','.join(slower)} "
+                   + (f"start={min(starts):.2f}-{max(starts):.2f} " if starts else "")
+                   + (f"max-rep-spread={max(spreads):.0f}% median-rep-spread={median(spreads):.0f}%" if spreads else ""))
     blocks["stats"] = out[mark:]
+
     open(a.out, "w", encoding="utf-8").write("\n".join(out) + "\n")
     if a.outdir:
         os.makedirs(a.outdir, exist_ok=True)
