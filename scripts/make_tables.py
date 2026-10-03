@@ -31,6 +31,25 @@ def fmt_ms(x):
     return f"{x:.0f}" if x >= 100 else f"{x:.1f}"
 
 
+def ladder_chain(entry):
+    """Recompute the per-step comparison from the raw samples, ordered by the L<number> prefix."""
+    names = sorted((k for k in entry.get("samples", {}) if k.startswith("lad_")),
+                   key=lambda k: int(re.match(r"lad_L(\d+)", k).group(1)))
+    chain, prev = [], None
+    from bench_runner import boot_ratio_ci
+    for k in names:
+        s = entry["samples"][k]
+        if not s:
+            continue
+        row = {"name": k[4:]}
+        if prev:
+            lo, hi = boot_ratio_ci(s, entry["samples"][prev])
+            row["vs_prev"] = {"ratio": median(s) / median(entry["samples"][prev]), "ci_lo": lo, "ci_hi": hi}
+        chain.append(row)
+        prev = k
+    return chain
+
+
 def pool(runs):
     res = {}
     for b in ORDER:
@@ -221,7 +240,7 @@ def main():
                     vals = []
                     sig = True
                     for d in rs:
-                        row = next((r for r in d["results"].get(c, {}).get("ladder", []) if r["name"] == step), None)
+                        row = next((r for r in ladder_chain(d["results"].get(c, {})) if r["name"] == step), None)
                         if row and "vs_prev" in row:
                             vals.append(row["vs_prev"]["ratio"])
                             sig = sig and (row["vs_prev"]["ci_hi"] < 1.0 or row["vs_prev"]["ci_lo"] > 1.0)

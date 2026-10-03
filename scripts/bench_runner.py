@@ -151,7 +151,8 @@ def main():
         if a.lua and os.path.exists(lu): engines["lua"] = [a.lua, lu]
         lad = []
         if a.ladder and name in set(a.ladder_only.split(",")):
-            lad = sorted(f for f in os.listdir(a.ladder) if f.startswith("L"))
+            lad = sorted((f for f in os.listdir(a.ladder) if f.startswith("L")),
+                         key=lambda f: int(re.match(r"L(\d+)", f).group(1)))
             for f in lad:
                 engines["lad_" + os.path.splitext(f)[0]] = [os.path.join(a.ladder, f), "run", pf]
         if a.alt: engines["alt"] = [a.alt, "run", pf]
