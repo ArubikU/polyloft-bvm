@@ -632,7 +632,7 @@ empeoraron sort/array (el bucle de despacho crece); se descartaron.
 
 Verificación: `go test ./...` y `scripts/corpus_diff.sh NEW REF` (salida funcional idéntica en los
 65 programas de `tests/` y `testdata/programs/`; solo difieren líneas de tiempo).
-Resultados en CI: `bench/results/run-37098526795` (frente a `run-37086550680`): media geométrica 0.74–0.79 (antes 0.88–0.92); ninguna carga queda >1.01 salvo sort en macOS (1.08).
+Resultados en CI (última: `bench/results/run-37102902168`, media geométrica de tiempo 0.67-0.72 vs CPython; memoria 1.24-1.50x en Linux/Windows). Anteriores: `bench/results/run-37098526795` (frente a `run-37086550680`): media geométrica 0.74–0.79 (antes 0.88–0.92); ninguna carga queda >1.01 salvo sort en macOS (1.08).
 
 ### 10.1 Memoria
 
