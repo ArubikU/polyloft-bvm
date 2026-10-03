@@ -624,6 +624,7 @@ de CPython. Cambios, medidos A/B intercalados contra el binario anterior:
 | Caché de una entrada delante del mapa de pools de instancias | alloc −21 % |
 | `len`/indexado/slicing de strings con ruta rápida ASCII (sin `[]rune(s)` por cada índice) | io (`len` sobre 3 MB) |
 | Opcodes fusionados `ADD/SUB/MUL/DIV_NUM_CONST` (`CONSTANT`+aritmética, mismo tamaño, parche in situ) | float −14 % |
+| `ADD` String+String/Number sin sondeo de instancias; `==` string-string y nil-primitivo sin `valuesEqual` | hash −20 % |
 | PGO (`cmd/polyloft-bvm/default.pgo`, perfil combinado de la suite) | +2–14 % |
 
 Experimento negativo: variantes `*_NUM_LOCAL` (`GET_LOCAL`+aritmética) no mejoraron e incluso
