@@ -97,7 +97,7 @@ def main():
         "commit": os.environ.get("GITHUB_SHA", ""),
     }
     only = set(filter(None, a.only.split(",")))
-    results, mismatches = {}, []
+    results, mismatches, notes = {}, [], []
     for name, stem in BENCHES:
         if only and name not in only: continue
         pf = os.path.join(a.programs, stem + ".pf")
@@ -117,12 +117,19 @@ def main():
                 t, f = run(engines[k])
                 if t is not None:
                     samples[k].append(t); func.setdefault(k, f)
-        # equal-work check: functional output must match across engines
-        ref = func.get("py") or func.get("bvm")
+        # equal-work check: every functional key=value present in both engines must agree
+        # (case-insensitive: True/true); keys an engine does not print are reported, not hidden
+        def kv(lines):
+            return {l.split("=", 1)[0]: l.split("=", 1)[1].strip().lower()
+                    for l in (lines or []) if "=" in l}
+        ref = kv(func.get("py") or func.get("bvm"))
         for k, f in func.items():
-            if ref is not None and f is not None and sorted(f) != sorted(ref) and k != "py":
-                # engines print different banner/format for non-integer values; flag, don't hide
-                mismatches.append(name + ":" + k)
+            if k == "py": continue
+            other = kv(f)
+            bad = [key for key in other if key in ref and other[key] != ref[key]]
+            if bad: mismatches.append(name + ":" + k + ":" + ",".join(bad))
+            missing = [key for key in ref if key not in other]
+            if missing: notes.append(name + ":" + k + " omits " + ",".join(missing))
         entry = {"samples": samples}
         for k, s in samples.items():
             if s:
@@ -140,7 +147,7 @@ def main():
               f"py={entry.get('py',{}).get('median',0):9.1f}ms "
               f"ratio_py={r.get('ratio',0):.2f} [{r.get('ci_lo',0):.2f},{r.get('ci_hi',0):.2f}]",
               flush=True)
-    json.dump({"env": env, "mismatches": mismatches, "results": results},
+    json.dump({"env": env, "mismatches": mismatches, "notes": notes, "results": results},
               open(a.out, "w"), indent=1)
     if mismatches: print("WARNING output mismatch:", mismatches, file=sys.stderr)
 

@@ -33,6 +33,9 @@ jobs:
           - { os: ubuntu-24.04-arm, label: linux-arm64,   rep: 2 }
           - { os: ubuntu-24.04-arm, label: linux-arm64,   rep: 3 }
           - { os: windows-2025,     label: windows-x86_64, rep: 1 }
+          # CPython-version sensitivity (same x86-64 runner class, same interpreter binary)
+          - { os: ubuntu-24.04,     label: linux-x86_64-py311, rep: 1, py: "3.11" }
+          - { os: ubuntu-24.04,     label: linux-x86_64-py313, rep: 1, py: "3.13" }
           - { os: macos-15,         label: macos-arm64,   rep: 1 }
     steps:
       - uses: actions/checkout@v4
@@ -44,7 +47,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PY_VERSION }}
+          python-version: ${{ matrix.py || env.PY_VERSION }}
 
       - name: Linux build dependencies (gio UI toolkit headers)
         if: runner.os == 'Linux'
