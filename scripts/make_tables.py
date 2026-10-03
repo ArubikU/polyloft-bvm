@@ -170,6 +170,41 @@ def main():
     out.append("\\bottomrule\\end{tabular}\n")
     blocks["summary"] = out[mark:]
 
+    # ---- combined: time and peak memory vs CPython (memory omitted for macOS, see paper)
+    mark = len(out)
+    t4 = [l for l in labels if "py3" not in l]
+    m3 = [l for l in t4 if l != "macos-arm64"]
+    out.append("% ===== time and peak-memory ratios to CPython (median over replicates) =====")
+    out.append("\\begin{tabular}{@{}l" + "r" * len(t4) + "r" * len(m3) + "@{}}\\toprule")
+    out.append("& \\multicolumn{%d}{c}{Time} & \\multicolumn{%d}{c}{Peak memory} \\\\" % (len(t4), len(m3)))
+    out.append("\\cmidrule(lr){2-%d}\\cmidrule(lr){%d-%d}" % (1 + len(t4), 2 + len(t4), 1 + len(t4) + len(m3)))
+    out.append("Workload & " + " & ".join(tex(SHORT.get(l, l)) for l in t4 + m3) + " \\\\\\midrule")
+    for b in ORDER:
+        cells = []
+        for l in t4:
+            r = pooled[l].get(b, {}).get("ratio_py")
+            cells.append(f"${r['ratio']:.2f}$" if r else "--")
+        for l in m3:
+            vals = [d["results"][b]["mem_ratio_py"] for d in groups[l]
+                    if b in d["results"] and "mem_ratio_py" in d["results"][b]]
+            cells.append(f"${median(vals):.2f}$" if vals else "--")
+        out.append(tex(b) + " & " + " & ".join(cells) + " \\\\")
+    gcells = []
+    for l in t4:
+        vs = [pooled[l][b]["ratio_py"]["ratio"] for b in ORDER if b in pooled[l] and "ratio_py" in pooled[l][b]]
+        gcells.append(f"${statistics.geometric_mean(vs):.2f}$")
+    for l in m3:
+        vs = []
+        for b in ORDER:
+            v = [d["results"][b]["mem_ratio_py"] for d in groups[l] if b in d["results"] and "mem_ratio_py" in d["results"][b]]
+            if v:
+                vs.append(median(v))
+        gcells.append(f"${statistics.geometric_mean(vs):.2f}$" if vs else "--")
+    out.append("\\midrule")
+    out.append("geomean & " + " & ".join(gcells) + " \\\\")
+    out.append("\\bottomrule\\end{tabular}\n")
+    blocks["combo"] = out[mark:]
+
     # ---- ratio to gopher-lua (the in-Go interpreter control), 3.12.10 platforms only
     mark = len(out)
     lab4 = [l for l in labels if "py3" not in l]
