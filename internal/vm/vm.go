@@ -58,7 +58,9 @@ type VM struct {
 	builtinArgs     []value.Value
 	globalSlotNames []string
 	callbackMu      sync.Mutex
-	instancePools   map[*value.Class][]*value.Instance
+	instancePools   map[*value.Class]*instancePool
+	lastPoolCls     *value.Class // one-entry cache in front of instancePools
+	lastPool        *instancePool
 	constCache      map[*bytecode.Chunk][]value.Value
 }
 
@@ -3514,13 +3516,38 @@ func (vm *VM) releaseFrame(child *frame) {
 	vm.framePool = append(vm.framePool, child)
 }
 
+type instancePool struct {
+	items []*value.Instance
+}
+
+// poolFor returns the recycling pool of cls (creating it when create is set).
+// Allocation loops hit the same class repeatedly, so a one-entry cache avoids
+// the map lookup on the hot path.
+func (vm *VM) poolFor(cls *value.Class, create bool) *instancePool {
+	if cls == vm.lastPoolCls && vm.lastPool != nil {
+		return vm.lastPool
+	}
+	p := vm.instancePools[cls]
+	if p == nil {
+		if !create {
+			return nil
+		}
+		if vm.instancePools == nil {
+			vm.instancePools = make(map[*value.Class]*instancePool, 4)
+		}
+		p = &instancePool{}
+		vm.instancePools[cls] = p
+	}
+	vm.lastPoolCls, vm.lastPool = cls, p
+	return p
+}
+
 // acquireInstance returns a recycled instance from the pool if available, or allocates a new one.
 func (vm *VM) acquireInstance(cls *value.Class) *value.Instance {
-	if vm.instancePools != nil {
-		if pool := vm.instancePools[cls]; len(pool) > 0 {
-			n := len(pool) - 1
-			inst := pool[n]
-			vm.instancePools[cls] = pool[:n]
+	if p := vm.poolFor(cls, false); p != nil {
+		if n := len(p.items) - 1; n >= 0 {
+			inst := p.items[n]
+			p.items = p.items[:n]
 			inst.Frozen = false
 			return inst
 		}
@@ -3556,14 +3583,10 @@ func (vm *VM) tryRecycleLocal(frame *frame, slot byte, old value.Value) {
 		}
 	}
 	// No aliases found – recycle the instance
-	if vm.instancePools == nil {
-		vm.instancePools = make(map[*value.Class][]*value.Instance, 4)
-	}
-	cls := inst.Class
-	pool := vm.instancePools[cls]
 	const maxPoolSize = 32
-	if len(pool) < maxPoolSize {
-		vm.instancePools[cls] = append(pool, inst)
+	pool := vm.poolFor(inst.Class, true)
+	if len(pool.items) < maxPoolSize {
+		pool.items = append(pool.items, inst)
 	}
 }
 
