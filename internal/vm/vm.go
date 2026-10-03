@@ -232,7 +232,8 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 	// frame (after calls, returns and handled exceptions).
 	code := frame.fn.Chunk.Code
 	for {
-		if frame.ip >= len(code) {
+		ip := frame.ip
+		if uint(ip) >= uint(len(code)) {
 			if handled, raised := vm.handleRaised(baseDepth, frame, diagnostic.Runtime("RuntimeError", "unexpected end of bytecode", value.NilValue())); handled {
 				frame = vm.frames[len(vm.frames)-1]
 				code = frame.code
@@ -242,8 +243,8 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 		}
 
-		op := bytecode.Op(code[frame.ip])
-		frame.ip++
+		op := bytecode.Op(code[ip])
+		frame.ip = ip + 1
 
 		switch op {
 		case bytecode.OpConstant:
