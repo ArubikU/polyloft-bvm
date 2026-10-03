@@ -109,7 +109,8 @@ def main():
         byl.setdefault(label, []).append(d)
     for label, ds in byl.items():
         e0 = ds[0]["env"]
-        cpus = ", ".join(short_cpu(d["env"]["cpu"]).replace("AMD EPYC ", "") for d in ds)
+        names = [short_cpu(d["env"]["cpu"]).replace("AMD EPYC ", "").replace(" (Virtual)", "") for d in ds]
+        cpus = f"{names[0]} $\\times${len(names)}" if len(set(names)) == 1 else ", ".join(names)
         fam = "AMD EPYC " if "EPYC" in e0["cpu"] else ""
         out.append(f"{tex(label)} & {tex(fam + cpus)} & {e0['cores']} & {e0['python']} / {e0.get('go', '1.25.3')} \\\\")
     out.append("\\bottomrule\\end{tabular}\n")
@@ -237,7 +238,7 @@ def main():
         vers = sorted(pyver)
         out.append("% ===== CPython version study (ratio to CPython; each replicate ran all versions on one VM) =====")
         out.append("\\begin{tabular}{@{}l" + "r" * len(vers) + "r@{}}\\toprule")
-        out.append("Benchmark & " + " & ".join(f"CPython {v}" for v in vers) + " & max change \\\\\\midrule")
+        out.append("Benchmark & " + " & ".join(f"{v}" for v in vers) + " & max chg. \\\\\\midrule")
         per = {v: pool(pyver[v]) for v in vers}
         swing = {}
         for b in ORDER:
@@ -259,7 +260,7 @@ def main():
             ex = [per[v][b]["ratio_py"]["ratio"] for b in ORDER
                   if b in per[v] and "ratio_py" in per[v][b] and b not in ("string", "concurrent")]
             gms2.append(statistics.geometric_mean(ex))
-        out.append("geomean (excl.\\ string, concurrent) & " + " & ".join(f"${g:.2f}$" for g in gms2) + " & \\\\")
+        out.append("geomean (excl.) & " + " & ".join(f"${g:.2f}$" for g in gms2) + " & \\\\")
         out.append("\\bottomrule\\end{tabular}\n")
         out.append("% pyver: " + " ".join(f"{v}: all={g:.2f} excl={g2:.2f}" for v, g, g2 in zip(vers, gms, gms2))
                    + f" max-swing={max(swing.values()) * 100:.0f}% ({max(swing, key=swing.get)})")

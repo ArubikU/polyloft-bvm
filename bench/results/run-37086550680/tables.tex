@@ -3,9 +3,9 @@
 % ===== environment (one row per platform; CPUs of the replicates in order) =====
 \begin{tabular}{@{}llrr@{}}\toprule
 Platform & CPU of each replicate (as reported) & Cores & CPython / Go \\\midrule
-linux-arm64 & Neoverse-N2, Neoverse-N2, Neoverse-N2 & 4 & 3.12.10 / 1.25.3 \\
+linux-arm64 & Neoverse-N2 $\times$3 & 4 & 3.12.10 / 1.25.3 \\
 linux-x86\_64 & AMD EPYC 9V45, 7763, 7763 & 4 & 3.12.10 / 1.25.3 \\
-macos-arm64 & Apple M1 (Virtual), Apple M1 (Virtual), Apple M1 (Virtual) & 3 & 3.12.10 / 1.25.3 \\
+macos-arm64 & Apple M1 $\times$3 & 3 & 3.12.10 / 1.25.3 \\
 windows-x86\_64 & AMD EPYC 7763, 9V74, 7763 & 4 & 3.12.10 / 1.25.3 \\
 \bottomrule\end{tabular}
 
@@ -162,7 +162,7 @@ Total (start $\to$ L6) & $-52$ & $-78$ & $-70$ & $-77$ & $-76$ & $-56$ & $-52$ &
 
 % ===== CPython version study (ratio to CPython; each replicate ran all versions on one VM) =====
 \begin{tabular}{@{}lrrrr@{}}\toprule
-Benchmark & CPython 3.11 & CPython 3.12 & CPython 3.13 & max change \\\midrule
+Benchmark & 3.11 & 3.12 & 3.13 & max chg. \\\midrule
 fib & $1.30$ & $1.41$ & $1.52$ & $17\%$ \\
 float & $1.07$ & $0.93$ & $0.92$ & $17\%$ \\
 string & $1.03$ & $0.80$ & $0.87$ & $28\%$ \\
@@ -178,7 +178,7 @@ io & $1.36$ & $1.20$ & $1.19$ & $14\%$ \\
 concurrent & $0.45$ & $0.36$ & $0.26$ & $73\%$ \\
 \midrule
 geomean (all) & $1.00$ & $0.88$ & $0.90$ & \\
-geomean (excl.\ string, concurrent) & $1.08$ & $0.96$ & $1.01$ & \\
+geomean (excl.) & $1.08$ & $0.96$ & $1.01$ & \\
 \bottomrule\end{tabular}
 
 % pyver: 3.11: all=1.00 excl=1.08 3.12: all=0.88 excl=0.96 3.13: all=0.90 excl=1.01 max-swing=73% (concurrent)
