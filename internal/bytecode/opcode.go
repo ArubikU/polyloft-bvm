@@ -121,6 +121,12 @@ const (
 	OpJumpIfArrayFieldLteLocalTrue  // if arr[idx].field <= locals[cmp] → jump (exit "while field>cmp" loop)
 	OpArrayPush                     // pop value, append to the array at TOS (array stays on stack)
 	OpSetArrayLocals                // locals[arr][locals[idx]] = pop(); args: arr_slot(1) idx_slot(1)
+	// Numeric binary ops whose right operand is a numeric constant (replaces CONSTANT + *_NUM);
+	// args: const_index(2). Same 3-byte footprint as CONSTANT, so jump offsets are unaffected.
+	OpAddNumConst
+	OpSubNumConst
+	OpMulNumConst
+	OpDivNumConst
 )
 
 func (op Op) String() string {
@@ -357,6 +363,14 @@ func (op Op) String() string {
 		return "ARRAY_PUSH"
 	case OpSetArrayLocals:
 		return "SET_ARRAY_LOCALS"
+	case OpAddNumConst:
+		return "ADD_NUM_CONST"
+	case OpSubNumConst:
+		return "SUB_NUM_CONST"
+	case OpMulNumConst:
+		return "MUL_NUM_CONST"
+	case OpDivNumConst:
+		return "DIV_NUM_CONST"
 	default:
 		return "UNKNOWN"
 	}

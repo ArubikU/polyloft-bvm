@@ -205,7 +205,7 @@ func (c *Chunk) disassembleInto(out *strings.Builder, name string) {
 		line := c.Lines[offset]
 		fmt.Fprintf(out,"%04d L%-3d %-14s", offset, line, op.String())
 		switch op {
-		case OpConstant, OpDefineGlobal, OpGetGlobal, OpSetGlobal, OpGetProperty, OpSetProperty, OpClosure:
+		case OpConstant, OpAddNumConst, OpSubNumConst, OpMulNumConst, OpDivNumConst, OpDefineGlobal, OpGetGlobal, OpSetGlobal, OpGetProperty, OpSetProperty, OpClosure:
 			idx := readUint16(c.Code[offset+1:])
 			fmt.Fprintf(out,"%d (%v)", idx, c.Constants[idx])
 			offset += 3

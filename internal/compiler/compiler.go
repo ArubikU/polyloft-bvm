@@ -47,6 +47,7 @@ type state struct {
 	name             string
 	ownerClass       *value.Class
 	lastOpcodeOffset int // offset in chunk.Code of the most recently emitted opcode
+	lastLabelOffset  int // code offset of the most recent forward-jump target (set by patchJump)
 }
 
 type local struct {
@@ -4615,8 +4616,49 @@ func normalizeAnnotation(name string) string {
 }
 
 func (c *Compiler) emit(op bytecode.Op, line int) {
+	if c.fuseConstArith(op) {
+		return
+	}
 	c.state.lastOpcodeOffset = len(c.state.chunk.Code)
 	c.state.chunk.WriteOp(op, line)
+}
+
+// fuseConstArith rewrites "CONSTANT k; <ADD|SUB|MUL|DIV>_NUM" into a single
+// "<op>_NUM_CONST k" by patching the CONSTANT opcode byte in place (both are three
+// bytes, so no offsets move). It does not fire when a forward jump lands on the
+// arithmetic instruction (e.g. a ternary or short-circuit as the right operand), because
+// that join would then point past the fused instruction.
+func (c *Compiler) fuseConstArith(op bytecode.Op) bool {
+	var fused bytecode.Op
+	switch op {
+	case bytecode.OpAddNum:
+		fused = bytecode.OpAddNumConst
+	case bytecode.OpSubNum:
+		fused = bytecode.OpSubNumConst
+	case bytecode.OpMulNum:
+		fused = bytecode.OpMulNumConst
+	case bytecode.OpDivNum:
+		fused = bytecode.OpDivNumConst
+	default:
+		return false
+	}
+	chunk := c.state.chunk
+	end := len(chunk.Code)
+	last := c.state.lastOpcodeOffset
+	if end < 3 || last != end-3 || c.state.lastLabelOffset == end || bytecode.Op(chunk.Code[last]) != bytecode.OpConstant {
+		return false
+	}
+	idx := int(chunk.Code[last+1])<<8 | int(chunk.Code[last+2])
+	if idx >= len(chunk.Constants) {
+		return false
+	}
+	switch chunk.Constants[idx].(type) {
+	case int64, float64:
+	default:
+		return false
+	}
+	chunk.Code[last] = byte(fused)
+	return true
 }
 
 func (c *Compiler) emitByte(v byte, line int) {
@@ -4761,6 +4803,7 @@ func (c *Compiler) emitLoop(loopStart int, line int) {
 }
 
 func (c *Compiler) patchJump(offset int) {
+	c.state.lastLabelOffset = len(c.state.chunk.Code)
 	distance := len(c.state.chunk.Code) - offset - 2
 	c.state.chunk.PatchUint16(offset, uint16(distance))
 }

@@ -908,6 +908,87 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			if err := vm.binaryNumberOp(bytecode.OpMulNum, func(a, b float64) float64 { return a * b }); err != nil {
 				return value.NilValue(), err
 			}
+		case bytecode.OpAddNumConst, bytecode.OpSubNumConst, bytecode.OpMulNumConst:
+			idx := readU16At(code, frame.ip)
+			frame.ip += 2
+			if frame.consts == nil {
+				frame.consts = vm.resolvedConsts(frame.fn.Chunk)
+			}
+			k := &frame.consts[idx]
+			t := &vm.stack[vm.sp-1]
+			if t.Kind != value.Number {
+				// Unusual operand kinds: take the generic path with the constant pushed.
+				vm.push(*k)
+				var gerr error
+				switch op {
+				case bytecode.OpAddNumConst:
+					gerr = vm.binaryNumberOp(bytecode.OpAddNum, func(a, b float64) float64 { return a + b })
+				case bytecode.OpSubNumConst:
+					gerr = vm.binaryNumberOp(bytecode.OpSubNum, func(a, b float64) float64 { return a - b })
+				default:
+					gerr = vm.binaryNumberOp(bytecode.OpMulNum, func(a, b float64) float64 { return a * b })
+				}
+				if gerr != nil {
+					return value.NilValue(), gerr
+				}
+				continue
+			}
+			if t.NumberKind == value.NumberInt && k.NumberKind == value.NumberInt {
+				switch op {
+				case bytecode.OpAddNumConst:
+					t.Int += k.Int
+				case bytecode.OpSubNumConst:
+					t.Int -= k.Int
+				default:
+					t.Int *= k.Int
+				}
+				t.Num = float64(t.Int)
+			} else {
+				switch op {
+				case bytecode.OpAddNumConst:
+					t.Num += k.Num
+				case bytecode.OpSubNumConst:
+					t.Num -= k.Num
+				default:
+					t.Num *= k.Num
+				}
+				t.Int = int64(t.Num)
+				t.NumberKind = value.NumberFloat
+			}
+		case bytecode.OpDivNumConst:
+			idx := readU16At(code, frame.ip)
+			frame.ip += 2
+			if frame.consts == nil {
+				frame.consts = vm.resolvedConsts(frame.fn.Chunk)
+			}
+			k := &frame.consts[idx]
+			t := &vm.stack[vm.sp-1]
+			if t.Kind != value.Number {
+				vm.push(*k)
+				if gerr := vm.binaryNumberOp(bytecode.OpDivNum, func(a, b float64) float64 { return a / b }); gerr != nil {
+					handled, raised := vm.handleRaised(baseDepth, frame, gerr)
+					if handled {
+						frame = vm.frames[len(vm.frames)-1]
+						code = frame.code
+						continue
+					}
+					return value.NilValue(), raised
+				}
+				continue
+			}
+			if k.Num == 0 {
+				err := fmt.Errorf("division by zero")
+				handled, raised := vm.handleRaised(baseDepth, frame, err)
+				if handled {
+					frame = vm.frames[len(vm.frames)-1]
+					code = frame.code
+					continue
+				}
+				return value.NilValue(), raised
+			}
+			t.Num /= k.Num
+			t.Int = int64(t.Num)
+			t.NumberKind = value.NumberFloat
 		case bytecode.OpPowNum:
 			if err := vm.binaryPowOp(bytecode.OpPowNum); err != nil {
 				return value.NilValue(), err
