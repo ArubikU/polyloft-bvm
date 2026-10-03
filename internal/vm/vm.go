@@ -2063,6 +2063,34 @@ func pickOverload(overloads []*bytecode.Function, argc int) *bytecode.Function {
 
 func (vm *VM) call(argc int) error {
 	callee := vm.peek(argc)
+	// Hot path: plain functions and closures are by far the most common
+	// callees, so test them with one type switch before the long chain of
+	// rarer callee kinds below.
+	switch obj := callee.Object.(type) {
+	case *value.Closure:
+		fn := obj.Function
+		if fn.Arity != argc {
+			return fmt.Errorf("%s expects %d args, got %d", fn.Name, fn.Arity, argc)
+		}
+		child := vm.acquireFrame(fn, obj, nil, false)
+		base := vm.sp - argc
+		copy(child.locals[:argc], vm.stack[base:vm.sp])
+		vm.sp = base - 1
+		child.stackBase = vm.sp
+		vm.frames = append(vm.frames, child)
+		return nil
+	case *bytecode.Function:
+		if obj.Arity != argc {
+			return fmt.Errorf("%s expects %d args, got %d", obj.Name, obj.Arity, argc)
+		}
+		child := vm.acquireFrame(obj, nil, nil, false)
+		base := vm.sp - argc
+		copy(child.locals[:argc], vm.stack[base:vm.sp])
+		vm.sp = base - 1
+		child.stackBase = vm.sp
+		vm.frames = append(vm.frames, child)
+		return nil
+	}
 	if wrapper, ok := callee.AsSAMWrapper(); ok {
 		vm.stack[vm.sp-1-argc] = wrapper.Callable
 		return vm.call(argc)

@@ -69,3 +69,11 @@ func BenchmarkIO(b *testing.B) {
 func BenchmarkString(b *testing.B) {
 	benchProgram(b, filepath.Join("testdata", "programs", "bench_string.pf"))
 }
+
+func BenchmarkMacro(b *testing.B) {
+	benchProgram(b, filepath.Join("testdata", "programs", "bench_macro.pf"))
+}
+
+func BenchmarkAlloc(b *testing.B) {
+	benchProgram(b, filepath.Join("testdata", "programs", "alloc_bench.pf"))
+}
