@@ -5,3 +5,4 @@ benchmarks/**
 # local tooling / nested repos
 .claude/
 tesis/
+ci_results/

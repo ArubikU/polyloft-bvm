@@ -39,6 +39,8 @@ jobs:
           - { os: macos-15,         label: macos-arm64,   rep: 1 }
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
@@ -62,6 +64,11 @@ jobs:
           EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
           go build -o out/polyloft-bvm$EXT ./cmd/polyloft-bvm
           (cd bench/luabench && go build -o ../../out/luabench$EXT .)
+          # Campaign start point (dbd86d8): same Go, same machine, same programs, so the
+          # 'Start' column is measured under identical conditions rather than recalled.
+          git worktree add ../base-src dbd86d8
+          cp go.mod go.sum ../base-src/     # base used a local giocss replace; use the fetched module
+          (cd ../base-src && go build -o ../polyloft-bvm/out/base$EXT ./cmd/polyloft-bvm)
           ls -la out
           go version; python --version
 
@@ -71,7 +78,7 @@ jobs:
           N="${{ github.event.inputs.n }}"; N="${N:-30}"
           EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
           python scripts/bench_runner.py \
-            --bvm out/polyloft-bvm$EXT --lua out/luabench$EXT \
+            --bvm out/polyloft-bvm$EXT --lua out/luabench$EXT --base out/base$EXT \
             --n "$N" --warmup 2 \
             --out "results_${{ matrix.label }}_${{ matrix.rep }}.json" | tee "log_${{ matrix.label }}_${{ matrix.rep }}.txt"
 

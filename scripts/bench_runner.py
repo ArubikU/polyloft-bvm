@@ -78,6 +78,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bvm", required=True)
     ap.add_argument("--lua")
+    ap.add_argument("--base", help="interpreter built from the campaign's base commit")
+    ap.add_argument("--base-only", default="fib,float,string,sort,array,poly",
+                    help="benchmarks to run against --base (features of the base may be older)")
     ap.add_argument("--python", default=sys.executable)
     ap.add_argument("--programs", default="testdata/programs")
     ap.add_argument("--n", type=int, default=30)
@@ -106,6 +109,7 @@ def main():
         engines = {"bvm": [a.bvm, "run", pf]}
         if os.path.exists(py): engines["py"] = [a.python, py]
         if a.lua and os.path.exists(lu): engines["lua"] = [a.lua, lu]
+        if a.base and name in set(a.base_only.split(",")): engines["base"] = [a.base, "run", pf]
         for _ in range(a.warmup):
             for cmd in engines.values(): run(cmd)
         samples = {k: [] for k in engines}
@@ -134,6 +138,10 @@ def main():
         for k, s in samples.items():
             if s:
                 entry[k] = {"median": median(s), "cv": cv(s), "min": min(s), "n": len(s)}
+        if samples.get("base") and samples.get("py"):
+            lo, hi = boot_ratio_ci(samples["base"], samples["py"])
+            entry["ratio_start"] = {"ratio": median(samples["base"]) / median(samples["py"]),
+                                    "ci_lo": lo, "ci_hi": hi}
         for base in ("py", "lua"):
             if samples.get("bvm") and samples.get(base):
                 lo, hi = boot_ratio_ci(samples["bvm"], samples[base])
