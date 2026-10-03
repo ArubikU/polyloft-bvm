@@ -10,13 +10,13 @@ local function applyN(f, n, x)
 end
 local started = os.clock()
 local sum = 0
-for i = 0, 4999 do local adder = makeAdder(i); sum = sum + adder(10) end
+for i = 0, 39999 do local adder = makeAdder(i); sum = sum + adder(10) end
 local acc = makeAccumulator(0)
-for i = 0, 99999 do acc(i) end
+for i = 0, 799999 do acc(i) end
 local final_acc = acc(0)
 local inc = function(x) return x + 1 end
 local dbl = function(x) return x * 2 end
-local result = applyN(inc, 10000, 0)
+local result = applyN(inc, 80000, 0)
 local result2 = applyN(dbl, 20, 1)
 local ended = os.clock()
 print("gopher-lua closure benchmark")

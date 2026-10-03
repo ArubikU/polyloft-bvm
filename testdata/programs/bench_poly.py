@@ -24,7 +24,7 @@ class Triangle(Shape):
 
 started = time.perf_counter()
 
-N = 30000
+N = 200000
 shapes = []
 for i in range(N):
     r = i % 3

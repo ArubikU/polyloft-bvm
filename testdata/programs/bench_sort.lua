@@ -15,7 +15,7 @@ local function qsort(arr, lo, hi)
   qsort(arr, i, hi)
 end
 local started = os.clock()
-local N = 5000
+local N = 60000
 local items = {}
 for i = 0, N - 1 do items[i] = { key = N - i + (i % 17) * 3, val = i } end
 local t1 = os.clock()

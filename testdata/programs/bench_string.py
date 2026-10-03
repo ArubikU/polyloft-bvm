@@ -4,14 +4,14 @@ started = time.perf_counter()
 
 # Part 1: repeated string concatenation
 s = ""
-for i in range(3000):
+for i in range(12000):
     s = s + "x"
 build_ms = (time.perf_counter() - started) * 1000
 
 # Part 2: numeric-to-string conversion
 t1 = time.perf_counter()
 nums = ""
-for i in range(5000):
+for i in range(20000):
     nums = nums + str(i) + ","
 conv_ms = (time.perf_counter() - t1) * 1000
 
@@ -19,7 +19,7 @@ conv_ms = (time.perf_counter() - t1) * 1000
 t2 = time.perf_counter()
 haystack = "the quick brown fox jumps over the lazy dog"
 hits = 0
-for i in range(50000):
+for i in range(400000):
     if "fox" in haystack:
         hits += 1
 search_ms = (time.perf_counter() - t2) * 1000

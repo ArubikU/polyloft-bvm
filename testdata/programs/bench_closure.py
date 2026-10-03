@@ -21,7 +21,7 @@ started = time.perf_counter()
 # Part 1: create and call many closures
 t1 = time.perf_counter()
 s = 0
-for i in range(5000):
+for i in range(40000):
     adder = make_adder(i)
     s += adder(10)
 make_ms = (time.perf_counter() - t1) * 1000
@@ -29,7 +29,7 @@ make_ms = (time.perf_counter() - t1) * 1000
 # Part 2: stateful closure (accumulator)
 t2 = time.perf_counter()
 acc = make_accumulator(0)
-for i in range(100000):
+for i in range(800000):
     acc(i)
 final_acc = acc(0)
 accum_ms = (time.perf_counter() - t2) * 1000
@@ -38,7 +38,7 @@ accum_ms = (time.perf_counter() - t2) * 1000
 t3 = time.perf_counter()
 inc = lambda x: x + 1
 dbl = lambda x: x * 2
-result = apply_n(inc, 10000, 0)
+result = apply_n(inc, 80000, 0)
 result2 = apply_n(dbl, 20, 1)
 hof_ms = (time.perf_counter() - t3) * 1000
 

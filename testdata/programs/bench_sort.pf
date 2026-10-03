@@ -37,7 +37,7 @@ end
 
 let started = Sys.time()
 
-let N = 5000
+let N = 60000
 let items = new Item[N]
 for i in range(0, N):
     items[i] = new Item(N - i + (i % 17) * 3, i)

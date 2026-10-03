@@ -1,0 +1,92 @@
+name: Benchmarks
+
+# Reproducible evaluation for the paper: one immutable commit, one pinned CPython,
+# one pinned Go, several platforms (x86-64 / ARM64, Linux / Windows / macOS).
+# Raw per-run samples are uploaded as artifacts; the paper's tables are generated
+# from them by scripts/make_tables.py (nothing is typed by hand).
+on:
+  workflow_dispatch:
+    inputs:
+      n:
+        description: "runs per engine per benchmark"
+        default: "30"
+  push:
+    branches: [ bench-ci ]
+
+env:
+  GO_VERSION: "1.25.3"
+  PY_VERSION: "3.12.10"
+
+jobs:
+  bench:
+    name: ${{ matrix.label }} #${{ matrix.rep }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04,     label: linux-x86_64,  rep: 1 }
+          - { os: ubuntu-24.04,     label: linux-x86_64,  rep: 2 }
+          - { os: ubuntu-24.04,     label: linux-x86_64,  rep: 3 }
+          - { os: ubuntu-24.04-arm, label: linux-arm64,   rep: 1 }
+          - { os: ubuntu-24.04-arm, label: linux-arm64,   rep: 2 }
+          - { os: ubuntu-24.04-arm, label: linux-arm64,   rep: 3 }
+          - { os: windows-2025,     label: windows-x86_64, rep: 1 }
+          - { os: macos-15,         label: macos-arm64,   rep: 1 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PY_VERSION }}
+
+      - name: Build interpreter and gopher-lua baseline
+        shell: bash
+        run: |
+          mkdir -p out
+          go build -o out/polyloft-bvm ./cmd/polyloft-bvm
+          (cd bench/luabench && go build -o ../../out/luabench .)
+          go version; python --version
+
+      - name: Run benchmarks
+        shell: bash
+        run: |
+          N="${{ github.event.inputs.n }}"; N="${N:-30}"
+          EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
+          python scripts/bench_runner.py \
+            --bvm out/polyloft-bvm$EXT --lua out/luabench$EXT \
+            --n "$N" --warmup 2 \
+            --out "results_${{ matrix.label }}_${{ matrix.rep }}.json" | tee "log_${{ matrix.label }}_${{ matrix.rep }}.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: results-${{ matrix.label }}-${{ matrix.rep }}
+          path: |
+            results_*.json
+            log_*.txt
+
+  tables:
+    needs: bench
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: results-*
+          merge-multiple: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PY_VERSION }}
+      - run: python scripts/make_tables.py "results_*.json" --out tables.tex
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tables
+          path: |
+            tables.tex
+            results_*.json

@@ -56,7 +56,7 @@ end
 let started = Sys.time()
 
 // Build a mixed array of shapes
-let N = 30000
+let N = 200000
 let shapes = new Shape[N]
 for i in range(0, N):
     let r = i % 3

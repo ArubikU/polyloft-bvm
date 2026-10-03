@@ -24,7 +24,7 @@ def qsort(arr, lo, hi):
 
 started = time.perf_counter()
 
-N = 5000
+N = 60000
 items = [Item(N - i + (i % 17) * 3, i) for i in range(N)]
 build_ms = (time.perf_counter() - started) * 1000
 

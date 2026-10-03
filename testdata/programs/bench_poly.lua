@@ -15,7 +15,7 @@ end
 function Triangle:perimeter() return self.a + self.b + self.c end
 
 local started = os.clock()
-local N = 30000
+local N = 200000
 local shapes = {}
 for i = 0, N - 1 do
   local r = i % 3
