@@ -81,7 +81,7 @@ func InstallCoreGlobals(registry *Registry, stdout io.Writer) {
 		item := args[0]
 		switch item.Kind {
 		case value.String:
-			return value.IntValue(int64(len([]rune(item.Str)))), nil
+			return value.IntValue(int64(value.RuneLen(item.Str))), nil
 		}
 		if array, ok := item.AsArray(); ok {
 			return value.IntValue(int64(len(array.Values()))), nil

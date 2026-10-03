@@ -1677,12 +1677,11 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				if index.Kind != value.Number {
 					return value.NilValue(), fmt.Errorf("String index must be number")
 				}
-				runes := []rune(object.Str)
-				idx := int(index.Num)
-				if idx < 0 || idx >= len(runes) {
+				r, ok := value.RuneAt(object.Str, int(index.Num))
+				if !ok {
 					return value.NilValue(), fmt.Errorf("String index out of range")
 				}
-				vm.push(value.CharValue(runes[idx]))
+				vm.push(value.CharValue(r))
 				continue
 			}
 			if array, ok := object.AsArray(); ok {
@@ -1861,12 +1860,11 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			startIdx := int(start.Num)
 			endIdx := int(end.Num)
 			if object.Kind == value.String {
-				runes := []rune(object.Str)
-				sliced, err := sliceRunes(runes, startIdx, endIdx)
-				if err != nil {
-					return value.NilValue(), err
+				sliced, ok := value.RuneSlice(object.Str, startIdx, endIdx)
+				if !ok {
+					return value.NilValue(), fmt.Errorf("slice out of range")
 				}
-				vm.push(value.StringValue(string(sliced)))
+				vm.push(value.StringValue(sliced))
 				continue
 			}
 			if array, ok := object.AsArray(); ok {
@@ -3457,7 +3455,14 @@ func (vm *VM) releaseFrame(child *frame) {
 	// (no memclrHasPointers call).
 	locals := child.locals
 	for i := range locals {
-		locals[i] = value.Value{}
+		l := &locals[i]
+		if l.Object != nil || l.Str != "" {
+			*l = value.Value{}
+		} else {
+			// Scalar-only slot: zero the plain fields directly (no pointer
+			// stores, so no write barrier and no memclrHasPointers call).
+			l.Kind, l.NumberKind, l.Bool, l.Num, l.Int = 0, 0, false, 0, 0
+		}
 	}
 	child.ip = 0
 	child.init = false
@@ -3586,7 +3591,7 @@ func (vm *VM) peek(distance int) value.Value {
 }
 
 func (vm *VM) readByte(frame *frame) byte {
-	b := frame.fn.Chunk.Code[frame.ip]
+	b := frame.code[frame.ip]
 	frame.ip++
 	return b
 }
@@ -3596,7 +3601,7 @@ func (vm *VM) readByte(frame *frame) byte {
 // inlined when the callee cost is ≤ inlineBigFunctionMaxCost (20). Keep this
 // body minimal — check with `go build -gcflags='-m -m'` after editing.
 func (vm *VM) readUint16(frame *frame) uint16 {
-	c := frame.fn.Chunk.Code
+	c := frame.code
 	i := frame.ip
 	frame.ip = i + 2
 	return uint16(c[i])<<8 | uint16(c[i+1])

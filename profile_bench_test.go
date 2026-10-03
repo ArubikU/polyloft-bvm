@@ -53,3 +53,19 @@ func BenchmarkArray(b *testing.B) {
 func BenchmarkSort(b *testing.B) {
 	benchProgram(b, filepath.Join("testdata", "programs", "bench_sort.pf"))
 }
+
+func BenchmarkHash(b *testing.B) {
+	benchProgram(b, filepath.Join("testdata", "programs", "bench_hash.pf"))
+}
+
+func BenchmarkClosure(b *testing.B) {
+	benchProgram(b, filepath.Join("testdata", "programs", "bench_closure.pf"))
+}
+
+func BenchmarkIO(b *testing.B) {
+	benchProgram(b, filepath.Join("testdata", "programs", "bench_io.pf"))
+}
+
+func BenchmarkString(b *testing.B) {
+	benchProgram(b, filepath.Join("testdata", "programs", "bench_string.pf"))
+}
