@@ -202,7 +202,12 @@ def main():
                  "L3_preinline": "Review fixes and refactors (no perf. intent)",
                  "L4_inline": "Inline-budget reshaping + dispatch caches",
                  "L5_memo_fast": "Fast constructors, array fusions, constant memo., EQ path",
-                 "L6_dense": "Value repack + dense primitive arrays"}
+                 "L6_dense": "Value repack + dense primitive arrays",
+                 "L7_frames": "Recovery: code mirror in frame, fast return, cheaper frame pool",
+                 "L8_calls_pgo": "Recovery: fast call path, ASCII string paths, PGO profile",
+                 "L9_constops": "Recovery: fused CONSTANT+arithmetic, instance-pool cache",
+                 "L10_strings_eq": "Recovery: string concat and equality fast paths",
+                 "L11_memory": "Memory: Value 48 B, one-allocation instances, scalar stores"}
         COLS = ["fib", "float", "string", "sort", "array", "poly", "closure", "hash", "alloc"]
         for plat, rs in ladder.items():
             mark = len(out)
@@ -228,7 +233,7 @@ def main():
                         cells.append("--")
                 out.append(f"{tex(label)} & " + " & ".join(cells) + " \\\\")
             out.append("\\midrule")
-            out.append("Total (start $\\to$ L6) & " + " & ".join(f"${(tot[c]-1)*100:+.0f}$".replace("+", "{+}") for c in COLS) + " \\\\")
+            out.append("Total (start $\\to$ final) & " + " & ".join(f"${(tot[c]-1)*100:+.0f}$".replace("+", "{+}") for c in COLS) + " \\\\")
             out.append("\\bottomrule\\end{tabular}\n")
             blocks["attrib_" + plat] = out[mark:]
 
