@@ -552,6 +552,20 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				}
 				continue
 			}
+			// Cheap cases that cannot involve user-defined equality: string vs
+			// string, and nil vs a primitive (the usual "key missing" test).
+			if left.Kind == value.String && right.Kind == value.String {
+				vm.push(value.BoolValue(left.Str == right.Str))
+				continue
+			}
+			if right.Kind == value.Nil && left.Kind != value.Object {
+				vm.push(value.BoolValue(left.Kind == value.Nil))
+				continue
+			}
+			if left.Kind == value.Nil && right.Kind != value.Object {
+				vm.push(value.BoolValue(right.Kind == value.Nil))
+				continue
+			}
 			equal, err := vm.valuesEqual(left, right)
 			if err != nil {
 				return value.NilValue(), err
@@ -593,6 +607,22 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 					continue
 				}
 				vm.push(value.FloatValue(left.Num + right.Num))
+				continue
+			}
+			// Hot path for string building: String + String and String + Number
+			// (a Number stringifies through Value.String, exactly what the generic
+			// path below does for numbers), skipping the instance probes.
+			if left.Kind == value.String {
+				if right.Kind == value.String {
+					vm.push(value.StringValue(left.Str + right.Str))
+					continue
+				}
+				if right.Kind == value.Number {
+					vm.push(value.StringValue(left.Str + right.String()))
+					continue
+				}
+			} else if right.Kind == value.String && left.Kind == value.Number {
+				vm.push(value.StringValue(left.String() + right.Str))
 				continue
 			}
 			if leftNum, ok := vm.numericOperand(left); ok {
