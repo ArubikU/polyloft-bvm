@@ -19,6 +19,10 @@ SHORT = {"linux-x86_64": "x86", "linux-arm64": "ARM", "macos-arm64": "mac", "win
          "linux-x86_64-py311": "x86/3.11", "linux-x86_64-py313": "x86/3.13"}
 
 
+def short_cpu(c):
+    return re.sub(r" \d+-Core Processor", "", c).replace(" with Radeon Graphics", "")
+
+
 def tex(s):
     return s.replace("&", r"\&").replace("_", r"\_")
 
@@ -90,7 +94,7 @@ def main():
     out.append("Platform & CPU (as reported) & CPython & Go & Cores \\\\\\midrule")
     for label, rep, d in loaded:
         e = d["env"]
-        out.append(f"{tex(label)} \\#{rep} & {tex(e['cpu'])} & {e['python']} & "
+        out.append(f"{tex(label)} \\#{rep} & {tex(short_cpu(e['cpu']))} & {e['python']} & "
                    f"{e.get('go', '1.25.3')} & {e['cores']} \\\\")
     out.append("\\bottomrule\\end{tabular}\n")
     blocks["env"] = out[mark:]

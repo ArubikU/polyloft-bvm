@@ -1,0 +1,73 @@
+name: Benchmarks (Go toolchain sensitivity)
+
+# Same source, same VM, same CPython, two Go toolchains. Both binaries are built in the
+# same job and run interleaved, so CPU model and host load cancel; the only difference is
+# the compiler that built the interpreter. Complements bench.yml (CPython-version control).
+on:
+  workflow_dispatch:
+  push:
+    branches: [ bench-go ]
+
+env:
+  GO_BASE: "1.25.3"
+  GO_ALT: "1.26.3"
+  PY_VERSION: "3.12.10"
+
+jobs:
+  gotc:
+    name: go-${{ matrix.label }} #${{ matrix.rep }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04,     label: linux-x86_64,  rep: 1 }
+          - { os: ubuntu-24.04,     label: linux-x86_64,  rep: 2 }
+          - { os: ubuntu-24.04-arm, label: linux-arm64,   rep: 1 }
+          - { os: windows-2025,     label: windows-x86_64, rep: 1 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PY_VERSION }}
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libx11-dev libx11-xcb-dev libxcursor-dev libxfixes-dev libegl1-mesa-dev \
+            libvulkan-dev libgl1-mesa-dev pkg-config
+
+      - uses: actions/setup-go@v5
+        with: { go-version: "${{ env.GO_BASE }}", cache: false }
+      - name: Build with Go ${{ env.GO_BASE }} (reference toolchain)
+        shell: bash
+        run: |
+          mkdir -p out; EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
+          go version
+          go build -o out/bvm-base$EXT ./cmd/polyloft-bvm
+
+      - uses: actions/setup-go@v5
+        with: { go-version: "${{ env.GO_ALT }}", cache: false }
+      - name: Build with Go ${{ env.GO_ALT }} (alternative toolchain)
+        shell: bash
+        run: |
+          EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
+          go version
+          go build -o out/bvm-alt$EXT ./cmd/polyloft-bvm
+          ls -la out
+
+      - name: Run
+        shell: bash
+        run: |
+          EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
+          python scripts/bench_runner.py --bvm out/bvm-base$EXT --alt out/bvm-alt$EXT \
+            --n 20 --warmup 2 --only fib,float,string,sort,array,poly,closure,hash,alloc,macro \
+            --out "results_go-${{ matrix.label }}_${{ matrix.rep }}.json" | tee "log_go-${{ matrix.label }}_${{ matrix.rep }}.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: results-go-${{ matrix.label }}-${{ matrix.rep }}
+          path: |
+            results_go-*.json
+            log_go-*.txt
