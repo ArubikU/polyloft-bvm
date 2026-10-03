@@ -280,14 +280,19 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			}
 		case bytecode.OpSetLocal:
 			slot := readB(code, frame)
-			newVal := vm.pop()
-			// Fast path: peek at old local and recycle if it's an Instance with no aliases
 			if !frame.hasCells {
-				if old := frame.locals[slot]; old.Kind == value.Object {
-					vm.tryRecycleLocal(frame, slot, old)
+				// Fast path: move the stack top into the local without copying it through a
+				// temporary, recycling the old value first if it is an unaliased Instance.
+				vm.sp--
+				dst := &frame.locals[slot]
+				if dst.Kind == value.Object {
+					vm.tryRecycleLocal(frame, slot, *dst)
 				}
-				frame.locals[slot] = newVal
-			} else {
+				value.CopyInto(dst, &vm.stack[vm.sp])
+				continue
+			}
+			newVal := vm.pop()
+			{
 				if old := vm.localGetSlow(frame, slot); old.Kind == value.Object {
 					vm.tryRecycleLocal(frame, slot, old)
 				}
@@ -1374,9 +1379,8 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 					frame.ip += int(offset)
 					continue
 				}
-				nextVal := value.IntValue(next)
-				frame.locals[currentSlot] = nextVal
-				frame.locals[valueSlot] = nextVal
+				value.SetInt(&frame.locals[currentSlot], next)
+				value.SetInt(&frame.locals[valueSlot], next)
 				continue
 			}
 			next := current.Num + step.Num
@@ -1441,12 +1445,15 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 			valueSlot := readB(code, frame)
 			offset := readU16At(code, frame.ip)
 			frame.ip += 2
-			// localGet hand-inlined: hottest iteration opcode.
-			iterVal := frame.locals[iterSlot]
-			if frame.hasCells {
-				iterVal = vm.localGetSlow(frame, iterSlot)
+			// localGet hand-inlined: hottest iteration opcode. The iterator is read through
+			// the slot's Object field directly (no 56-byte Value copy).
+			var iterator *value.Iterator
+			var ok bool
+			if !frame.hasCells {
+				iterator, ok = frame.locals[iterSlot].Object.(*value.Iterator)
+			} else {
+				iterator, ok = vm.localGetSlow(frame, iterSlot).AsIterator()
 			}
-			iterator, ok := iterVal.AsIterator()
 			if !ok {
 				return value.NilValue(), fmt.Errorf("ITER_NEXT expects iterator")
 			}
@@ -1457,7 +1464,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 				}
 				// Dense-array iteration: read straight from the typed backing,
 				// no []Value snapshot. At() reconstructs the Value in-register.
-				frame.locals[valueSlot] = iterator.Arr.At(iterator.Index)
+				iterator.Arr.StoreAt(iterator.Index, &frame.locals[valueSlot])
 				iterator.Index++
 				continue
 			}
@@ -1701,7 +1708,7 @@ func (vm *VM) executeUntilDepth(baseDepth int) (value.Value, error) {
 		case bytecode.OpAddLocalLocal:
 			dstSlot := readB(code, frame)
 			srcSlot := readB(code, frame)
-			frame.locals[dstSlot] = value.IntValue(frame.locals[dstSlot].Int + frame.locals[srcSlot].Int)
+			value.SetInt(&frame.locals[dstSlot], frame.locals[dstSlot].Int+frame.locals[srcSlot].Int)
 		case bytecode.OpGetLocalArrayField:
 			arrSlot := readB(code, frame)
 			idxSlot := readB(code, frame)
